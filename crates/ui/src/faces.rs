@@ -20,6 +20,16 @@ use vello::peniko::{Color, Fill};
 use vello::Scene;
 
 type P<'a, 'b> = &'a mut Painter<'b, Action>;
+
+/// Positions on the quick settings page.
+pub(crate) struct QsLayout {
+    pub chips_top: f64,
+    pub focus_y: Option<f64>,
+    pub vol_cy: f64,
+    pub bri_cy: Option<f64>,
+    pub out_top: Option<f64>,
+    pub height: f64,
+}
 const SEMI: Weight = Weight::Semibold;
 const REG: Weight = Weight::Regular;
 
@@ -704,53 +714,93 @@ impl Island {
         p.text(&t, w - 14.0, cy, 11.0, REG, theme::DIM, Align::Right, 40.0);
     }
 
+    /// The toggle chips that exist on this machine, in order (a missing tool or an unsupported system hides its chip).
+    pub(crate) fn qs_chips(&self) -> Vec<(&'static str, String, bool, Action)> {
+        let d = &self.data;
+        let mut v: Vec<(&'static str, String, bool, Action)> = vec![];
+        if let Some(on) = d.wifi {
+            v.push((if on { "wifi" } else { "wifi-off" }, "Wi-Fi".into(), on, Action::Cmd(Command::ToggleWifi)));
+        }
+        if let Some(on) = d.bluetooth {
+            v.push((if on { "bluetooth" } else { "bluetooth-off" }, "Bluetooth".into(), on, Action::Cmd(Command::ToggleBluetooth)));
+        }
+        v.push(("bell-off", "DND".into(), d.dnd, Action::ToggleDnd));
+        v.push(("coffee", "Keep awake".into(), d.keep_awake, Action::Cmd(Command::ToggleKeepAwake)));
+        if let Some(profile) = d.profile.as_deref().filter(|p| !p.is_empty()) {
+            let label = profile[..1].to_uppercase() + &profile[1..];
+            let icon = match profile {
+                "performance" => "bolt",
+                "powersave" => "leaf",
+                _ => "gauge",
+            };
+            v.push((icon, label, profile == "performance", Action::Cmd(Command::NextProfile)));
+        }
+        if let Some(on) = d.night_light {
+            v.push(("moon-stars", "Night light".into(), on, Action::Cmd(Command::ToggleNightLight)));
+        }
+        v
+    }
+
+    /// Where the parts of the quick settings page sit, and how tall it is (without the dock).
+    pub(crate) fn qs_layout(&self) -> QsLayout {
+        let d = &self.data;
+        let rows = self.qs_chips().len().div_ceil(3).max(1) as f64;
+        let chips_top = 14.0 + 34.0 + 8.0;
+        let mut y = chips_top + rows * 36.0 + (rows - 1.0) * 8.0;
+        let focus_y = d.focus.map(|_| {
+            let fy = y + 8.0;
+            y = fy + 36.0;
+            fy
+        });
+        let vol_cy = y + 14.0 + 14.0;
+        let mut bottom = vol_cy + 14.0;
+        let bri_cy = d.brightness.map(|_| {
+            let c = vol_cy + 36.0;
+            bottom = c + 14.0;
+            c
+        });
+        let out_top = (!d.sinks.is_empty()).then(|| {
+            let t = bottom + 10.0;
+            bottom = t + 32.0;
+            t
+        });
+        QsLayout { chips_top, focus_y, vol_cy, bri_cy, out_top, height: bottom + 14.0 }
+    }
+
     fn face_qs(&self, p: P, w: f64, _h: f64) {
         self.page_header(p, w, "Quick settings");
         let d = &self.data;
+        let l = self.qs_layout();
         let cw = (w - 28.0 - 16.0) / 3.0;
-        let chip = |p: P, row: usize, col: usize, icon: &str, label: &str, on: bool, a: Action| {
+        for (i, (icon, label, on, action)) in self.qs_chips().into_iter().enumerate() {
+            let (row, col) = (i / 3, i % 3);
             p.stagger(1 + row);
-            let y = 14.0 + 34.0 + 8.0 + row as f64 * 44.0;
-            p.chip(rect(14.0 + col as f64 * (cw + 8.0), y, cw, 36.0), icon, label, on, a);
-        };
-        chip(p, 0, 0, if d.wifi == Some(false) { "wifi-off" } else { "wifi" }, "Wi-Fi", d.wifi == Some(true), Action::Cmd(Command::ToggleWifi));
-        chip(p, 0, 1, if d.bluetooth == Some(false) { "bluetooth-off" } else { "bluetooth" }, "Bluetooth", d.bluetooth == Some(true), Action::Cmd(Command::ToggleBluetooth));
-        chip(p, 0, 2, "bell-off", "DND", d.dnd, Action::ToggleDnd);
-        let profile = d.profile.as_deref().unwrap_or("");
-        let plabel = if profile.is_empty() { "Profile".to_string() } else { profile[..1].to_uppercase() + &profile[1..] };
-        let picon = match profile {
-            "performance" => "bolt",
-            "powersave" => "leaf",
-            _ => "gauge",
-        };
-        chip(p, 1, 0, "coffee", "Keep awake", d.keep_awake, Action::Cmd(Command::ToggleKeepAwake));
-        chip(p, 1, 1, picon, &plabel, profile == "performance", Action::Cmd(Command::NextProfile));
-        if let Some(on) = d.night_light {
-            chip(p, 1, 2, "moon-stars", "Night light", on, Action::Cmd(Command::ToggleNightLight));
+            p.chip(rect(14.0 + col as f64 * (cw + 8.0), l.chips_top + row as f64 * 44.0, cw, 36.0), icon, &label, on, action);
         }
-        let mut rows = 2.0;
-        if let Some(f) = d.focus {
+        if let (Some(f), Some(fy)) = (d.focus, l.focus_y) {
+            p.stagger(3);
             let label = if f.active { self.focus_minutes_left().map_or("Focus · on".to_string(), |m| format!("Focus · {m} min left")) } else { "Focus 50 min".to_string() };
-            let y = 14.0 + 34.0 + 8.0 + 2.0 * 44.0;
-            p.chip(rect(14.0, y, w - 28.0, 36.0), "target", &label, f.active, Action::Cmd(if f.active { Command::StopFocus } else { Command::StartFocus(50) }));
-            rows = 3.0;
+            p.chip(rect(14.0, fy, w - 28.0, 36.0), "target", &label, f.active, Action::Cmd(if f.active { Command::StopFocus } else { Command::StartFocus(50) }));
         }
-        let sy = 14.0 + 34.0 + 8.0 + rows * 44.0 + 14.0;
         p.stagger(4);
-        self.slider_row(p, w, sy, if d.muted { "volume-3" } else { "volume" }, d.volume, Action::VolumeBar);
-        p.stagger(5);
-        self.slider_row(p, w, sy + 36.0, "brightness-half", d.brightness, Action::BrightnessBar);
-        p.stagger(6);
-        let out = d.sinks.iter().find(|s| Some(&s.name) == d.sink.as_ref());
-        let headphones = out.is_some_and(|s| s.name.contains("bluez"));
-        let r = rect(14.0, sy + 36.0 + 24.0, w - 28.0, 32.0);
-        p.rrect(r, 12.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
-        p.icon(if headphones { "headphones" } else { "device-speaker" }, r.x0 + 18.0, r.center().y, 16.0, theme::FG);
-        p.text(out.map_or("Output", |s| s.label.as_str()), r.x0 + 34.0, r.center().y, 12.0, SEMI, theme::FG, Align::Left, (r.width() - 120.0) as f32);
-        if d.sinks.len() > 1 {
-            p.text("switch", r.x1 - 12.0, r.center().y, 11.0, REG, theme::DIM, Align::Right, 60.0);
+        self.slider_row(p, w, l.vol_cy, if d.muted { "volume-3" } else { "volume" }, d.volume, Action::VolumeBar);
+        if let Some(cy) = l.bri_cy {
+            p.stagger(5);
+            self.slider_row(p, w, cy, "brightness-half", d.brightness, Action::BrightnessBar);
         }
-        p.hit(r, Action::Cmd(Command::NextSink));
+        if let Some(top) = l.out_top {
+            p.stagger(6);
+            let out = d.sinks.iter().find(|s| Some(&s.name) == d.sink.as_ref());
+            let headphones = out.is_some_and(|s| s.name.contains("bluez"));
+            let r = rect(14.0, top, w - 28.0, 32.0);
+            p.rrect(r, 12.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
+            p.icon(if headphones { "headphones" } else { "device-speaker" }, r.x0 + 18.0, r.center().y, 16.0, theme::FG);
+            p.text(out.map_or("Output", |s| s.label.as_str()), r.x0 + 34.0, r.center().y, 12.0, SEMI, theme::FG, Align::Left, (r.width() - 120.0) as f32);
+            if d.sinks.len() > 1 {
+                p.text("switch", r.x1 - 12.0, r.center().y, 11.0, REG, theme::DIM, Align::Right, 60.0);
+            }
+            p.hit(r, Action::Cmd(Command::NextSink));
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

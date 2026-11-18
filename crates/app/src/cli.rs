@@ -35,6 +35,112 @@ pub fn last_percent(chunk: &[u8]) -> Option<f64> {
     found
 }
 
+/// `autostart on|off|status`: start the island with the user's session. Windows: the Run key; macOS: a LaunchAgent;
+/// Linux: a systemd user unit.
+pub fn autostart(action: Option<&str>) -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("cannot find the program's own path: {e}");
+            return 1;
+        }
+    };
+    let result = match action {
+        Some("on") => autostart_set(&exe, true).map(|()| "will start with your session".to_string()),
+        Some("off") => autostart_set(&exe, false).map(|()| "will not start with your session".to_string()),
+        Some("status") => Ok(if autostart_enabled() { "starts with your session" } else { "does not start with your session" }.to_string()),
+        _ => {
+            eprintln!("usage: open-island autostart on|off|status");
+            return 2;
+        }
+    };
+    match result {
+        Ok(m) => {
+            println!("open-island {m}");
+            0
+        }
+        Err(e) => {
+            eprintln!("open-island: {e}");
+            1
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+
+#[cfg(target_os = "windows")]
+fn autostart_set(exe: &std::path::Path, on: bool) -> Result<(), String> {
+    use winreg::{enums::*, RegKey};
+    let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(RUN_KEY).map_err(|e| e.to_string())?;
+    if on {
+        key.set_value("open-island", &format!("\"{}\"", exe.display())).map_err(|e| e.to_string())
+    } else {
+        key.delete_value("open-island").or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn autostart_enabled() -> bool {
+    use winreg::{enums::*, RegKey};
+    RegKey::predef(HKEY_CURRENT_USER).open_subkey(RUN_KEY).and_then(|k| k.get_value::<String, _>("open-island")).is_ok()
+}
+
+#[cfg(target_os = "macos")]
+fn plist_path() -> Option<std::path::PathBuf> {
+    Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join("Library/LaunchAgents/org.open-island.plist"))
+}
+
+#[cfg(target_os = "macos")]
+fn autostart_set(exe: &std::path::Path, on: bool) -> Result<(), String> {
+    let path = plist_path().ok_or("no home directory")?;
+    if on {
+        let plist = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>org.open-island</string><key>ProgramArguments</key><array><string>{}</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>\n", exe.display());
+        std::fs::create_dir_all(path.parent().ok_or("no directory")?).map_err(|e| e.to_string())?;
+        std::fs::write(&path, plist).map_err(|e| e.to_string())
+    } else {
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            _ => Ok(()),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn autostart_enabled() -> bool {
+    plist_path().is_some_and(|p| p.exists())
+}
+
+#[cfg(target_os = "linux")]
+fn unit_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
+    Some(base.join("systemd/user/open-island.service"))
+}
+
+#[cfg(target_os = "linux")]
+fn autostart_set(exe: &std::path::Path, on: bool) -> Result<(), String> {
+    let path = unit_path().ok_or("no configuration directory")?;
+    let systemctl = |args: &[&str]| std::process::Command::new("systemctl").arg("--user").args(args).status().map(|s| s.success()).unwrap_or(false);
+    if on {
+        let unit = format!("[Unit]\nDescription=open-island, a dynamic island for the desktop\nPartOf=graphical-session.target\nAfter=graphical-session.target\nConditionEnvironment=WAYLAND_DISPLAY\n\n[Service]\nExecStart={}\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=graphical-session.target\n", exe.display());
+        std::fs::create_dir_all(path.parent().ok_or("no directory")?).map_err(|e| e.to_string())?;
+        std::fs::write(&path, unit).map_err(|e| e.to_string())?;
+        // enabling is enough: it starts with the next session (a running island is not started twice)
+        if systemctl(&["enable", "open-island.service"]) { Ok(()) } else { Err("the unit is written but `systemctl --user enable open-island` failed".into()) }
+    } else {
+        let _ = systemctl(&["disable", "open-island.service"]);
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+            _ => Ok(()),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn autostart_enabled() -> bool {
+    unit_path().is_some_and(|p| p.exists())
+}
+
 fn send(event: &str, payload: &str) {
     let _ = ipc::send(&if payload.is_empty() { event.to_string() } else { format!("{event} {payload}") });
 }

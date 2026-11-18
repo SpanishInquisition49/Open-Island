@@ -16,27 +16,25 @@ crates/app    window backends (Wayland layer-shell, winit), the OS services, the
 
 ## Status
 
-| | Linux (Wayland, wlr-layer-shell) | Linux (X11) / Windows / macOS (winit window) |
-|---|---|---|
-| island, springs, all faces, hover/click/scroll/keyboard | yes | yes (built and type-checked; **not yet run** on Windows/macOS) |
-| fractional scaling, click-through margin | yes | HiDPI through winit; click-through margin: no |
-| clock, timers, Pomodoro, stopwatch | yes | yes |
-| control socket (`open-island msg ...`) | yes | yes (named pipe on Windows) |
-| weather (Open-Meteo), calendars (iCal URLs), lyrics (LRCLIB) | yes | yes |
-| media (MPRIS) with cover art, several players (switch button) | yes | **not yet** (SMTC / MediaRemote) |
-| notifications | yes: full daemon (replaces mako, dunst, swaync... so each notification shows once) (pictures, app icons, timeouts, urgency, progress, resident, sync tags, per-app sounds, filters, actions, inline reply, closing signals, persistent history); watches the bus when another daemon owns the name | **not yet** |
-| volume / brightness OSD, battery, privacy dots | yes (wpctl, sysfs, pactl) | **not yet** |
-| hide under fullscreen windows | niri | **not yet** |
+| | Linux (Wayland, wlr-layer-shell) | Windows | macOS | Linux X11 |
+|---|---|---|---|---|
+| island, springs, all faces, hover / click / scroll / keyboard | yes | built, **not run** | built, **not run** | yes (a visible rectangle on NVIDIA) |
+| window | layer surface, fractional scale, click-through margin | opaque window cut to the island's shape (`SetWindowRgn`), top-most, no taskbar button | winit window, transparent | winit window |
+| clock, timers, Pomodoro, stopwatch, control socket, `notify`, `progress run`, `autostart` | yes | yes | yes | yes |
+| weather, calendars (feeds, iCloud / CalDAV), lyrics | yes | yes | yes | yes |
+| media with cover art, several players | MPRIS | SMTC (built) | **not yet** | MPRIS |
+| notifications | the island is the daemon (replaces mako, dunst, Noctalia's) | **only `open-island notify`** (Windows has no daemon to replace and gives other apps' toasts to nobody) | **only `open-island notify`** | the island is the daemon |
+| volume card, volume / mute | wpctl, pactl | Core Audio (built) | **not yet** | yes |
+| brightness, Wi-Fi / Bluetooth switches, power profile | brightnessctl, nmcli, bluetoothctl, TLP / powerprofilesctl | **not yet** (the chips hide) | **not yet** | yes |
+| battery, system page | sysfs, /proc, nvidia-smi | sysinfo + starship-battery (built) | the same (built) | yes |
+| privacy dots (microphone, camera, screen share) | pactl, /dev/video, pw-dump | the privacy registry (built) | **not yet** | yes |
+| clipboard history | wl-clipboard | arboard polling (built) | arboard polling (built) | **not yet** |
+| keep awake, night light | systemd-inhibit, wlsunset | SetThreadExecutionState; no night light | **not yet** | yes |
+| hide under fullscreen windows | niri | shell notification state (built) | **not yet** | **not yet** |
 
-| quick settings (Wi-Fi, Bluetooth, DND, keep awake, power profile, outputs), system page | yes (nmcli, bluetoothctl, systemd-inhibit, pactl, /proc) | **not yet** |
-| clipboard history (wl-clipboard), focus mode (`~/.local/bin/focus`), real audio spectrum (parec) | yes | **not yet** |
-
-The update-check card of the Luau original is not ported (it was specific to Noctalia).
-Complex scripts (Arabic, Hindi, ...) are not shaped: text is laid out glyph by glyph.
-
-On X11 with the proprietary NVIDIA driver the window cannot be transparent (the driver offers no alpha
-mode), so a black rectangle shows around the pill; Wayland has no such limit. A clipping shape for that case
-is planned.
+"built" means it type-checks for `x86_64-pc-windows-msvc` / `aarch64-apple-darwin` in `cargo check`; none of it has been
+run on those systems. The update-check card of the Luau original is not ported (it was specific to Noctalia). Complex
+scripts (Arabic, Hindi, ...) are not shaped: text is laid out glyph by glyph.
 
 ## Install (Linux)
 
@@ -48,6 +46,19 @@ cp contrib/open-island.service ~/.config/systemd/user/ && systemctl --user enabl
 
 On niri, `contrib/niri-snippet.kdl` has `spawn-at-startup` and key bindings (open, quick settings, notifications, reply,
 clipboard). The island replaces the notification daemon at start (see below); at rest it uses under 1% of a core.
+
+## Windows and macOS
+
+```sh
+cargo build --release          # the island: target\release\open-island.exe
+open-island autostart on       # Run key (Windows) / LaunchAgent (macOS)
+open-island notify "Build done" "120 tests passed"
+```
+
+Everything marked "built" above was written against the platform APIs and checked by the compiler for those targets, with
+no machine to run it on: expect rough edges, and please report them. Windows cannot hand other applications' toasts to a
+program that is not a packaged app, so on Windows and macOS notifications come from `open-island notify`, `progress run`
+and the calendar and timers.
 
 ## Build and run
 

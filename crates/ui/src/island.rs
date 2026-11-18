@@ -1106,7 +1106,7 @@ impl Island {
             Face::Clip => h = 14.0 + 34.0 + 4.0 + self.data.clipboard.len().clamp(1, 5) as f64 * 32.0 + 10.0,
             Face::FocusMini => w += self.icon_count(true) as f64 * ICON_W,
             Face::Settings => h = 14.0 + 34.0 + self.settings_content_height() + 14.0,
-            Face::Qs => h = 14.0 + 34.0 + 8.0 + 36.0 + 8.0 + 36.0 + 8.0 + 28.0 + 8.0 + 28.0 + 8.0 + 32.0 + 14.0 + if self.data.focus.is_some() { 44.0 } else { 0.0 },
+            Face::Qs => h = self.qs_layout().height,
             Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
             Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
             Face::MediaMini | Face::TimerMini | Face::MeetMini => w += self.icon_count(true) as f64 * ICON_W,
@@ -2106,7 +2106,7 @@ mod tests {
         i.data = data();
         i.push(T0, Input::StartTimer(600));
         assert_eq!(i.pages()[..2], [Page::Media, Page::Timer]);
-        assert_eq!(i.face_size(Face::Qs).1, 262.0 + DOCK_H, "room for the dock");
+        assert_eq!(i.face_size(Face::Qs).1, i.qs_layout().height + DOCK_H, "room for the dock");
         assert_eq!(i.face_size(Face::Idle).1, 28.0, "the compact pill has none");
     }
 
@@ -2406,5 +2406,38 @@ mod tests {
         let r = i.shape_rects();
         assert_eq!(r.len(), 2, "the bubble is part of the outline");
         assert!(r[1].0 > r[0].0 + r[0].2, "to the right of the pill, past the gap");
+    }
+
+    #[test]
+    fn quick_settings_hide_what_the_machine_does_not_have() {
+        let mut i = Island::new(Config::default());
+        // a bare system: DND and keep awake only, no brightness, no outputs
+        assert_eq!(i.qs_chips().len(), 2);
+        let bare = i.qs_layout();
+        assert!(bare.bri_cy.is_none() && bare.out_top.is_none());
+        i.data = data();
+        i.data.wifi = Some(true);
+        i.data.bluetooth = Some(false);
+        i.data.profile = Some("balanced".into());
+        i.data.night_light = Some(false);
+        i.data.brightness = Some(0.5);
+        i.data.sinks = vec![Sink { name: "a".into(), label: "A".into() }];
+        let full = i.qs_layout();
+        assert_eq!(i.qs_chips().len(), 6);
+        assert!(full.height > bare.height + 44.0 + 36.0, "two chip rows, a brightness row and the output row");
+        assert!(full.bri_cy.is_some() && full.out_top.is_some());
+        // the page draws at every size without escaping its own height
+        let f = fonts();
+        for (page_data, label) in [(Data::default(), "bare"), (i.data.clone(), "full")] {
+            let mut j = Island::new(Config::default());
+            j.data = page_data;
+            j.push(T0, Input::OpenPage(Page::Qs));
+            for _ in 0..150 {
+                let fr = j.tick(j.now + 8, 8.0);
+                let mut scene = Scene::new();
+                j.draw(&mut scene, &f, fr.surface, 1.0);
+            }
+            assert_eq!(j.current_face(), Face::Qs, "{label}");
+        }
     }
 }

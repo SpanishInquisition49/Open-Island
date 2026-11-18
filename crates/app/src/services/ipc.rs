@@ -54,6 +54,18 @@ fn parse(line: &str) -> Option<Input> {
     let line = line.trim();
     let (event, payload) = line.split_once(char::is_whitespace).map_or((line, ""), |(a, b)| (a, b.trim()));
     Some(match event {
+        // a notification from a script on any platform: `notify <summary> | <body>`
+        "notify" if !payload.is_empty() => {
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2_000_000);
+            let (summary, body) = payload.split_once(" | ").unwrap_or((payload, ""));
+            Input::Notification(island_ui::model::Incoming {
+                id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                app: "open-island".into(),
+                summary: summary.trim().into(),
+                body: body.trim().into(),
+                ..Default::default()
+            })
+        }
         "peek" => Input::Peek,
         "reply" => Input::StartReply,
         "open" => Input::OpenKeyboard(match payload {
@@ -126,6 +138,15 @@ mod tests {
     #[test]
     fn parses_messages() {
         assert!(matches!(parse("peek"), Some(Input::Peek)));
+        match parse("notify Build done | all 120 tests passed") {
+            Some(Input::Notification(n)) => assert_eq!((n.summary.as_str(), n.body.as_str(), n.app.as_str()), ("Build done", "all 120 tests passed", "open-island")),
+            _ => panic!("a notification"),
+        }
+        match parse("notify only a title") {
+            Some(Input::Notification(n)) => assert_eq!((n.summary.as_str(), n.body.as_str()), ("only a title", "")),
+            _ => panic!("a notification"),
+        }
+        assert!(parse("notify").is_none(), "nothing to show");
         assert!(matches!(parse("reply"), Some(Input::StartReply)));
         assert!(matches!(parse("dnd on"), Some(Input::SetDnd(true))));
         assert!(parse("dnd maybe").is_none());

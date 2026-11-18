@@ -16,6 +16,8 @@ mod services;
 fn usage() {
     eprintln!(
         "open-island {}\n\nUSAGE:\n  open-island [--backend winit|wayland]   run the island\n  open-island msg <event> [payload]       talk to a running island
+  open-island notify <title> [body]       show a notification (any platform)
+  open-island autostart on|off|status     start with the session
   open-island doctor                      what works on this machine, what is missing
   open-island --version\n\nEVENTS (for msg):\n  peek | open [page] | reply | dnd <on|off> | page <home|cal|qs|sys|notifs|media|timer|clip> | timer <25m> | pomodoro | stopwatch | timer-cancel\n  refresh (read the calendars now) | font <family|file> | calendar add <url> | calendar remove <n> | sound <file>   (settings, same as the menu)
   progress run [-l label] -- command...   (shows a command's progress)
@@ -40,6 +42,14 @@ fn main() {
             }
         }
         Some("doctor") => doctor::run(),
+        Some("notify") if args.len() >= 2 => {
+            let line = format!("notify {}", args[1..].join(" | "));
+            if !services::ipc::send(&line) {
+                eprintln!("open-island is not running");
+                std::process::exit(1);
+            }
+        }
+        Some("autostart") => std::process::exit(cli::autostart(args.get(1).map(String::as_str))),
         Some("-V") | Some("--version") | Some("version") => println!("open-island {}", env!("CARGO_PKG_VERSION")),
         Some("progress") => std::process::exit(cli::progress(&args[1..])),
         Some("-h") | Some("--help") | Some("help") => usage(),
