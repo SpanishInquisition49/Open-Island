@@ -1211,6 +1211,11 @@ impl Island {
             }
             side = kind;
         }
+        // the calendar opens on today however it was reached (a swipe, the back button, a shortcut)
+        if want == Face::Cal && (want != self.want || self.cal.year == 1970) {
+            let c = crate::clock::civil(now, self.data.utc_offset_secs);
+            self.cal = Cal { year: c.year, month: c.month, day: c.day };
+        }
         if want != self.want {
             log::debug!("face {:?} -> {:?} (shown {:?}, notif {})", self.want, want, self.shown, self.notif.is_some());
         }
@@ -1841,5 +1846,27 @@ mod tests {
         i.activate(Action::Back);
         run(&mut i, 600);
         assert!(i.edit.is_none(), "the edit does not outlive its page");
+    }
+
+    #[test]
+    fn the_calendar_always_opens_on_today() {
+        let mut i = Island::new(Config::default());
+        i.data.utc_offset_secs = 3600;
+        // reached by a swipe: the page is set without the Open action
+        i.page = Some(Page::Cal);
+        i.expand_until = T0 + 5000;
+        run(&mut i, 400);
+        let c = crate::clock::civil(i.now, 3600);
+        assert_eq!((i.cal.year, i.cal.month, i.cal.day), (c.year, c.month, c.day));
+        // browsing to another month, closing and opening again returns to today
+        i.activate(Action::CalNext);
+        assert_ne!((i.cal.year, i.cal.month), (c.year, c.month));
+        i.page = None;
+        i.expand_until = 0;
+        run(&mut i, 3000);
+        i.page = Some(Page::Cal);
+        i.expand_until = i.now + 5000;
+        run(&mut i, 400);
+        assert_eq!((i.cal.year, i.cal.month, i.cal.day), (c.year, c.month, c.day));
     }
 }
