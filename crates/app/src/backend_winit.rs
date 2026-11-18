@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowAttributes, WindowId, WindowLevel};
 
@@ -21,6 +22,10 @@ struct Shell {
     surface_logical: (f64, f64),
     animating: bool,
     next_ms: u32,
+    keyboard_on: bool,
+    hidden: bool,
+    mods: ModifiersState,
+    shape: Vec<(i32, i32, i32, i32, i32)>,
     last_redraw: Instant,
 }
 
@@ -87,9 +92,45 @@ impl Shell {
             log::error!("{e}");
         }
         self.last_redraw = Instant::now();
-        if !window.is_visible().unwrap_or(true) {
+        // under a fullscreen window the island hides (the platform service says when)
+        if self.app.fullscreen != self.hidden {
+            self.hidden = self.app.fullscreen;
+            window.set_visible(!self.hidden);
+        } else if !self.hidden && !window.is_visible().unwrap_or(true) {
             window.set_visible(true);
         }
+        // a text field needs the keyboard: ask for the focus when one opens
+        let kb = self.app.island.wants_keyboard();
+        if kb && !self.keyboard_on {
+            window.focus_window();
+        }
+        self.keyboard_on = kb;
+        self.cut_to_shape(&window);
+    }
+
+    /// Windows (and any platform without a transparent surface): cut the window to the island's outline.
+    #[cfg(target_os = "windows")]
+    fn cut_to_shape(&mut self, window: &Window) {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if self.gpu.transparent {
+            return;
+        }
+        let scale = window.scale_factor();
+        let rects: Vec<(i32, i32, i32, i32, i32)> = self.app.island.shape_rects().iter().map(|&(x, y, w, h, r)| ((x * scale).round() as i32, (y * scale).round() as i32, (w * scale).round() as i32, (h * scale).round() as i32, (r * scale).round() as i32)).collect();
+        if rects == self.shape {
+            return;
+        }
+        if let Ok(h) = window.window_handle() {
+            if let RawWindowHandle::Win32(w) = h.as_raw() {
+                crate::services::windows::set_window_shape(w.hwnd.get(), &rects);
+                self.shape = rects;
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn cut_to_shape(&mut self, _window: &Window) {
+        let _ = &self.shape;
     }
 
     fn schedule(&self, el: &ActiveEventLoop) {
@@ -150,6 +191,15 @@ impl ApplicationHandler<Wake> for Shell {
         let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor());
         match event {
             WindowEvent::CloseRequested => el.exit(),
+            WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                if let Some(k) = key_input(&event.logical_key, event.text.as_deref(), self.mods) {
+                    self.app.key(k);
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                }
+            }
             WindowEvent::RedrawRequested => self.frame(el),
             WindowEvent::Resized(s) => {
                 self.gpu.resize(s.width, s.height);
@@ -195,6 +245,44 @@ impl ApplicationHandler<Wake> for Shell {
     }
 }
 
+/// A key press as the island's text fields and navigation understand it.
+fn key_input(key: &Key, text: Option<&str>, mods: ModifiersState) -> Option<island_ui::model::KeyInput> {
+    use island_ui::model::KeyInput;
+    Some(match key {
+        Key::Named(NamedKey::Backspace) => KeyInput::Backspace,
+        Key::Named(NamedKey::Delete) => KeyInput::Delete,
+        Key::Named(NamedKey::ArrowLeft) => KeyInput::Left,
+        Key::Named(NamedKey::ArrowRight) => KeyInput::Right,
+        Key::Named(NamedKey::ArrowUp) => KeyInput::Up,
+        Key::Named(NamedKey::ArrowDown) => KeyInput::Down,
+        Key::Named(NamedKey::Home) => KeyInput::Home,
+        Key::Named(NamedKey::End) => KeyInput::End,
+        Key::Named(NamedKey::Enter) => KeyInput::Enter,
+        Key::Named(NamedKey::Escape) => KeyInput::Escape,
+        Key::Named(NamedKey::Tab) if mods.shift_key() => KeyInput::PrevPage,
+        Key::Named(NamedKey::Tab) | Key::Named(NamedKey::PageDown) => KeyInput::NextPage,
+        Key::Named(NamedKey::PageUp) => KeyInput::PrevPage,
+        Key::Character(c) if mods.control_key() && c.eq_ignore_ascii_case("v") => KeyInput::Text(paste()?),
+        _ if mods.control_key() || mods.alt_key() || mods.super_key() => return None,
+        _ => KeyInput::Text(text.filter(|t| !t.is_empty())?.to_string()),
+    })
+}
+
+/// The clipboard's text for Ctrl+V (single line, at most 2000 characters).
+fn paste() -> Option<String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let t: String = arboard::Clipboard::new().ok()?.get_text().ok()?.chars().take(2000).collect();
+        (!t.is_empty()).then_some(t)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let out = std::process::Command::new("wl-paste").args(["--no-newline", "--type", "text"]).stderr(std::process::Stdio::null()).output().ok()?;
+        let t: String = String::from_utf8_lossy(&out.stdout).chars().take(2000).collect();
+        (!t.is_empty()).then_some(t)
+    }
+}
+
 pub fn run() {
     let event_loop: EventLoop<Wake> = match EventLoop::with_user_event().build() {
         Ok(l) => l,
@@ -208,7 +296,7 @@ pub fn run() {
         let _ = proxy.send_event(Wake);
     });
     let app = App::new(waker);
-    let mut shell = Shell { app, gpu: Gpu::new(), window: None, surface_logical: (0.0, 0.0), animating: true, next_ms: 0, last_redraw: Instant::now() };
+    let mut shell = Shell { app, gpu: Gpu::new(), window: None, surface_logical: (0.0, 0.0), animating: true, next_ms: 0, keyboard_on: false, hidden: false, mods: ModifiersState::empty(), shape: vec![], last_redraw: Instant::now() };
     let _ = (TOP_MARGIN, LogicalPosition::new(0.0, 0.0));
     event_loop.set_control_flow(ControlFlow::Wait);
     if let Err(e) = event_loop.run_app(&mut shell) {

@@ -13,11 +13,13 @@ pub struct Gpu {
     renderer: Option<Renderer>,
     surface: Option<RenderSurface<'static>>,
     scene: Scene,
+    /// The surface really is transparent (otherwise the window must be cut to the island's shape).
+    pub transparent: bool,
 }
 
 impl Gpu {
     pub fn new() -> Self {
-        Self { ctx: RenderContext::new(), renderer: None, surface: None, scene: Scene::new() }
+        Self { ctx: RenderContext::new(), renderer: None, surface: None, scene: Scene::new(), transparent: false }
     }
 
     /// Attaches the window surface. `target` is anything wgpu can make a surface of (a winit window).
@@ -50,6 +52,7 @@ impl Gpu {
             .find(|m| caps.alpha_modes.contains(m));
         match mode {
             Some(m) => {
+                self.transparent = true;
                 surface.config.alpha_mode = m;
                 self.ctx.configure_surface(&surface);
             }

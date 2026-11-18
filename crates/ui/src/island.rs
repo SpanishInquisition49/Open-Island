@@ -1468,6 +1468,18 @@ impl Island {
         self.pill_rect()
     }
 
+    /// The island's outline as rounded rectangles (x, y, width, height, radius) in surface coordinates: what is
+    /// visible, for a platform that has to cut its window to that shape because it cannot be transparent.
+    pub fn shape_rects(&self) -> Vec<(f64, f64, f64, f64, f64)> {
+        let (w, h) = (self.spring.w.pos, self.spring.h.pos);
+        let r = (h / 2.0).min(30.0);
+        let mut v = vec![(self.pill_origin.0, self.pill_origin.1, w, h, r)];
+        if self.shown_side.is_some() && self.bubble_k > 0.5 {
+            v.push((self.pill_origin.0 + w + BUBBLE_GAP, self.pill_origin.1, BUBBLE_W, h, r));
+        }
+        v
+    }
+
     pub fn current_face(&self) -> Face {
         self.shown
     }
@@ -2379,5 +2391,20 @@ mod tests {
         j.data.media.as_mut().unwrap().sampled_at_ms = T0;
         run(&mut j, 600);
         assert!(j.lyric_now().is_none());
+    }
+
+    #[test]
+    fn the_outline_follows_the_pill_and_its_bubble() {
+        let mut i = Island::new(Config::default());
+        draw_frames(&mut i, 100);
+        let r = i.shape_rects();
+        assert_eq!(r.len(), 1);
+        assert_eq!((r[0].2, r[0].3, r[0].4), (150.0, 28.0, 14.0), "a 150 x 28 pill with full-round ends");
+        i.data = data();
+        i.push(T0, Input::StartTimer(60));
+        draw_frames(&mut i, 300);
+        let r = i.shape_rects();
+        assert_eq!(r.len(), 2, "the bubble is part of the outline");
+        assert!(r[1].0 > r[0].0 + r[0].2, "to the right of the pill, past the gap");
     }
 }
