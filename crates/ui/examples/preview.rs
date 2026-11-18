@@ -175,6 +175,7 @@ fn main() {
         ("timer-full", Box::new(|i, _| { i.push(NOW, Input::StartTimer(1500)); i.push(NOW, Input::Peek); })),
         ("progress-card", Box::new(|i, _| i.push(NOW, Input::Progress("64 rsync backup".into())))),
         ("progress-bubble", Box::new(|i, _| i.push(NOW - 5000, Input::Progress("64 rsync backup".into())))),
+        ("progress-done", Box::new(|i, _| { i.push(NOW, Input::Progress("64 rsync backup".into())); i.push(NOW, Input::ProgressDone("rsync backup".into())) })),
         ("osd", Box::new(|i, _| i.push(NOW, Input::Osd { kind: OsdKind::Volume, level: 0.62, muted: false }))),
         ("power-low", Box::new(|i, _| i.push(NOW, Input::Power(PowerEvent::Low)))),
         ("notif", Box::new(|i, _| i.push(NOW, Input::Notification(Incoming { id: 1, app: "Telegram".into(), summary: "Marco".into(), body: "Ci vediamo alle 18 in aula?".into(), ..Default::default() })))),

@@ -512,17 +512,18 @@ impl Island {
         let Some(op) = &self.ops.op else { return };
         let failed = op.state == OpState::Fail;
         let done = op.state == OpState::Done;
-        let tint = if failed { theme::RED } else { theme::ACCENT };
+        let tint = if failed { theme::RED } else if done { theme::GREEN } else { theme::ACCENT };
         let title = if !op.label.is_empty() { op.label.as_str() } else if failed { "Failed" } else if done { "Done" } else { "Working" };
         p.icon(if failed { "alert-triangle" } else if done { "circle-check" } else { "download" }, 36.0, h / 2.0, 22.0, tint);
         p.text(title, 60.0, h / 2.0 - 9.0, 13.0, SEMI, theme::FG, Align::Left, (w - 60.0 - 70.0) as f32);
-        p.bar(rect(60.0, h / 2.0 + 6.0, w - 60.0 - 70.0, 6.0), op.frac.unwrap_or(0.0), tint, theme::TRACK);
+        p.bar(rect(60.0, h / 2.0 + 6.0, w - 60.0 - 70.0, 6.0), if done { 1.0 } else { op.frac.unwrap_or(0.0) }, tint, theme::TRACK);
         let pct = match op.frac {
             _ if failed => "failed".to_string(),
+            _ if done => "done".to_string(),
             Some(f) => format!("{}%", (f * 100.0).round() as i32),
             None => "…".into(),
         };
-        p.text(&pct, w - 18.0, h / 2.0, 13.0, SEMI, if failed { theme::RED } else { theme::FG }, Align::Right, 60.0);
+        p.text(&pct, w - 18.0, h / 2.0, 13.0, SEMI, if failed { theme::RED } else if done { theme::GREEN } else { theme::FG }, Align::Right, 60.0);
     }
 
     fn until_text(&self, e: &calendar::Event) -> String {
@@ -1125,16 +1126,25 @@ impl Island {
                         OpState::Done => "circle-check",
                         OpState::Run => "download",
                     },
-                    o.frac.map_or("…".to_string(), |f| format!("{}%", (f * 100.0).round() as i32)),
+                    match o.state {
+                        OpState::Done => "done".to_string(),
+                        OpState::Fail => "failed".to_string(),
+                        OpState::Run => o.frac.map_or("…".to_string(), |f| format!("{}%", (f * 100.0).round() as i32)),
+                    },
                 ),
                 None => ("download", String::new()),
             },
         };
+        let tint = match (&side, self.ops.op.as_ref().map(|o| o.state)) {
+            (Side::Op, Some(OpState::Done)) => theme::GREEN,
+            (Side::Op, Some(OpState::Fail)) => theme::RED,
+            _ => theme::ACCENT,
+        };
         let tw = p.fonts.measure(&text, 12.0, SEMI) as f64;
         let group = 13.0 + 4.0 + tw;
         let x0 = (w - group) / 2.0;
-        p.icon(icon, x0 + 6.5, h / 2.0, 13.0, theme::ACCENT);
-        p.text(&text, x0 + 17.0, h / 2.0, 12.0, SEMI, theme::FG, Align::Left, 50.0);
+        p.icon(icon, x0 + 6.5, h / 2.0, 13.0, tint);
+        p.text(&text, x0 + 17.0, h / 2.0, 12.0, SEMI, if tint == theme::ACCENT { theme::FG } else { tint }, Align::Left, 50.0);
     }
 }
 
