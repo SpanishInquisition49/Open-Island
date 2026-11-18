@@ -25,6 +25,7 @@ pub fn start(rep: Reporter) {
     volume(rep.clone(), vrx);
     privacy(rep.clone());
     fullscreen(rep.clone());
+    brightness(rep.clone());
     keep_awake(rep, krx);
 }
 
@@ -43,12 +44,37 @@ pub fn command(c: Command) {
                 let _ = t.send(true);
             }
         }
+        Command::SetBrightness(v) => {
+            let pct = (v.clamp(0.0, 1.0) * 100.0).round() as i32;
+            std::thread::spawn(move || drop(powershell(&format!("(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods) | Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{Timeout=0;Brightness={pct}}}"))));
+        }
         Command::PlaySound => play_default_sound(),
         _ => {}
     }
 }
 
 // ---- sounds -------------------------------------------------------------------------------------------
+
+fn powershell(script: &str) -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    let out = std::process::Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", script]).creation_flags(0x0800_0000).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The panel brightness (laptops and tablets answer WMI; desktop monitors do not, and then the slider stays hidden).
+fn brightness(rep: Reporter) {
+    std::thread::spawn(move || {
+        let mut last = None;
+        loop {
+            let v = powershell("(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness | Select-Object -First 1).CurrentBrightness").and_then(|t| super::parse::win_brightness(&t));
+            if v != last {
+                last = v;
+                rep.patch(move |d| d.brightness = v);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+    });
+}
 
 fn play_default_sound() {
     use windows::Win32::Media::Audio::{PlaySoundW, SND_ALIAS, SND_ASYNC};

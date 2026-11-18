@@ -11,6 +11,7 @@ pub mod clipboard_history;
 pub mod caldav;
 pub mod clock;
 pub mod icons;
+pub mod parse;
 pub mod sound;
 pub mod tz;
 pub mod ipc;
@@ -35,6 +36,8 @@ pub mod sysmon;
 pub mod generic;
 #[cfg(not(target_os = "linux"))]
 pub mod other;
+#[cfg(target_os = "macos")]
+pub mod macos;
 #[cfg(target_os = "windows")]
 pub mod windows;
 

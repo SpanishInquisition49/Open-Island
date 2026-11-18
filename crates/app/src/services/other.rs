@@ -12,6 +12,8 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, _settings: std::sync::Arc
     super::generic::start_clipboard(rep.clone());
     #[cfg(target_os = "windows")]
     super::windows::start(rep.clone());
+    #[cfg(target_os = "macos")]
+    super::macos::start(rep.clone());
     std::thread::spawn(move || {
         for c in cmd_rx {
             match c {
@@ -19,7 +21,9 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, _settings: std::sync::Arc
                 Command::RestoreClipboard(t) => super::generic::restore_clipboard(&t),
                 #[cfg(target_os = "windows")]
                 other => super::windows::command(other),
-                #[cfg(not(target_os = "windows"))]
+                #[cfg(target_os = "macos")]
+                other => super::macos::command(other),
+                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
                 _ => {}
             }
         }
