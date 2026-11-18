@@ -108,9 +108,9 @@ fn first_url(text: &str) -> Option<String> {
 }
 
 /// Meeting links people put in the location, description or URL (Teams, Meet, Zoom, ...).
-fn meeting_url(url: &Option<String>, location: &str, description: &str) -> Option<String> {
-    let known = ["teams.microsoft.com", "meet.google.com", "zoom.us", "webex.com", "whereby.com", "meet.jit.si"];
-    for src in [location, description] {
+fn meeting_url(url: &Option<String>, conference: &str, location: &str, description: &str) -> Option<String> {
+    let known = ["teams.microsoft.com", "teams.live.com", "meet.google.com", "zoom.us", "zoomgov.com", "webex.com", "whereby.com", "meet.jit.si", "gotomeet.me", "gotomeeting.com", "bluejeans.com", "around.co", "slack.com/huddle", "discord.gg", "skype.com", "chime.aws", "meet.goto.com", "whereby.com", "tuple.app"];
+    for src in [conference, location, description] {
         if let Some(u) = first_url(src).filter(|u| known.iter().any(|k| u.contains(k))) {
             return Some(u);
         }
@@ -319,6 +319,8 @@ struct Raw {
     location: String,
     description: String,
     url: Option<String>,
+    /// Google's `X-GOOGLE-CONFERENCE` (the Meet link of an invitation).
+    conference: String,
     start: Option<When>,
     end: Option<When>,
     duration_ms: Option<i64>,
@@ -356,6 +358,7 @@ pub fn parse_in(text: &str, off: OffsetFn, from_ms: i64, to_ms: i64) -> Vec<Even
             "LOCATION" => r.location = unescape(value),
             "DESCRIPTION" => r.description = unescape(value),
             "URL" => r.url = Some(value.to_string()),
+            "X-GOOGLE-CONFERENCE" | "X-MICROSOFT-SKYPETEAMSMEETINGURL" => r.conference = value.to_string(),
             "DTSTART" => r.start = parse_when(head, value),
             "DTEND" => r.end = parse_when(head, value),
             "DURATION" => r.duration_ms = parse_duration(value),
@@ -381,7 +384,7 @@ pub fn parse_in(text: &str, off: OffsetFn, from_ms: i64, to_ms: i64) -> Vec<Even
             (None, None) if start.date_only => 86_400_000,
             _ => 0,
         };
-        let url = meeting_url(&r.url, &r.location, &r.description);
+        let url = meeting_url(&r.url, &r.conference, &r.location, &r.description);
         let mut push = |s: i64| {
             if s < to_ms && s + len.max(1) > from_ms {
                 events.push(Event { id: format!("{}@{}", r.uid, s), title: r.summary.clone(), start_ms: s, end_ms: s + len, all_day: start.date_only, url: url.clone(), color: None, calendar: String::new() });
@@ -434,6 +437,15 @@ mod tests {
     }
 
     const ICS: &str = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a1\r\nSUMMARY:Reti di calcolatori\\, lezione\r\nDTSTART:20261118T153000Z\r\nDTEND:20261118T170000Z\r\nLOCATION:https://teams.microsoft.com/l/meetup-join/abc\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:a2\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:20261120\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:a3\r\nSUMMARY:Weekly\r\n sync\r\nDTSTART:20261116T090000\r\nDTEND:20261116T093000\r\nRRULE:FREQ=WEEKLY;COUNT=3\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+    #[test]
+    fn finds_the_meeting_link_wherever_the_invitation_puts_it() {
+        let ev = |extra: &str| parse(&format!("BEGIN:VEVENT\r\nUID:m\r\nSUMMARY:Sync\r\nDTSTART:20261118T100000Z\r\nDTEND:20261118T103000Z\r\n{extra}\r\nEND:VEVENT"), 0, 0, i64::MAX).remove(0).url;
+        assert_eq!(ev("X-GOOGLE-CONFERENCE:https://meet.google.com/abc-defg-hij"), Some("https://meet.google.com/abc-defg-hij".into()));
+        assert_eq!(ev("DESCRIPTION:Join: https://us02web.zoom.us/j/123?pwd=x\\nBye"), Some("https://us02web.zoom.us/j/123?pwd=x".into()), "in the description, not swallowing the next line");
+        assert_eq!(ev("DESCRIPTION:Notes at https://example.org/doc\r\nLOCATION:https://webex.com/meet/me"), Some("https://webex.com/meet/me".into()), "a known service beats a random link");
+        assert_eq!(ev("DESCRIPTION:no link here"), None);
+    }
 
     #[test]
     fn reads_events() {
