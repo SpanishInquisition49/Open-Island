@@ -16,6 +16,7 @@ vello = "0.12"
 winit = "0.30"
 pollster = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10"
 interprocess = "2"
 serde_json = "1"
 roxmltree = "0.20"
@@ -29,7 +30,9 @@ env_logger = "0.11"
 [target.'cfg(target_os = "linux")'.dependencies]
 ureq = { version = "3", default-features = false, features = ["rustls", "json", "gzip"] }
 # CalDAV needs PROPFIND and REPORT, which ureq refuses
-attohttpc = { version = "0.32", default-features = false, features = ["tls-rustls-native-roots-ring"] }
+attohttpc = { version = "0.32", default-features = false, features = ["tls-rustls-webpki-roots"] }
+# ureq uses ring and attohttpc aws-lc: with both present rustls cannot pick a default, so one is installed at start
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 smithay-client-toolkit = "0.20"
 wayland-client = "0.31"

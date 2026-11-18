@@ -10,7 +10,20 @@ use island_ui::model::Weather;
 use std::collections::HashMap;
 use std::time::Duration;
 
+/// rustls needs a default crypto provider and two are linked (ring through ureq, aws-lc through attohttpc): ring is
+/// installed once, before any TLS connection.
+pub fn init_tls() {
+    #[cfg(target_os = "linux")]
+    {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        });
+    }
+}
+
 pub fn agent() -> ureq::Agent {
+    init_tls();
     let b = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(15))).user_agent("open-island");
     #[cfg(not(target_os = "linux"))]
     let b = b.tls_config(ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::NativeTls).build());
@@ -94,11 +107,9 @@ pub fn parse_weather(v: &serde_json::Value) -> Option<Weather> {
 /// Reads every calendar source; a source that fails keeps its last events (a dropped connection must not empty
 /// the agenda). Returns the events (sorted), the problems, and whether at least one source was read.
 fn fetch_calendars(s: &Settings, cache: &mut HashMap<String, Vec<Event>>) -> (Vec<Event>, Vec<String>, bool) {
-    use chrono::Offset;
-    let off = chrono::Local::now().offset().fix().local_minus_utc();
     let now = chrono::Utc::now().timestamp_millis();
     let (from, to) = (now - 86_400_000, now + 62 * 86_400_000);
-    let results = s.calendars.iter().enumerate().map(|(i, src)| (source_key(src), src.detail(), fetch_source(src, i, off, from, to))).collect();
+    let results = s.calendars.iter().enumerate().map(|(i, src)| (source_key(src), src.detail(), fetch_source(src, i, from, to))).collect();
     merge_results(results, cache)
 }
 
@@ -130,7 +141,7 @@ pub fn merge_results(results: Vec<(String, String, Result<Vec<Event>, String>)>,
 }
 
 /// One source's events, named and coloured.
-fn fetch_source(src: &crate::config::CalendarSource, i: usize, off: i32, from: i64, to: i64) -> Result<Vec<Event>, String> {
+fn fetch_source(src: &crate::config::CalendarSource, i: usize, from: i64, to: i64) -> Result<Vec<Event>, String> {
     let default_color = crate::config::PALETTE[i % crate::config::PALETTE.len()];
     match &src.kind {
         CalendarKind::Ics { url } => {
@@ -139,9 +150,9 @@ fn fetch_source(src: &crate::config::CalendarSource, i: usize, off: i32, from: i
             let text = agent().get(&url).call().and_then(|mut r| r.body_mut().read_to_string()).map_err(|e| short(&e.to_string()))?;
             let name = if src.name.is_empty() { island_core::ics::calendar_name(&text).unwrap_or_else(|| src.detail()) } else { src.name.clone() };
             let color = src.color.unwrap_or(default_color);
-            Ok(island_core::ics::parse(&text, off, from, to).into_iter().map(|e| Event { color: Some(color), calendar: name.clone(), ..e }).collect())
+            Ok(island_core::ics::parse_in(&text, &super::tz::offset, from, to).into_iter().map(|e| Event { color: Some(color), calendar: name.clone(), ..e }).collect())
         }
-        CalendarKind::CalDav { .. } => fetch_caldav(src, off, from, to, default_color),
+        CalendarKind::CalDav { .. } => fetch_caldav(src, from, to, default_color),
     }
 }
 
@@ -151,6 +162,7 @@ fn short(s: &str) -> String {
 
 /// One DAV request; Err carries a sentence a person can act on. (ureq refuses PROPFIND and REPORT.)
 fn dav(method: &str, url: &str, auth: &str, depth: &str, body: &str) -> Result<String, String> {
+    init_tls();
     let method = attohttpc::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
     let resp = attohttpc::RequestBuilder::try_new(method, url)
         .map_err(|e| short(&e.to_string()))?
@@ -178,7 +190,7 @@ fn caldav_password(password: &str, cmd: &str) -> Result<String, String> {
     if out.status.success() && !pw.is_empty() { Ok(pw) } else { Err("password_cmd printed nothing".into()) }
 }
 
-fn fetch_caldav(src: &crate::config::CalendarSource, off: i32, from: i64, to: i64, default_color: (u8, u8, u8)) -> Result<Vec<Event>, String> {
+fn fetch_caldav(src: &crate::config::CalendarSource, from: i64, to: i64, default_color: (u8, u8, u8)) -> Result<Vec<Event>, String> {
     use super::caldav as cd;
     let CalendarKind::CalDav { server, user, password, password_cmd } = &src.kind else { return Ok(vec![]) };
     let auth = cd::basic_auth(user, &caldav_password(password, password_cmd)?);
@@ -202,7 +214,7 @@ fn fetch_caldav(src: &crate::config::CalendarSource, off: i32, from: i64, to: i6
         let name = if calendars.len() == 1 && !src.name.is_empty() { src.name.clone() } else { cal.name.clone() };
         let color = src.color.or(cal.color).unwrap_or(default_color);
         for ics in cd::parse_report(&xml) {
-            out.extend(island_core::ics::parse(&ics, off, from, to).into_iter().map(|e| Event { color: Some(color), calendar: name.clone(), ..e }));
+            out.extend(island_core::ics::parse_in(&ics, &super::tz::offset, from, to).into_iter().map(|e| Event { color: Some(color), calendar: name.clone(), ..e }));
         }
     }
     Ok(out)
@@ -351,7 +363,7 @@ mod caldav_tests {
     fn reads_a_caldav_account_end_to_end() {
         let auth = super::super::caldav::basic_auth("me@icloud.com", "app-pass");
         let server = mock(auth);
-        let evs = fetch_caldav(&source(&server, "app-pass"), 0, 0, i64::MAX, (1, 2, 3)).expect("signs in and reads");
+        let evs = fetch_caldav(&source(&server, "app-pass"), 0, i64::MAX, (1, 2, 3)).expect("signs in and reads");
         assert_eq!(evs.len(), 1, "{evs:?}");
         assert_eq!(evs[0].title, "Dentista");
         assert_eq!(evs[0].calendar, "Account", "a single calendar takes the account's name");
@@ -359,15 +371,15 @@ mod caldav_tests {
         // a colour chosen for the account wins
         let mut s = source(&server, "app-pass");
         s.color = Some((9, 9, 9));
-        assert_eq!(fetch_caldav(&s, 0, 0, i64::MAX, (1, 2, 3)).unwrap()[0].color, Some((9, 9, 9)));
+        assert_eq!(fetch_caldav(&s, 0, i64::MAX, (1, 2, 3)).unwrap()[0].color, Some((9, 9, 9)));
     }
 
     #[test]
     fn a_wrong_password_says_so() {
         let server = mock(super::super::caldav::basic_auth("me@icloud.com", "right"));
-        let err = fetch_caldav(&source(&server, "wrong"), 0, 0, i64::MAX, (1, 2, 3)).unwrap_err();
+        let err = fetch_caldav(&source(&server, "wrong"), 0, i64::MAX, (1, 2, 3)).unwrap_err();
         assert!(err.contains("sign-in failed"), "{err}");
-        assert!(fetch_caldav(&source(&server, ""), 0, 0, i64::MAX, (1, 2, 3)).unwrap_err().contains("no password"));
+        assert!(fetch_caldav(&source(&server, ""), 0, i64::MAX, (1, 2, 3)).unwrap_err().contains("no password"));
     }
 
     #[test]
@@ -375,5 +387,50 @@ mod caldav_tests {
         assert_eq!(caldav_password("", "echo secret-from-cmd").unwrap(), "secret-from-cmd");
         assert_eq!(caldav_password("plain", "").unwrap(), "plain");
         assert!(caldav_password("plain", "true").is_err(), "a command that prints nothing is an error");
+    }
+}
+
+/// A developer's lens, not a test: `ICS_FILE=feed.ics cargo test -p open-island inspect_ics -- --ignored --nocapture`
+/// prints the events of the next days the way the island reads a feed.
+#[cfg(test)]
+mod inspect {
+    #[test]
+    #[ignore]
+    fn inspect_ics() {
+        let Ok(path) = std::env::var("ICS_FILE") else { return };
+        let text = std::fs::read_to_string(path).unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        let evs = island_core::ics::parse_in(&text, &super::super::tz::offset, now - 86_400_000, now + 4 * 86_400_000);
+        for e in evs {
+            let t = |ms: i64| chrono::DateTime::from_timestamp_millis(ms).unwrap().with_timezone(&chrono::Local).format("%a %d %H:%M").to_string();
+            println!("{} - {}  {}", t(e.start_ms), t(e.end_ms), e.title);
+        }
+    }
+}
+
+/// A developer's lens: reads the CalDAV accounts of the real configuration (read-only) and prints the next days:
+/// `cargo test -p open-island inspect_caldav -- --ignored --nocapture`.
+#[cfg(test)]
+mod inspect_caldav {
+    #[test]
+    #[ignore]
+    fn inspect_caldav() {
+        let s = crate::config::load();
+        let now = chrono::Utc::now().timestamp_millis();
+        for (i, src) in s.calendars.iter().enumerate() {
+            if !matches!(src.kind, crate::config::CalendarKind::CalDav { .. }) {
+                continue;
+            }
+            match super::fetch_caldav(src, now - 86_400_000, now + 4 * 86_400_000, crate::config::PALETTE[i % 8]) {
+                Err(e) => println!("ERROR {e}"),
+                Ok(evs) => {
+                    println!("{} events", evs.len());
+                    for e in evs {
+                        let t = |ms: i64| chrono::DateTime::from_timestamp_millis(ms).unwrap().with_timezone(&chrono::Local).format("%a %d %H:%M").to_string();
+                        println!("{} - {}  [{}] {}", t(e.start_ms), t(e.end_ms), e.calendar, e.title);
+                    }
+                }
+            }
+        }
     }
 }

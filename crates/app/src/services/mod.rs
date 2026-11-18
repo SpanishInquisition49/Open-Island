@@ -12,6 +12,7 @@ pub mod caldav;
 pub mod clock;
 pub mod icons;
 pub mod sound;
+pub mod tz;
 pub mod ipc;
 pub mod net;
 #[cfg(target_os = "linux")]
