@@ -2,7 +2,10 @@
 
 mod icon_table;
 pub mod clock;
-pub mod model;
+pub mod faces;
+pub mod island;
 pub mod paint;
+pub mod model;
 pub mod text;
 pub mod theme;
+pub use island::{Action, Config, Frame, Island};
