@@ -99,8 +99,10 @@ impl Island {
             Face::Sys => self.face_sys(p, w, h),
             Face::Notifs => self.face_notifs(p, w, h),
             Face::Clip => self.face_clip(p, w, h),
+            Face::FocusMini => self.face_focus_mini(p, w, h),
+            Face::FocusFull => self.face_focus_full(p, w, h),
             // not part of this build (no clipboard history, focus mode or update check yet)
-            Face::FocusMini | Face::FocusFull | Face::Update => {}
+            Face::Update => {}
         }
     }
 
@@ -616,7 +618,14 @@ impl Island {
         };
         chip(p, 1, 0, "coffee", "Keep awake", d.keep_awake, Action::Cmd(Command::ToggleKeepAwake));
         chip(p, 1, 1, picon, &plabel, profile == "performance", Action::Cmd(Command::NextProfile));
-        let sy = 14.0 + 34.0 + 8.0 + 2.0 * 44.0 + 14.0;
+        let mut rows = 2.0;
+        if let Some(f) = d.focus {
+            let label = if f.active { self.focus_minutes_left().map_or("Focus · on".to_string(), |m| format!("Focus · {m} min left")) } else { "Focus 50 min".to_string() };
+            let y = 14.0 + 34.0 + 8.0 + 2.0 * 44.0;
+            p.chip(rect(14.0, y, w - 28.0, 36.0), "target", &label, f.active, Action::Cmd(if f.active { Command::StopFocus } else { Command::StartFocus(50) }));
+            rows = 3.0;
+        }
+        let sy = 14.0 + 34.0 + 8.0 + rows * 44.0 + 14.0;
         self.slider_row(p, w, sy, if d.muted { "volume-3" } else { "volume" }, d.volume, Action::VolumeBar);
         self.slider_row(p, w, sy + 36.0, "brightness-half", d.brightness, Action::BrightnessBar);
         let out = d.sinks.iter().find(|s| Some(&s.name) == d.sink.as_ref());
@@ -713,6 +722,27 @@ impl Island {
         }
     }
 
+    fn face_focus_mini(&self, p: P, w: f64, h: f64) {
+        let cy = h / 2.0;
+        p.icon("target", 24.0, cy, 15.0, theme::ACCENT);
+        p.text("Focus", 40.0, cy, 12.0, SEMI, theme::FG, Align::Left, 60.0);
+        let mut right = self.pill_clock(p, w - 14.0, cy);
+        right = self.status_icons(p, right, cy, 13.0);
+        let left = self.focus_minutes_left().map_or("on".to_string(), |m| format!("{m} min"));
+        p.text(&left, right, cy, 12.0, REG, theme::DIM, Align::Right, 70.0);
+        p.hit(rect(0.0, 0.0, w, h), Action::Open(Page::Focus));
+    }
+
+    fn face_focus_full(&self, p: P, w: f64, _h: f64) {
+        let label = self.focus_minutes_left().map_or("Focus on".to_string(), |m| format!("{m} min left"));
+        let tw = p.fonts.measure(&label, 22.0, SEMI) as f64;
+        let x = (w - (22.0 + 10.0 + tw)) / 2.0;
+        p.icon("target", x + 11.0, 30.0, 22.0, theme::ACCENT);
+        p.text(&label, x + 32.0, 30.0, 22.0, SEMI, theme::FG, Align::Left, (w - 60.0) as f32);
+        p.text("Sites blocked · notifications silenced", w / 2.0, 56.0, 11.0, REG, theme::DIM, Align::Center, (w - 28.0) as f32);
+        self.button_row(p, &[("End focus", Action::Cmd(Command::StopFocus))], w / 2.0, 88.0);
+    }
+
     fn face_clip(&self, p: P, w: f64, _h: f64) {
         let hy = self.page_header(p, w, "Clipboard");
         p.text("click to copy", w - 14.0, hy, 11.0, REG, theme::DIM, Align::Right, 120.0);
@@ -772,7 +802,7 @@ impl Island {
                 _ => duration::fmt_bubble(self.remaining_ms()),
             }),
             Side::Meeting => ("calendar-event", self.next_event().map(|e| duration::fmt_bubble((e.start_ms - self.now).max(0))).unwrap_or_default()),
-            Side::Focus => ("target", "on".into()),
+            Side::Focus => ("target", self.focus_minutes_left().map_or("on".to_string(), |m| format!("{m}m"))),
             Side::Media => ("music", String::new()),
             Side::Op => match &self.ops.op {
                 Some(o) => (

@@ -298,6 +298,10 @@ impl Island {
             }
             Input::Key(k) => self.on_key(k),
             Input::StartReply => self.start_reply(),
+            Input::SetDnd(on) => {
+                self.data.dnd = on;
+                self.pending.push(Command::SetDnd(on));
+            }
             Input::Spectrum(v) => {
                 self.spectrum = v;
                 self.spectrum_at = now;
@@ -666,7 +670,7 @@ impl Island {
         face::swipe_pages(
             self.data.media.is_some(),
             self.timer.is_some(),
-            false,
+            self.focus_active(),
             self.soon().is_some(),
             self.ops.op.is_some(),
             !self.history.is_empty(),
@@ -678,6 +682,17 @@ impl Island {
             return None;
         }
         calendar::soon(&self.data.events, self.now, self.cfg.meeting_lead_ms)
+    }
+
+    pub(crate) fn focus_active(&self) -> bool {
+        self.data.focus.is_some_and(|f| f.active)
+    }
+
+    /// Minutes of focus left, when the end is known.
+    pub(crate) fn focus_minutes_left(&self) -> Option<i64> {
+        let f = self.data.focus.filter(|f| f.active)?;
+        let end = f.end_epoch?;
+        Some(((end * 1000 - self.now) as f64 / 60_000.0).ceil().max(0.0) as i64)
     }
 
     pub(crate) fn next_event(&self) -> Option<&calendar::Event> {
@@ -799,7 +814,8 @@ impl Island {
             Face::Notif if self.notif.as_ref().is_some_and(|n| n.progress.is_some()) => h += 14.0,
             Face::Notifs => h = 14.0 + 34.0 + 6.0 + self.history.len().clamp(1, 5) as f64 * 46.0 + if self.history.is_empty() { 20.0 } else { 8.0 },
             Face::Clip => h = 14.0 + 34.0 + 4.0 + self.data.clipboard.len().clamp(1, 5) as f64 * 32.0 + 10.0,
-            Face::Qs => h = 14.0 + 34.0 + 8.0 + 36.0 + 8.0 + 36.0 + 8.0 + 28.0 + 8.0 + 28.0 + 8.0 + 32.0 + 14.0,
+            Face::FocusMini => w += self.icon_count(true) as f64 * ICON_W,
+            Face::Qs => h = 14.0 + 34.0 + 8.0 + 36.0 + 8.0 + 36.0 + 8.0 + 28.0 + 8.0 + 28.0 + 8.0 + 32.0 + 14.0 + if self.data.focus.is_some() { 44.0 } else { 0.0 },
             Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
             Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
             Face::MediaMini | Face::TimerMini | Face::MeetMini => w += self.icon_count(true) as f64 * ICON_W,
@@ -891,7 +907,7 @@ impl Island {
             media,
             lyrics: media && self.lyric_lines.is_some(),
             timer: self.timer.is_some(),
-            focus: false,
+            focus: self.focus_active(),
             soon: self.soon().is_some(),
         };
         (snap, big)
@@ -1425,5 +1441,84 @@ mod tests {
             i.draw(&mut scene, &f, fr.surface, 2.0);
         }
         assert_eq!(i.current_face(), Face::Reply);
+    }
+
+    #[test]
+    fn focus_shows_its_minutes_and_a_bubble_beside_music() {
+        let mut i = Island::new(Config::default());
+        i.data.focus = Some(Focus { active: true, end_epoch: Some(T0 / 1000 + 23 * 60 - 5) });
+        run(&mut i, 600);
+        assert_eq!(i.current_face(), Face::FocusMini);
+        assert_eq!(i.focus_minutes_left(), Some(23));
+        i.data = data();
+        i.data.focus = Some(Focus { active: true, end_epoch: None });
+        run(&mut i, 600);
+        assert_eq!(i.current_face(), Face::MediaMini);
+        assert_eq!(i.shown_side, Some(Side::Focus));
+        assert_eq!(i.focus_minutes_left(), None);
+        i.data.focus = Some(Focus { active: false, end_epoch: None });
+        assert!(!i.focus_active());
+    }
+
+    #[test]
+    fn quick_settings_toggles_answer_at_once() {
+        let mut i = Island::new(Config::default());
+        i.data.wifi = Some(true);
+        i.data.bluetooth = Some(false);
+        assert_eq!(i.activate(Action::Cmd(Command::ToggleWifi)), vec![Command::ToggleWifi]);
+        assert_eq!(i.data.wifi, Some(false));
+        i.activate(Action::Cmd(Command::ToggleBluetooth));
+        assert_eq!(i.data.bluetooth, Some(true));
+        i.activate(Action::Cmd(Command::ToggleKeepAwake));
+        assert!(i.data.keep_awake);
+        i.data.wifi = None;
+        i.activate(Action::Cmd(Command::ToggleWifi));
+        assert_eq!(i.data.wifi, None, "unknown stays unknown until the next sample");
+    }
+
+    #[test]
+    fn clipboard_rows_copy_back_and_show_a_check() {
+        let mut i = Island::new(Config::default());
+        i.data.clipboard = vec!["one".into(), "two".into()];
+        assert_eq!(i.activate(Action::ClipRestore(1)), vec![Command::RestoreClipboard("two".into())]);
+        assert!(i.copied.is_some_and(|(j, until)| j == 1 && until > i.now));
+        assert!(i.activate(Action::ClipRestore(9)).is_empty());
+    }
+
+    #[test]
+    fn dnd_from_a_script_and_spectrum_levels() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::SetDnd(true));
+        assert!(i.data.dnd);
+        assert_eq!(i.take_commands(), vec![Command::SetDnd(true)]);
+        assert_eq!(i.dnd_changed(), Some(true));
+        assert_eq!(i.dnd_changed(), None);
+        i.data = data();
+        run(&mut i, 600);
+        assert!(i.wants_spectrum(), "music plays on mains power");
+        i.data.battery = Some(Battery { percent: 50.0, charging: false, on_ac: false });
+        assert!(!i.wants_spectrum(), "not on battery");
+        i.push(i.now, Input::Spectrum(vec![0.5; 8]));
+        assert_eq!(i.spectrum.len(), 8);
+    }
+
+    #[test]
+    fn the_new_pages_draw() {
+        let f = fonts();
+        for page in [Page::Clip, Page::Focus, Page::Qs, Page::Sys] {
+            let mut i = Island::new(Config::default());
+            i.data = data();
+            i.data.clipboard = vec!["a".into(); 7];
+            i.data.focus = Some(Focus { active: true, end_epoch: Some(T0 / 1000 + 600) });
+            i.data.system = Some(SystemStats { cores: vec![10.0; 12], ..Default::default() });
+            for _ in 0..200 {
+                let t = i.now + 8;
+                let fr = i.tick(t, 8.0);
+                i.push(t, Input::OpenPage(page));
+                let mut scene = Scene::new();
+                i.draw(&mut scene, &f, fr.surface, 1.0);
+                assert!(fr.surface.0 < 1500.0 && fr.surface.1 < 1200.0 && fr.surface.1.is_finite(), "{page:?}");
+            }
+        }
     }
 }

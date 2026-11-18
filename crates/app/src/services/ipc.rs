@@ -21,6 +21,11 @@ fn parse(line: &str) -> Option<Input> {
     Some(match event {
         "peek" => Input::Peek,
         "reply" => Input::StartReply,
+        "dnd" => match payload {
+            "on" => Input::SetDnd(true),
+            "off" => Input::SetDnd(false),
+            _ => return None,
+        },
         "progress" => Input::Progress(payload.into()),
         "progress-done" => Input::ProgressDone(payload.into()),
         "progress-fail" => Input::ProgressFail(payload.into()),
@@ -36,6 +41,7 @@ fn parse(line: &str) -> Option<Input> {
             "sys" => Page::Sys,
             "notifs" | "notifications" => Page::Notifs,
             "media" => Page::Media,
+            "focus" => Page::Focus,
             "clip" | "clipboard" => Page::Clip,
             "timer" => Page::Timer,
             _ => return None,
@@ -87,6 +93,8 @@ mod tests {
     fn parses_messages() {
         assert!(matches!(parse("peek"), Some(Input::Peek)));
         assert!(matches!(parse("reply"), Some(Input::StartReply)));
+        assert!(matches!(parse("dnd on"), Some(Input::SetDnd(true))));
+        assert!(parse("dnd maybe").is_none());
         assert!(matches!(parse("progress 42 Copying"), Some(Input::Progress(p)) if p == "42 Copying"));
         assert!(matches!(parse("timer 25m"), Some(Input::StartTimer(1500))));
         assert!(matches!(parse("page cal"), Some(Input::OpenPage(_))));

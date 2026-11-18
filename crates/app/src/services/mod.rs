@@ -19,6 +19,8 @@ pub mod notif;
 #[cfg(target_os = "linux")]
 pub mod clipboard;
 #[cfg(target_os = "linux")]
+pub mod focus;
+#[cfg(target_os = "linux")]
 pub mod niri;
 #[cfg(target_os = "linux")]
 pub mod quick;

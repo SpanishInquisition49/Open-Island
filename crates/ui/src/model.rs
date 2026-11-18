@@ -106,6 +106,14 @@ pub struct SystemStats {
     pub load: Option<[f32; 3]>,
 }
 
+/// The study mode (`~/.local/bin/focus`): sites blocked and notifications silenced until `end_epoch`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Focus {
+    pub active: bool,
+    /// Epoch seconds of the planned end, when known.
+    pub end_epoch: Option<i64>,
+}
+
 /// Everything sampled from the system, replaced as a whole whenever something changes.
 #[derive(Clone, Default)]
 pub struct Data {
@@ -127,6 +135,8 @@ pub struct Data {
     pub sinks: Vec<Sink>,
     pub sink: Option<String>,
     pub system: Option<SystemStats>,
+    /// None when there is no focus script on this machine.
+    pub focus: Option<Focus>,
     /// Text copied recently, newest first (password-manager entries are never in it).
     pub clipboard: Vec<String>,
     /// Lyrics of the current track, as LRC text (the platform layer fetches them).
@@ -224,6 +234,8 @@ pub enum Input {
     Spectrum(Vec<f32>),
     /// Open the island for a few seconds ("peek").
     Peek,
+    /// Do not disturb on/off, from a script (focus mode).
+    SetDnd(bool),
     /// Open the island on a page (shortcut, IPC).
     OpenPage(island_core::face::Page),
 }
@@ -248,6 +260,8 @@ pub enum Command {
     NextSink,
     /// Re-read the quick-settings state (the page was just opened).
     RefreshQuick,
+    StartFocus(u32),
+    StopFocus,
     /// Put this text back on the clipboard.
     RestoreClipboard(String),
     OpenUrl(String),
