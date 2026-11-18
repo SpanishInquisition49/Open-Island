@@ -195,34 +195,37 @@ impl Island {
         p.text(&m.title, 92.0, 30.0, 14.0, SEMI, theme::FG, Align::Left, (w - 92.0 - 56.0) as f32);
         p.text(&m.artist, 92.0, 50.0, 12.0, REG, theme::DIM, Align::Left, (w - 92.0 - 56.0) as f32);
         self.equalizer(p, w - 40.0, 30.0, 4, 14.0, 3.0, m.playing, self.art_tint());
-        if m.players > 1 {
-            p.icon_button(w - 70.0, 30.0, 28.0, "arrows-exchange", 14.0, Action::CyclePlayer);
-        }
-        // progress + times
+        // progress (a slider you can drag) + times
         let pos = self.media_position();
         let frac = if m.length_ms > 0.0 { pos / m.length_ms } else { 0.0 };
-        let bar = rect(92.0, 62.0, w - 92.0 - 14.0, 5.0);
-        p.bar(bar, frac, theme::FG, theme::TRACK);
+        let bar = rect(92.0, 62.0, w - 92.0 - 18.0, 5.0);
         if m.can_seek {
-            p.hit(rect(bar.x0, bar.y0 - 6.0, bar.width(), 17.0), Action::SeekBar);
+            p.slider(bar, frac, Action::SeekBar);
+        } else {
+            p.bar(bar, frac, theme::FG, theme::TRACK);
         }
-        p.text(&duration::fmt_elapsed(pos as i64), bar.x0, 77.0, 10.0, REG, theme::DIM, Align::Left, 60.0);
+        p.text(&duration::fmt_elapsed(pos as i64), bar.x0, 80.0, 10.0, REG, theme::DIM, Align::Left, 60.0);
         let rem = format!("-{}", duration::fmt_elapsed((m.length_ms - pos).max(0.0) as i64));
-        p.text(&rem, bar.x1, 77.0, 10.0, REG, theme::DIM, Align::Right, 60.0);
-        // controls
-        let cy = 112.0;
+        p.text(&rem, bar.x1, 80.0, 10.0, REG, theme::DIM, Align::Right, 60.0);
+        // controls: previous, a white play/pause disc, next
+        let cy = 114.0;
         let cx = w / 2.0;
-        p.icon_button(cx - 56.0, cy, 34.0, "player-skip-back", 20.0, Action::Cmd(Command::MediaPrevious));
-        let icon = if m.playing { "player-pause" } else { "player-play" };
-        p.icon_button(cx, cy, 40.0, icon, 26.0, Action::Cmd(Command::MediaPlayPause));
-        p.icon_button(cx + 56.0, cy, 34.0, "player-skip-forward", 20.0, Action::Cmd(Command::MediaNext));
+        p.icon_button(cx - 64.0, cy, 36.0, "player-skip-back", 20.0, Action::Cmd(Command::MediaPrevious));
+        let disc = rect(cx - 22.0, cy - 22.0, 44.0, 44.0);
+        p.circle(cx, cy, if p.hovered(disc) { 23.0 } else { 22.0 }, theme::FG);
+        p.icon(if m.playing { "player-pause" } else { "player-play" }, cx, cy, 22.0, theme::ON_ACCENT);
+        p.hit(disc, Action::Cmd(Command::MediaPlayPause));
+        p.icon_button(cx + 64.0, cy, 36.0, "player-skip-forward", 20.0, Action::Cmd(Command::MediaNext));
+        if m.players > 1 {
+            p.icon_button(cx - 128.0, cy, 34.0, "arrows-exchange", 17.0, Action::CyclePlayer);
+        }
         if lyric {
             if let Some((prev, cur, next)) = self.lyric_window() {
                 let wmax = w as f32 - 40.0;
-                p.text(&prev, w / 2.0, 150.0, 11.0, REG, with_alpha(theme::FG, 0.4), Align::Center, wmax);
+                p.text(&prev, w / 2.0, 158.0, 11.0, REG, with_alpha(theme::FG, 0.4), Align::Center, wmax);
                 let fs = island_core::lyrics::fit_font(&cur, wmax, 15.0, 11.0);
-                p.text(&cur, w / 2.0, 174.0, fs, SEMI, theme::FG, Align::Center, wmax);
-                p.text(&next, w / 2.0, 198.0, 11.0, REG, with_alpha(theme::FG, 0.4), Align::Center, wmax);
+                p.text(&cur, w / 2.0, 182.0, fs, SEMI, theme::FG, Align::Center, wmax);
+                p.text(&next, w / 2.0, 206.0, 11.0, REG, with_alpha(theme::FG, 0.4), Align::Center, wmax);
             }
         }
     }

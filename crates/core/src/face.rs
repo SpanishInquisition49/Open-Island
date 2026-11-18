@@ -50,7 +50,7 @@ impl Face {
             Progress => (360.0, 64.0),
             MediaMini => (290.0, 28.0),
             MediaFull => (420.0, 160.0),
-            MediaLyric => (420.0, 226.0),
+            MediaLyric => (420.0, 234.0),
             Osd => (270.0, 46.0),
             Power => (300.0, 46.0),
             TimerMini => (210.0, 28.0),
