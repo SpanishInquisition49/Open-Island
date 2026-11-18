@@ -678,17 +678,15 @@ impl Island {
                 let col = if low { theme::RED } else { theme::FG };
                 p.icon(d.kind.icon(), x + 7.0, y, 14.0, col);
                 x += 19.0;
-                let name = if d.name.chars().count() > 12 { d.name.chars().take(11).collect::<String>() + "…" } else { d.name.clone() };
-                let text = match d.battery {
-                    Some(b) => format!("{name} {b}%"),
-                    None => name,
-                };
-                let tw = (p.fonts.measure(&text, 11.0, REG) as f64).min(110.0);
-                if x + tw > w - 14.0 {
+                let avail = (w - 14.0 - x).max(0.0);
+                if avail < 40.0 {
                     break;
                 }
-                p.text(&text, x, y, 11.0, REG, if low { theme::RED } else { theme::DIM }, Align::Left, 110.0);
-                x += tw + 16.0;
+                let bat = d.battery.map(|b| format!(" {b}%")).unwrap_or_default();
+                let bat_w = p.fonts.measure(&bat, 11.0, REG) as f64;
+                let name_w = p.text(&d.name, x, y, 11.0, REG, if low { theme::RED } else { theme::DIM }, Align::Left, (avail - bat_w).min(150.0) as f32) as f64;
+                p.text(&bat, x + name_w, y, 11.0, SEMI, col, Align::Left, 40.0);
+                x += name_w + bat_w + 16.0;
             }
         }
     }

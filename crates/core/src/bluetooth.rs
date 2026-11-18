@@ -103,6 +103,12 @@ mod tests {
     }
 
     #[test]
+    fn reads_what_bluez_prints_for_real_earbuds() {
+        let real = "Device 3C:B0:ED:D6:37:3C (public)\n\tName: Nothing Ear (a)\n\tAlias: Nothing Ear Scanna\n\tIcon: audio-headset\n\tPaired: yes\n\tConnected: yes\n\tBattery Percentage: 0x55 (85)\n\tBREDR.Connected: yes\n\tLE.Connected: no\nDBG: cs_proxies is empty\n";
+        assert_eq!(parse_info(real), Some(Info { name: "Nothing Ear Scanna".into(), kind: Kind::Earbuds, connected: true, battery: Some(85) }));
+    }
+
+    #[test]
     fn a_nonsense_battery_is_ignored() {
         assert_eq!(parse_info("\tAlias: A\n\tConnected: yes\n\tBattery Percentage: 0xff (255)\n").unwrap().battery, None);
         assert_eq!(parse_info("\tAlias: A\n\tConnected: yes\n\tBattery Percentage: 0x0 (0)\n").unwrap().battery, Some(0));
