@@ -166,6 +166,7 @@ fn main() {
         ("media-full", Box::new(|i, d| { media(d, true); i.push(NOW, Input::Peek); i.cfg.lyrics = false; })),
         ("media-lyrics", Box::new(|i, d| { media(d, true); i.push(NOW, Input::Peek); })),
         ("media-transition", Box::new(|i, d| { media(d, true); i.push(NOW, Input::Peek); i.cfg.lyrics = false; })),
+        ("lyrics-scroll", Box::new(|i, d| { media(d, true); d.media.as_mut().unwrap().position_ms = 109_600.0; i.push(NOW, Input::Peek); })),
         ("media-timer-bubble", Box::new(|i, d| { media(d, true); i.push(NOW, Input::StartTimer(600)); })),
         ("timer-mini", Box::new(|i, _| i.push(NOW, Input::StartTimer(1500)))),
         ("timer-full", Box::new(|i, _| { i.push(NOW, Input::StartTimer(1500)); i.push(NOW, Input::Peek); })),
@@ -200,8 +201,8 @@ fn main() {
         setup(&mut i, &mut d);
         i.data = d.clone();
         // pages need a page request; "home" and "meeting" go through the hover-less path
-        let hold = name == "page-sys-opening" || name == "media-transition" || name.contains("full") || name.starts_with("focus-full") || name.contains("lyrics") || name == "home" || name.starts_with("page-");
-        let frames = if name == "media-transition" { 26 } else if name == "page-sys-opening" { 38 } else { 400 };
+        let hold = name == "lyrics-scroll" || name == "page-sys-opening" || name == "media-transition" || name.contains("full") || name.starts_with("focus-full") || name.contains("lyrics") || name == "home" || name.starts_with("page-");
+        let frames = if name == "media-transition" { 26 } else if name == "page-sys-opening" { 38 } else if name == "lyrics-scroll" { 40 } else { 400 };
         let f = settle(&mut i, &d, frames, hold);
         let (sw, sh) = (f.surface.0.ceil().max(520.0) as u32, f.surface.1.ceil().max(90.0) as u32);
         let mut scene = Scene::new();

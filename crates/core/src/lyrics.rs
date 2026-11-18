@@ -174,6 +174,33 @@ pub fn pick(results: &[Version], track_secs: f64, tolerance: f64) -> Option<Stri
     winner.map(|g| results[g.best].synced.clone())
 }
 
+/// How long the strip takes to scroll one line, in ms.
+pub const SCROLL_MS: f64 = 460.0;
+
+/// Cubic ease-out: fast at first, settling softly.
+pub fn ease_out(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// The look of a lyric line `slot` rows away from the current one (a fraction while the strip scrolls):
+/// (emphasis 0..=1 for size and weight, opacity 0..=1). The current line is full, its neighbours dim, and
+/// lines farther away fade out so nothing pops in or out at the edges.
+pub fn line_look(slot: f32) -> (f32, f32) {
+    let a = slot.abs();
+    let emphasis = (1.0 - a).max(0.0);
+    let opacity = if a <= 1.0 { 0.4 + 0.6 * emphasis } else { (0.4 * (2.0 - a)).max(0.0) };
+    (emphasis, opacity)
+}
+
+/// The lines to draw while the strip scrolls: (1-based line number, slot) around the current line `cur`
+/// (0 = before the first line). `progress` runs 0..=1 from the start of the scroll; `dir` is 1 when the song
+/// moved forward (the strip starts one row lower and slides up) and -1 when it moved back.
+pub fn strip(cur: usize, progress: f64, dir: f64) -> Vec<(i64, f32)> {
+    let shift = (dir.signum() * (1.0 - ease_out(progress))) as f32;
+    (-2i64..=2).map(|d| (cur as i64 + d, d as f32 + shift)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +226,38 @@ mod tests {
         assert_eq!((p, c, n, i), ("", "", "a", 0));
         let (_, c, n, _) = window(&l, 5000.0, 0.0);
         assert_eq!((c, n), ("b", ""));
+    }
+
+    #[test]
+    fn the_strip_scrolls_up_and_settles() {
+        let start = strip(5, 0.0, 1.0);
+        assert_eq!(start[2], (5, 1.0), "the new current line starts one row lower");
+        assert_eq!(start[1], (4, 0.0), "the old current line is where the current one will be... in the middle");
+        let end = strip(5, 1.0, 1.0);
+        assert_eq!(end.iter().map(|(_, s)| *s).collect::<Vec<_>>(), vec![-2.0, -1.0, 0.0, 1.0, 2.0]);
+        let back = strip(5, 0.0, -1.0);
+        assert_eq!(back[2].1, -1.0, "going back slides down");
+        let mid = strip(5, 0.3, 1.0);
+        assert!(mid[2].1 > 0.0 && mid[2].1 < 1.0);
+    }
+
+    #[test]
+    fn looks_fade_smoothly() {
+        assert_eq!(line_look(0.0), (1.0, 1.0));
+        assert_eq!(line_look(1.0), (0.0, 0.4));
+        assert_eq!(line_look(-1.0), (0.0, 0.4));
+        assert_eq!(line_look(2.0), (0.0, 0.0), "gone at the edge");
+        let (e, o) = line_look(0.5);
+        assert!((e - 0.5).abs() < 1e-6 && (o - 0.7).abs() < 1e-6);
+        let mut last = 1.0;
+        for i in 0..40 {
+            let (_, o) = line_look(i as f32 * 0.05);
+            assert!(o <= last + 1e-6, "opacity never rises with distance");
+            last = o;
+        }
+        assert_eq!(ease_out(0.0), 0.0);
+        assert_eq!(ease_out(1.0), 1.0);
+        assert!(ease_out(0.5) > 0.5 && ease_out(-3.0) == 0.0 && ease_out(9.0) == 1.0);
     }
 
     #[test]

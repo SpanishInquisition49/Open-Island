@@ -250,14 +250,34 @@ impl Island {
             p.icon_button(cx + 128.0, cy, 34.0, "clipboard-text", 17.0, Action::Open(Page::Clip));
         }
         if lyric {
-            if let Some((prev, cur, next)) = self.lyric_window() {
-                let wmax = w as f32 - 40.0;
-                p.text(&prev, w / 2.0, 158.0, 11.0, REG, with_alpha(theme::FG, 0.4), Align::Center, wmax);
-                let fs = island_core::lyrics::fit_font(&cur, wmax, 15.0, 11.0);
-                p.text(&cur, w / 2.0, 182.0, fs, SEMI, theme::FG, Align::Center, wmax);
-                p.text(&next, w / 2.0, 206.0, 11.0, REG, with_alpha(theme::FG, 0.4), Align::Center, wmax);
+            if let Some(strip) = self.lyric_strip() {
+                self.draw_lyrics(p, w, &strip);
             }
         }
+    }
+
+    /// The lyrics strip: lines scroll up together as the song moves on; the old current line dims into the
+    /// previous slot while the incoming one grows and brightens in the middle.
+    fn draw_lyrics(&self, p: P, w: f64, strip: &[(String, f32)]) {
+        let (centre, row_h) = (182.0, 24.0);
+        let wmax = w as f32 - 40.0;
+        let base = p.opacity;
+        // the strip scrolls under the controls: keep it inside its own area
+        let t = p.transform;
+        p.scene.push_clip_layer(Fill::NonZero, t, &Rect::new(0.0, 146.0, w, 400.0));
+        for (text, slot) in strip {
+            let (emphasis, opacity) = island_core::lyrics::line_look(*slot);
+            if text.is_empty() || opacity <= 0.01 {
+                continue;
+            }
+            let size = 11.0 + 4.0 * emphasis;
+            let size = island_core::lyrics::fit_font(text, wmax, size, 10.0);
+            p.opacity = base * opacity;
+            let weight = if emphasis > 0.5 { SEMI } else { REG };
+            p.text(text, w / 2.0, centre + *slot as f64 * row_h, size, weight, theme::FG, Align::Center, wmax);
+        }
+        p.scene.pop_layer();
+        p.opacity = base;
     }
 
     fn timer_text(&self) -> String {

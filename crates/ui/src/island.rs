@@ -22,6 +22,7 @@ pub const ICON_W: f64 = 19.0;
 const REPLY_IDLE_MS: i64 = 20_000;
 const KB_IDLE_MS: i64 = 9_000;
 const EDIT_IDLE_MS: i64 = 40_000;
+const LYRIC_LEAD_MS: f64 = 250.0;
 const HOVER_INTENT_MS: i64 = 140;
 const HOVER_GRACE_MS: i64 = 320;
 const FADE_OUT_MS: f64 = 70.0;
@@ -265,6 +266,10 @@ pub struct Island {
     track_changed_at: i64,
     lyric_lines: Option<Vec<Line>>,
     lyric_src: Option<String>,
+    /// The line being sung (1-based, 0 before the first), when it began, and which way the song moved.
+    lyric_idx: usize,
+    lyric_at: i64,
+    lyric_dir: f64,
     pub(crate) cal: Cal,
     /// The clipboard entry just restored, and until when it shows a check mark.
     /// When the shown face began to appear (drives the stagger of page rows).
@@ -333,6 +338,9 @@ impl Island {
             track_changed_at: -100_000,
             lyric_lines: None,
             lyric_src: None,
+            lyric_idx: 0,
+            lyric_at: -100_000,
+            lyric_dir: 1.0,
             cal: Cal { year: 1970, month: 1, day: 1 },
             enter_at: -100_000,
             spectrum: vec![],
@@ -1028,6 +1036,16 @@ impl Island {
         if self.lyric_src != self.data.lyrics_lrc {
             self.lyric_src = self.data.lyrics_lrc.clone();
             self.lyric_lines = self.lyric_src.as_deref().and_then(lyrics::parse_lrc);
+            self.lyric_idx = self.lyric_lines.as_ref().map_or(0, |l| lyrics::index_at(l, self.media_position(), LYRIC_LEAD_MS));
+            self.lyric_at = -100_000;
+        }
+        if let Some(lines) = &self.lyric_lines {
+            let idx = lyrics::index_at(lines, self.media_position(), LYRIC_LEAD_MS);
+            if idx != self.lyric_idx {
+                self.lyric_dir = if idx > self.lyric_idx { 1.0 } else { -1.0 };
+                self.lyric_idx = idx;
+                self.lyric_at = self.now;
+            }
         }
     }
 
@@ -1039,11 +1057,18 @@ impl Island {
         }
     }
 
-    /// Previous, current and next lyric lines, when the track has synced lyrics.
-    pub(crate) fn lyric_window(&self) -> Option<(String, String, String)> {
+    /// The lyric lines to draw with their slot (rows from the current one, fractional while scrolling), when
+    /// the track has synced lyrics.
+    pub(crate) fn lyric_strip(&self) -> Option<Vec<(String, f32)>> {
         let lines = self.lyric_lines.as_ref()?;
-        let (p, c, n, _) = lyrics::window(lines, self.media_position(), 250.0);
-        Some((p.to_string(), c.to_string(), n.to_string()))
+        let progress = (self.now - self.lyric_at) as f64 / lyrics::SCROLL_MS;
+        let text = |n: i64| if n >= 1 && (n as usize) <= lines.len() { lines[n as usize - 1].text.clone() } else { String::new() };
+        Some(lyrics::strip(self.lyric_idx, progress, self.lyric_dir).into_iter().map(|(n, slot)| (text(n), slot)).collect())
+    }
+
+    /// The strip is still scrolling: frames are needed.
+    fn lyrics_scrolling(&self) -> bool {
+        self.lyric_lines.is_some() && ((self.now - self.lyric_at) as f64) < lyrics::SCROLL_MS && matches!(self.shown, Face::MediaLyric)
     }
 
     fn snapshot(&mut self) -> (Snapshot, bool) {
@@ -1242,6 +1267,7 @@ impl Island {
             || self.shown == Face::Osd
             || self.data.media.as_ref().is_some_and(|m| m.playing)
             || self.timer.is_some()
+            || self.lyrics_scrolling()
             || self.ops.op.is_some_and_running();
         // the surface: holds both shapes plus room for the overshoot while animating
         let group_w = self.spring.w.pos + if self.shown_side.is_some() { BUBBLE_W + BUBBLE_GAP } else { 0.0 };
