@@ -64,6 +64,7 @@ fn run(rep: Reporter, rx: Receiver<Command>) {
                         drop(osascript(&format!("tell application \"{app}\" to {verb}")));
                     }
                 }
+                Command::FocusApp { app, .. } => drop(Proc::new("open").args(["-a", &app]).stdin(Stdio::null()).stderr(Stdio::null()).status()),
                 Command::ToggleKeepAwake => {
                     match keep_awake.take() {
                         Some(mut k) => {

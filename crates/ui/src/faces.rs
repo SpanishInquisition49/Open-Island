@@ -446,12 +446,8 @@ impl Island {
                 x -= 8.0;
             }
         }
-        // a click on the card body opens the app's default action
-        if n.actions.iter().any(|a| a.key == "default") {
-            p.hit(rect(0.0, 0.0, w, h - if actions { 50.0 } else { 0.0 }), Action::NotifAction("default".into()));
-        } else {
-            p.hit(rect(0.0, 0.0, w, h - if actions { 50.0 } else { 0.0 }), Action::Dismiss);
-        }
+        // a click on the card body goes to the app that sent it
+        p.hit(rect(0.0, 0.0, w, h - if actions { 50.0 } else { 0.0 }), Action::NotifOpen);
     }
 
     fn face_reply(&self, p: P, w: f64, h: f64) {

@@ -183,6 +183,7 @@ impl Daemon {
             },
             progress: hs.progress,
             resident: hs.resident,
+            desktop_entry: hs.desktop_entry.clone(),
         }));
         id
     }
@@ -361,6 +362,7 @@ fn watch_bus(rep: Reporter) {
             expire_ms: (timeout >= 0).then_some(timeout as i64),
             progress: hs.progress,
             resident: hs.resident,
+            desktop_entry: hs.desktop_entry.clone(),
         }));
     }
 }

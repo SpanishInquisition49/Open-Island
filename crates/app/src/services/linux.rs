@@ -68,6 +68,9 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                         run("xdg-open", &[&u]);
                     }
                 }
+                Command::FocusApp { desktop_entry, app } => {
+                    std::thread::spawn(move || super::windows_focus::focus_app(&desktop_entry, &app));
+                }
                 Command::PlaySound => match &settings.timer_sound {
                     Some(f) => sound::play(f),
                     None => {

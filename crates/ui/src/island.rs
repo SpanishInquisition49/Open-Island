@@ -110,6 +110,8 @@ pub enum Action {
     CalToday,
     HistoryRemove(usize),
     HistoryOpen(usize),
+    /// A click on the notification card: go to the app that sent it.
+    NotifOpen,
     ClipRestore(usize),
 }
 
@@ -518,6 +520,17 @@ impl Island {
     }
 
     /// Takes the notification off the screen and tells its sender why.
+    /// What a click on a notification does: the sender's default action (while the notification is live), and
+    /// the app's window to the front.
+    fn open_commands(n: &Incoming, live: bool) -> Vec<Command> {
+        let mut c = vec![];
+        if live && n.actions.iter().any(|a| a.key == "default") {
+            c.push(Command::InvokeAction { id: n.id, key: "default".into() });
+        }
+        c.push(Command::FocusApp { desktop_entry: n.desktop_entry.clone(), app: n.app.clone() });
+        c
+    }
+
     fn close_notif(&mut self, reason: CloseReason) {
         if let Some(n) = self.notif.take() {
             self.pending.push(Command::NotificationClosed { id: n.id, reason });
@@ -1082,7 +1095,23 @@ impl Island {
                     self.history.remove(i);
                 }
             }
-            Action::HistoryOpen(_) => {}
+            Action::HistoryOpen(i) => {
+                if i < self.history.len() {
+                    let (n, _) = self.history.remove(i);
+                    self.pending.extend(Self::open_commands(&n, false));
+                }
+            }
+            Action::NotifOpen => {
+                if let Some(n) = self.notif.clone() {
+                    self.pending.extend(Self::open_commands(&n, true));
+                    if n.resident {
+                        self.notif = None;
+                        self.notif_until = 0;
+                    } else {
+                        self.close_notif(CloseReason::Dismissed);
+                    }
+                }
+            }
             Action::ClipRestore(i) => {
                 if let Some(t) = self.data.clipboard.get(i).cloned() {
                     self.copied = Some((i, now + 1500));
@@ -2504,6 +2533,38 @@ mod tests {
         assert!(press(&mut i, Action::RemoveCalendar(0)), "the calendar's x");
         assert!(i.take_commands().contains(&Command::RemoveCalendar(0)));
         assert!(i.edit.is_none(), "and not the rename field under it");
+    }
+
+    #[test]
+    fn clicking_a_notification_goes_to_the_app_that_sent_it() {
+        let mut i = Island::new(Config::default());
+        let tg = Incoming { id: 4, app: "Telegram Desktop".into(), summary: "Anna".into(), desktop_entry: "org.telegram.desktop".into(), actions: vec![NotifAction { key: "default".into(), label: "".into() }], ..Default::default() };
+        i.push(T0, Input::Notification(tg));
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::NotifOpen), "the card body is a hit");
+        let cmds = i.take_commands();
+        assert_eq!(cmds[0], Command::InvokeAction { id: 4, key: "default".into() }, "the sender's own default action first");
+        assert_eq!(cmds[1], Command::FocusApp { desktop_entry: "org.telegram.desktop".into(), app: "Telegram Desktop".into() });
+        assert!(cmds.iter().any(|c| matches!(c, Command::NotificationClosed { id: 4, .. })), "and the card goes away");
+        assert!(i.notif.is_none());
+        // a sender without a default action still gets its window raised
+        i.push(i.now, Input::Notification(Incoming { id: 5, app: "Zen".into(), summary: "site".into(), desktop_entry: "zen".into(), ..Default::default() }));
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::NotifOpen));
+        let cmds = i.take_commands();
+        assert_eq!(cmds[0], Command::FocusApp { desktop_entry: "zen".into(), app: "Zen".into() });
+        assert!(!cmds.iter().any(|c| matches!(c, Command::InvokeAction { .. })));
+    }
+
+    #[test]
+    fn clicking_a_row_of_the_history_focuses_its_app_and_removes_it() {
+        let mut i = Island::new(Config::default());
+        i.restore_history(vec![(Incoming { id: 1, app: "Mail".into(), summary: "a".into(), desktop_entry: "mail".into(), ..Default::default() }, 0), (Incoming { id: 2, app: "Zen".into(), summary: "b".into(), desktop_entry: "zen".into(), ..Default::default() }, 0)]);
+        i.push(T0, Input::OpenPage(Page::Notifs));
+        draw_frames(&mut i, 200);
+        i.activate(Action::HistoryOpen(1));
+        assert_eq!(i.take_commands(), vec![Command::FocusApp { desktop_entry: "zen".into(), app: "Zen".into() }]);
+        assert_eq!(i.history.len(), 1, "an opened notification is read");
     }
 
     #[test]

@@ -194,6 +194,8 @@ pub struct Incoming {
     pub progress: Option<u8>,
     /// Stays in the history even when dismissed from the screen (and is not removed by an action).
     pub resident: bool,
+    /// The sender's desktop entry (`org.telegram.desktop`), used to find its window.
+    pub desktop_entry: String,
 }
 
 impl Incoming {
@@ -321,6 +323,8 @@ pub enum Command {
     RestoreClipboard(String),
     OpenUrl(String),
     InvokeAction { id: u32, key: String },
+    /// Bring the window of the app that sent a notification to the front (starting it when it is not open).
+    FocusApp { desktop_entry: String, app: String },
     CloseNotification(u32),
     /// The island closed a notification (expired on screen, dismissed): tell the sender.
     NotificationClosed { id: u32, reason: CloseReason },

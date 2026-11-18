@@ -12,6 +12,7 @@ pub mod caldav;
 pub mod clock;
 pub mod icons;
 pub mod parse;
+pub mod windows_focus;
 pub mod sound;
 pub mod tz;
 pub mod ipc;
@@ -179,7 +180,7 @@ pub fn load_history() -> Vec<(island_ui::model::Incoming, i64)> {
     let s = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
     items
         .iter()
-        .map(|v| (island_ui::model::Incoming { id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32, app: s(v, "app"), summary: s(v, "summary"), body: s(v, "body"), ..Default::default() }, v.get("at").and_then(|x| x.as_i64()).unwrap_or(0)))
+        .map(|v| (island_ui::model::Incoming { id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32, app: s(v, "app"), summary: s(v, "summary"), body: s(v, "body"), desktop_entry: s(v, "desktop_entry"), ..Default::default() }, v.get("at").and_then(|x| x.as_i64()).unwrap_or(0)))
         .collect()
 }
 
@@ -193,7 +194,7 @@ pub fn save_history_if_changed(history: &[(island_ui::model::Incoming, i64)]) {
     }
     *last = sig;
     let Some(p) = state_file("notification-history.json") else { return };
-    let items: Vec<serde_json::Value> = history.iter().map(|(n, at)| serde_json::json!({"id": n.id, "app": n.app, "summary": n.summary, "body": n.body, "at": at})).collect();
+    let items: Vec<serde_json::Value> = history.iter().map(|(n, at)| serde_json::json!({"id": n.id, "app": n.app, "summary": n.summary, "body": n.body, "desktop_entry": n.desktop_entry, "at": at})).collect();
     if let Ok(text) = serde_json::to_string(&items) {
         // messages are private: owner-only
         #[cfg(unix)]
