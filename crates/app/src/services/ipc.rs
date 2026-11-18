@@ -31,6 +31,24 @@ fn page(name: &str) -> Option<island_core::face::Page> {
     })
 }
 
+/// Settings from a script: `font <family or file>`, `calendar add <url>`, `calendar remove <n>` (1-based),
+/// `location <lat> <lon>`, `sound <file>`. They go through the same code as the settings menu.
+fn parse_command(line: &str) -> Option<island_ui::model::Command> {
+    use island_ui::model::Command;
+    let line = line.trim();
+    let (event, payload) = line.split_once(char::is_whitespace).map_or((line, ""), |(a, b)| (a, b.trim()));
+    Some(match event {
+        "font" => Command::SetFont(payload.to_string()),
+        "sound" => Command::SetNotificationSound(payload.to_string()),
+        "calendar" => match payload.split_once(char::is_whitespace) {
+            Some(("add", url)) if island_ui::is_calendar_url(url) => Command::AddCalendar(url.trim().to_string()),
+            Some(("remove", n)) => Command::RemoveCalendar(n.trim().parse::<usize>().ok()?.checked_sub(1)?),
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
 fn parse(line: &str) -> Option<Input> {
     let line = line.trim();
     let (event, payload) = line.split_once(char::is_whitespace).map_or((line, ""), |(a, b)| (a, b.trim()));
@@ -77,6 +95,8 @@ pub fn start(rep: Reporter) {
                 while reader.read_line(&mut line).unwrap_or(0) > 0 {
                     if let Some(input) = parse(&line) {
                         rep.input(input);
+                    } else if let Some(cmd) = parse_command(&line) {
+                        rep.exec(cmd);
                     } else {
                         log::warn!("unknown message: {}", line.trim());
                     }
@@ -112,5 +132,12 @@ mod tests {
         assert!(parse("open nowhere").is_none());
         assert!(parse("page nope").is_none());
         assert!(parse("garbage").is_none());
+        use island_ui::model::Command;
+        assert_eq!(parse_command("font Inter"), Some(Command::SetFont("Inter".into())));
+        assert_eq!(parse_command("calendar remove 2"), Some(Command::RemoveCalendar(1)));
+        assert_eq!(parse_command("calendar remove 0"), None);
+        assert_eq!(parse_command("calendar add webcal://x.org/a/b.ics"), Some(Command::AddCalendar("webcal://x.org/a/b.ics".into())));
+        assert_eq!(parse_command("calendar add nonsense"), None);
+        assert_eq!(parse_command("nothing"), None);
     }
 }

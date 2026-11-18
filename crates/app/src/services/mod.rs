@@ -58,6 +58,8 @@ pub enum Msg {
     Patch(Box<dyn FnOnce(&mut Data) + Send>),
     /// A one-off event.
     Input(Input),
+    /// A command as if the island had issued it (settings from a script).
+    Exec(Command),
     Quit,
     Fullscreen(bool),
 }
@@ -72,6 +74,11 @@ pub struct Reporter {
 impl Reporter {
     pub fn patch(&self, f: impl FnOnce(&mut Data) + Send + 'static) {
         let _ = self.tx.send(Msg::Patch(Box::new(f)));
+        (self.waker)();
+    }
+
+    pub fn exec(&self, c: Command) {
+        let _ = self.tx.send(Msg::Exec(c));
         (self.waker)();
     }
 

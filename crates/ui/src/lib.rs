@@ -10,3 +10,4 @@ pub mod model;
 pub mod text;
 pub mod theme;
 pub use island::{Action, Config, Frame, Island};
+pub use config_check::is_calendar_url;

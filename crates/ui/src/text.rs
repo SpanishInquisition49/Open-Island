@@ -11,6 +11,40 @@ use vello::{Glyph, Scene};
 
 const TABLER: &[u8] = include_bytes!("../assets/tabler.ttf");
 
+/// Lower case without spaces, dashes and underscores: "JetBrains Mono" and "jetbrainsmono" compare equal.
+fn normalise(name: &str) -> String {
+    name.chars().filter(|c| !matches!(c, ' ' | '-' | '_' | '.')).flat_map(|c| c.to_lowercase()).collect()
+}
+
+/// The installed family closest to what the user typed: the same name ignoring case and spacing, else a
+/// family that starts with it, else one that contains it ("jetbrains" finds "JetBrainsMono Nerd Font").
+/// Shorter names win among equals, so "Inter" gives "Inter", not "Inter Tight".
+pub fn resolve_family(db: &fontdb::Database, wanted: &str) -> Option<String> {
+    let w = normalise(wanted);
+    if w.is_empty() {
+        return None;
+    }
+    let mut best: Option<(u8, usize, String)> = None;
+    for face in db.faces() {
+        for (name, _) in &face.families {
+            let n = normalise(name);
+            let rank = if n == w {
+                0
+            } else if n.starts_with(&w) {
+                1
+            } else if n.contains(&w) {
+                2
+            } else {
+                continue;
+            };
+            if best.as_ref().is_none_or(|(r, l, _)| (rank, n.len()) < (*r, *l)) {
+                best = Some((rank, n.len(), name.clone()));
+            }
+        }
+    }
+    best.map(|(_, _, n)| n)
+}
+
 fn shellexpand_home(p: &str) -> std::path::PathBuf {
     match (p.strip_prefix("~/"), std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))) {
         (Some(rest), Some(h)) => std::path::Path::new(&h).join(rest),
@@ -62,6 +96,7 @@ pub struct Fonts {
     icons: Face,
     icon_map: HashMap<&'static str, u32>,
     preferred_found: bool,
+    family: Option<String>,
 }
 
 /// Preferred UI families, first match wins: the macOS look needs SF Pro (not redistributable, so it is
@@ -105,6 +140,11 @@ impl Fonts {
         Self::from_db_with(db, None)
     }
 
+    /// The installed family the requested name resolved to.
+    pub fn family(&self) -> Option<&str> {
+        self.family.as_deref()
+    }
+
     /// True when the requested family was found (always true when none was requested).
     pub fn preferred_found(&self) -> bool {
         self.preferred_found
@@ -112,11 +152,13 @@ impl Fonts {
 
     pub fn from_db_with(db: &fontdb::Database, preferred: Option<&str>) -> Self {
         let mut text = HashMap::new();
-        let mut preferred_found = preferred.is_none();
+        let resolved = preferred.and_then(|p| resolve_family(db, p));
+        let preferred_found = preferred.is_none() || resolved.is_some();
+        let preferred = resolved.as_deref();
         let families: Vec<&str> = preferred.into_iter().chain(FAMILIES.iter().copied()).collect();
         for (weight, w) in [(Weight::Regular, 400), (Weight::Semibold, 600), (Weight::Bold, 700)] {
             let mut faces = Vec::new();
-            for (n, fam) in families.iter().enumerate() {
+            for fam in families.iter() {
                 let q = fontdb::Query {
                     families: &[fontdb::Family::Name(fam)],
                     weight: fontdb::Weight(w),
@@ -126,9 +168,6 @@ impl Fonts {
                 if let Some(id) = db.query(&q) {
                     if let Some(face) = Self::face_of(db, id) {
                         faces.push(face);
-                        if preferred.is_some() && n == 0 {
-                            preferred_found = true;
-                        }
                     }
                 }
                 if faces.len() >= 3 {
@@ -149,7 +188,7 @@ impl Fonts {
         }
         let icons = Face::new(TABLER.to_vec(), 0).expect("bundled icon font is valid");
         let icon_map = crate::icon_table::ICONS.iter().copied().collect();
-        Self { text, icons, icon_map, preferred_found }
+        Self { text, icons, icon_map, preferred_found, family: resolved }
     }
 
     fn face_of(db: &fontdb::Database, id: fontdb::ID) -> Option<Face> {
@@ -268,6 +307,22 @@ mod tests {
         let f = Fonts::from_db_with(&db, Some("No Such Family"));
         assert!(!f.preferred_found());
         assert!(Fonts::from_db_with(&db, None).preferred_found(), "nothing requested counts as found");
+    }
+
+    #[test]
+    fn family_names_are_matched_loosely() {
+        let mut db = fontdb::Database::new();
+        db.load_font_data(TABLER.to_vec());
+        let real = db.faces().next().unwrap().families[0].0.clone();
+        let squashed = real.to_uppercase().replace(['-', ' '], "");
+        assert_eq!(resolve_family(&db, &squashed).as_deref(), Some(real.as_str()), "case and spacing do not matter");
+        assert_eq!(resolve_family(&db, &real[..4]).as_deref(), Some(real.as_str()), "a prefix finds it");
+        assert_eq!(resolve_family(&db, &real[1..real.len() - 1]).as_deref(), Some(real.as_str()), "so does a part of the name");
+        assert_eq!(resolve_family(&db, "No Such Family"), None);
+        assert_eq!(resolve_family(&db, "  "), None);
+        let f = Fonts::from_db_with(&db, Some(&real[..4]));
+        assert!(f.preferred_found());
+        assert_eq!(f.family(), Some(real.as_str()));
     }
 
     #[test]

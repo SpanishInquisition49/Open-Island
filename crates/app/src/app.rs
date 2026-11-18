@@ -86,6 +86,7 @@ impl App {
                     log::debug!("input at {now}");
                     self.island.push(now, i)
                 }
+                Msg::Exec(c) => self.exec(vec![c]),
                 Msg::Quit => self.quit = true,
                 Msg::Fullscreen(f) => self.fullscreen = f,
             }
@@ -198,7 +199,11 @@ impl App {
             Ok(()) => {
                 if let Command::SetFont(f) = c {
                     self.fonts = Fonts::load_system(Some(f));
-                    if !f.is_empty() && !self.fonts.preferred_found() {
+                    if f.is_empty() {
+                        self.note("Font: default");
+                    } else if let Some(fam) = self.fonts.family().map(str::to_string) {
+                        self.note(&format!("Font: {fam}"));
+                    } else {
                         self.note("Font not found: using the default");
                     }
                 }
