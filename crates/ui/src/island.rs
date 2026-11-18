@@ -239,6 +239,15 @@ pub struct Frame {
     pub next_ms: u32,
 }
 
+/// A command a shell started (see `open-island hook`).
+pub(crate) struct ShellCmd {
+    pub id: String,
+    pub label: String,
+    pub start_ms: i64,
+    pub after_ms: i64,
+    pub shown: bool,
+}
+
 pub struct Island {
     pub cfg: Config,
     pub data: Data,
@@ -298,6 +307,8 @@ pub struct Island {
     rain_until: i64,
     rain_announced: bool,
     pub(crate) ops: Tracker,
+    /// Commands the shell hook reported and that still run.
+    pub(crate) cmds: Vec<ShellCmd>,
     announcer: Announcer,
     last_track: Option<String>,
     track_changed_at: i64,
@@ -376,6 +387,7 @@ impl Island {
             rain_until: 0,
             rain_announced: false,
             ops: Tracker::default(),
+            cmds: vec![],
             announcer: Announcer::default(),
             last_track: None,
             track_changed_at: -100_000,
@@ -466,6 +478,25 @@ impl Island {
             Input::ProgressDone(l) => self.ops.finish(now, progress::State::Done, &l),
             Input::ProgressFail(l) => self.ops.finish(now, progress::State::Fail, &l),
             Input::ProgressClear => self.ops.clear(),
+            Input::CommandStart { id, label, after_secs } => {
+                self.cmds.retain(|c| c.id != id);
+                self.cmds.truncate(31);
+                self.cmds.push(ShellCmd { id, label, start_ms: now, after_ms: after_secs as i64 * 1000, shown: false });
+            }
+            Input::CommandGone(id) => self.cmds.retain(|c| c.id != id),
+            Input::CommandEnd { id, code } => {
+                if let Some(at) = self.cmds.iter().position(|c| c.id == id) {
+                    let c = self.cmds.remove(at);
+                    if c.shown {
+                        let took = duration::fmt_took(now - c.start_ms);
+                        if code == 0 {
+                            self.ops.finish(now, progress::State::Done, &format!("{} · {took}", c.label));
+                        } else {
+                            self.ops.finish(now, progress::State::Fail, &format!("{} · exit {code} · {took}", c.label));
+                        }
+                    }
+                }
+            }
             Input::StartTimer(secs) => self.start_timer(secs),
             Input::StartPomodoro => self.start_pomodoro(),
             Input::StartStopwatch => {
@@ -1323,10 +1354,36 @@ impl Island {
         }
     }
 
+    /// A command that outlasts its threshold becomes the operation on show (when none other is); the one on show
+    /// is refreshed so it is not dropped as stale.
+    fn shell_commands(&mut self, now: i64) {
+        if self.cmds.is_empty() {
+            return;
+        }
+        let running = matches!(&self.ops.op, Some(o) if o.state == progress::State::Run);
+        let on_show = self.cmds.iter().find(|c| c.shown).map(|c| c.label.clone());
+        match (running, on_show) {
+            (true, Some(label)) => {
+                if matches!(&self.ops.op, Some(o) if o.label == label && now - o.updated_ms >= 30_000) {
+                    self.ops.report(now, &format!("? {label}"));
+                }
+            }
+            (false, _) => {
+                if let Some(c) = self.cmds.iter_mut().find(|c| !c.shown && now - c.start_ms >= c.after_ms) {
+                    c.shown = true;
+                    let label = c.label.clone();
+                    self.ops.report(now, &format!("? {label}"));
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Advances the island to `now` (epoch ms) and says how big the surface has to be.
     pub fn tick(&mut self, now: i64, dt_ms: f64) -> Frame {
         self.now = now;
         self.ops.expire(now);
+        self.shell_commands(now);
         self.slow_checks();
         self.sync_lyrics();
         // notifications: expiry and the next waiting one
@@ -1691,6 +1748,50 @@ mod tests {
         assert_eq!(i.current_face(), Face::Progress);
         run(&mut i, 6000);
         assert!(i.ops.op.is_none());
+    }
+
+    #[test]
+    fn a_shell_command_becomes_a_pill_only_after_its_threshold_and_ends_green_or_red() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::CommandStart { id: "1".into(), label: "make".into(), after_secs: 10 });
+        run(&mut i, 5000);
+        assert!(i.ops.op.is_none(), "a short command never shows");
+        i.push(i.now, Input::CommandEnd { id: "1".into(), code: 0 });
+        run(&mut i, 500);
+        assert!(i.ops.op.is_none(), "and says nothing when it ends");
+
+        let t = i.now;
+        i.push(t, Input::CommandStart { id: "2".into(), label: "cargo build".into(), after_secs: 10 });
+        run(&mut i, 11_000);
+        let op = i.ops.op.clone().expect("past the threshold");
+        assert_eq!((op.label.as_str(), op.state), ("cargo build", progress::State::Run));
+        run(&mut i, 100_000);
+        assert!(matches!(&i.ops.op, Some(o) if o.state == progress::State::Run), "refreshed, not dropped as stale after two minutes");
+        i.push(i.now, Input::CommandEnd { id: "2".into(), code: 0 });
+        let op = i.ops.op.clone().unwrap();
+        assert_eq!(op.state, progress::State::Done);
+        assert!(op.label.starts_with("cargo build · 1m 5"), "{}", op.label);
+
+        i.push(i.now, Input::ProgressClear);
+        let t = i.now;
+        i.push(t, Input::CommandStart { id: "3".into(), label: "pytest".into(), after_secs: 2 });
+        run(&mut i, 3000);
+        i.push(i.now, Input::CommandEnd { id: "3".into(), code: 2 });
+        let op = i.ops.op.clone().unwrap();
+        assert_eq!(op.state, progress::State::Fail);
+        assert!(op.label.starts_with("pytest · exit 2 · "), "{}", op.label);
+    }
+
+    #[test]
+    fn a_second_command_waits_for_the_pill_to_be_free() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::CommandStart { id: "a".into(), label: "one".into(), after_secs: 1 });
+        run(&mut i, 2000);
+        i.push(i.now, Input::CommandStart { id: "b".into(), label: "two".into(), after_secs: 1 });
+        run(&mut i, 3000);
+        assert_eq!(i.ops.op.as_ref().unwrap().label, "one", "the first keeps the pill");
+        i.push(i.now, Input::CommandEnd { id: "b".into(), code: 0 });
+        assert_eq!(i.ops.op.as_ref().unwrap().label, "one", "an unseen command ends silently");
     }
 
     #[test]

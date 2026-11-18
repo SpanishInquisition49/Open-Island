@@ -63,6 +63,16 @@ pub fn fmt_elapsed(ms: i64) -> String {
 }
 
 /// Compact form for the side bubble: under an hour "m:ss", else "1h05".
+/// How long something took: `42s`, `2m 14s`, `1h 05m`.
+pub fn fmt_took(ms: i64) -> String {
+    let s = (ms.max(0) + 500) / 1000;
+    match s {
+        0..=59 => format!("{s}s"),
+        60..=3599 => format!("{}m {:02}s", s / 60, s % 60),
+        _ => format!("{}h {:02}m", s / 3600, s % 3600 / 60),
+    }
+}
+
 pub fn fmt_bubble(ms: i64) -> String {
     let s = (ms.max(0) as u64).div_ceil(1000);
     if s >= 3600 {
@@ -106,6 +116,13 @@ pub fn fmt_minutes(m: Option<u64>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn says_how_long_a_command_took() {
+        use super::fmt_took;
+        assert_eq!((fmt_took(0), fmt_took(42_400), fmt_took(134_000), fmt_took(3_900_000), fmt_took(-5)), ("0s".into(), "42s".into(), "2m 14s".into(), "1h 05m".into(), "0s".into()));
+        assert_eq!(fmt_took(59_600), "1m 00s");
+    }
+
     use super::*;
 
     #[test]

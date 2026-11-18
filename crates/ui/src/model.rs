@@ -256,6 +256,12 @@ pub enum Input {
     ProgressDone(String),
     ProgressFail(String),
     ProgressClear,
+    /// A shell started a command: it becomes a progress pill when it runs longer than `after_secs`.
+    CommandStart { id: String, label: String, after_secs: u32 },
+    /// The shell command ended with this exit code.
+    CommandEnd { id: String, code: i32 },
+    /// The shell that started a command is gone: forget the command without a word.
+    CommandGone(String),
     StartTimer(u64),
     StartPomodoro,
     StartStopwatch,

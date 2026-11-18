@@ -86,6 +86,19 @@ fn parse(line: &str) -> Option<Input> {
         "progress-done" => Input::ProgressDone(payload.into()),
         "progress-fail" => Input::ProgressFail(payload.into()),
         "progress-clear" => Input::ProgressClear,
+        "cmd-start" => {
+            // "<id> <seconds> <label...>"
+            let mut it = payload.splitn(3, ' ');
+            let (id, secs, label) = (it.next()?, it.next()?.parse().ok()?, it.next().unwrap_or("").trim());
+            if id.is_empty() || label.is_empty() {
+                return None;
+            }
+            Input::CommandStart { id: id.into(), label: label.into(), after_secs: secs }
+        }
+        "cmd-end" => {
+            let mut it = payload.split_whitespace();
+            Input::CommandEnd { id: it.next()?.into(), code: it.next()?.parse().ok()? }
+        }
         "timer" => Input::StartTimer(island_core::duration::parse(payload).unwrap_or(300)),
         "pomodoro" => Input::StartPomodoro,
         "stopwatch" => Input::StartStopwatch,
@@ -99,7 +112,34 @@ fn parse(line: &str) -> Option<Input> {
     })
 }
 
+/// The shells with a command running (their pid is the id), so that a shell that dies mid-command does not leave
+/// its pill on for ever.
+static LIVE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn track(input: &Input) {
+    let mut live = LIVE.lock().unwrap();
+    match input {
+        Input::CommandStart { id, .. } if !live.contains(id) => live.push(id.clone()),
+        Input::CommandEnd { id, .. } | Input::CommandGone(id) => live.retain(|l| l != id),
+        _ => {}
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn watch_shells(rep: Reporter) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        let gone: Vec<String> = LIVE.lock().unwrap().iter().filter(|id| id.parse::<u32>().is_ok() && !std::path::Path::new(&format!("/proc/{id}")).exists()).cloned().collect();
+        for id in gone {
+            LIVE.lock().unwrap().retain(|l| *l != id);
+            rep.input(Input::CommandGone(id));
+        }
+    });
+}
+
 pub fn start(rep: Reporter) {
+    #[cfg(target_os = "linux")]
+    watch_shells(rep.clone());
     let Ok(name) = socket_name().to_ns_name::<GenericNamespaced>() else { return };
     let listener = match ListenerOptions::new().name(name).create_sync() {
         Ok(l) => l,
@@ -116,6 +156,7 @@ pub fn start(rep: Reporter) {
                 let mut line = String::new();
                 while reader.read_line(&mut line).unwrap_or(0) > 0 {
                     if let Some(input) = parse(&line) {
+                        track(&input);
                         rep.input(input);
                     } else if let Some(cmd) = parse_command(&line) {
                         rep.exec(cmd);
@@ -156,6 +197,9 @@ mod tests {
         assert!(matches!(parse("dnd on"), Some(Input::SetDnd(true))));
         assert!(parse("dnd maybe").is_none());
         assert!(matches!(parse("progress 42 Copying"), Some(Input::Progress(p)) if p == "42 Copying"));
+        assert!(matches!(parse("cmd-start 99 10 cargo build -j8"), Some(Input::CommandStart { id, label, after_secs: 10 }) if id == "99" && label == "cargo build -j8"));
+        assert!(matches!(parse("cmd-end 99 130"), Some(Input::CommandEnd { id, code: 130 }) if id == "99"));
+        assert!(parse("cmd-start 99 ten make").is_none() && parse("cmd-start 99 5").is_none() && parse("cmd-end 99").is_none());
         assert!(matches!(parse("timer 25m"), Some(Input::StartTimer(1500))));
         assert!(matches!(parse("page cal"), Some(Input::OpenPage(_))));
         assert!(matches!(parse("page next"), Some(Input::CyclePage(1))));

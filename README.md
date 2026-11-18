@@ -144,3 +144,14 @@ beside the pill, then a card again when it ends (red when it failed).
 ## Licence
 
 MIT. Tabler icons are MIT (`crates/ui/assets/TABLER-LICENSE.txt`).
+
+## A pill for every long shell command
+
+```sh
+eval "$(open-island hook zsh)"      # in ~/.zshrc  (bash: ~/.bashrc, fish: `open-island hook fish | source` in config.fish)
+```
+
+A command that runs longer than 10 seconds becomes a progress pill with its name; when it ends it turns green with how
+long it took, or red with its exit code. Editors, pagers, `ssh`, `top`, REPLs and similar are skipped. Set
+`OPEN_ISLAND_HOOK_SECONDS=30` to change the threshold and `OPEN_ISLAND_HOOK_IGNORE="make,go"` to skip more programs.
+A shell that is closed mid-command takes its pill with it.
