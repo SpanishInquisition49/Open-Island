@@ -719,6 +719,11 @@ impl Island {
             self.hover_left = now;
             self.hover_page = None;
         }
+        // what opens depends on where the pointer rests: the side bubble opens its own activity, the pill its own
+        if inside && self.shown.is_compact() {
+            let over_bubble = self.shown_side.is_some() && x > px + self.spring.w.pos;
+            self.hover_page = if over_bubble { self.shown_side.map(side_page) } else { main_page(self.shown) };
+        }
         if let Some(Action::SeekBar | Action::VolumeBar | Action::BrightnessBar) = self.dragging.clone() {
             return self.slider_at(x, y);
         }
@@ -1382,6 +1387,17 @@ impl OpRunning for Option<progress::Op> {
     }
 }
 
+/// The page a compact pill opens when hovered.
+fn main_page(f: Face) -> Option<Page> {
+    match f {
+        Face::MediaMini => Some(Page::Media),
+        Face::TimerMini => Some(Page::Timer),
+        Face::MeetMini => Some(Page::Meeting),
+        Face::FocusMini => Some(Page::Focus),
+        _ => None,
+    }
+}
+
 fn side_page(s: Side) -> Page {
     match s {
         Side::Timer => Page::Timer,
@@ -2026,5 +2042,69 @@ mod tests {
         i.push(i.now, Input::Key(KeyInput::PrevPage));
         assert_eq!(i.page, Some(Page::Settings));
         assert_eq!(i.kb.unwrap().index, 0, "the focus ring starts again on the new page");
+    }
+
+    /// Rests the pointer on the pill (`bubble` = on the side bubble) and lets the intent delay pass.
+    fn hover(i: &mut Island, bubble: bool) {
+        let (px, py, _, ph) = i.pill_rect();
+        let x = if bubble { px + i.spring.w.pos + BUBBLE_GAP + BUBBLE_W / 2.0 } else { px + i.spring.w.pos / 2.0 };
+        i.pointer_moved(i.now, x, py + ph / 2.0);
+        draw_frames(i, 60);
+    }
+
+    #[test]
+    fn hovering_the_timer_bubble_opens_the_timer_not_the_music() {
+        let mut i = Island::new(Config::default());
+        i.data = data();
+        i.push(T0, Input::StartTimer(600));
+        draw_frames(&mut i, 200);
+        assert_eq!((i.current_face(), i.shown_side), (Face::MediaMini, Some(Side::Timer)));
+        hover(&mut i, true);
+        assert_eq!(i.page, Some(Page::Timer));
+        assert_eq!(i.current_face(), Face::TimerFull, "the bubble's activity opens");
+    }
+
+    #[test]
+    fn hovering_the_pill_opens_its_own_activity() {
+        let mut i = Island::new(Config::default());
+        i.data = data();
+        i.push(T0, Input::StartTimer(600));
+        draw_frames(&mut i, 200);
+        hover(&mut i, false);
+        assert_eq!(i.page, Some(Page::Media));
+        assert_eq!(i.current_face(), Face::MediaFull);
+    }
+
+    #[test]
+    fn the_pointer_crossing_from_the_pill_to_the_bubble_before_it_opens_picks_the_bubble() {
+        let mut i = Island::new(Config::default());
+        i.data = data();
+        i.push(T0, Input::StartTimer(600));
+        draw_frames(&mut i, 200);
+        let (px, py, _, ph) = i.pill_rect();
+        i.pointer_moved(i.now, px + 20.0, py + ph / 2.0);
+        let bx = px + i.spring.w.pos + BUBBLE_GAP + BUBBLE_W / 2.0;
+        i.pointer_moved(i.now + 20, bx, py + ph / 2.0);
+        draw_frames(&mut i, 60);
+        assert_eq!(i.page, Some(Page::Timer));
+        // leaving forgets it: the next visit starts from the pill again
+        i.pointer_left(i.now);
+        i.expand_until = 0;
+        draw_frames(&mut i, 200);
+        hover(&mut i, false);
+        assert_eq!(i.page, Some(Page::Media));
+    }
+
+    #[test]
+    fn a_lone_timer_or_meeting_pill_opens_itself_and_an_idle_pill_opens_home() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::StartTimer(600));
+        draw_frames(&mut i, 200);
+        hover(&mut i, false);
+        assert_eq!(i.current_face(), Face::TimerFull);
+        let mut j = Island::new(Config::default());
+        draw_frames(&mut j, 100);
+        hover(&mut j, false);
+        assert_eq!(j.current_face(), Face::IdleHover);
     }
 }
