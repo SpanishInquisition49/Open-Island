@@ -24,7 +24,7 @@ crates/app    window backends (Wayland layer-shell, winit), the OS services, the
 | control socket (`open-island msg ...`) | yes | yes (named pipe on Windows) |
 | weather (Open-Meteo), calendars (iCal URLs), lyrics (LRCLIB) | yes | yes |
 | media (MPRIS) with cover art, several players (switch button) | yes | **not yet** (SMTC / MediaRemote) |
-| notifications | yes: full daemon (pictures, app icons, timeouts, urgency, progress, resident, sync tags, per-app sounds, filters, actions, inline reply, closing signals, persistent history); watches the bus when another daemon owns the name | **not yet** |
+| notifications | yes: full daemon (replaces mako, dunst, swaync... so each notification shows once) (pictures, app icons, timeouts, urgency, progress, resident, sync tags, per-app sounds, filters, actions, inline reply, closing signals, persistent history); watches the bus when another daemon owns the name | **not yet** |
 | volume / brightness OSD, battery, privacy dots | yes (wpctl, sysfs, pactl) | **not yet** |
 | hide under fullscreen windows | niri | **not yet** |
 
@@ -87,6 +87,15 @@ Every page carries a row of page icons at the bottom (media and timer first when
 system, clipboard, settings): click one to jump straight to it. A horizontal swipe, Tab / Shift+Tab (keyboard mode) and
 `open-island msg page next|prev` step through the same list, and the content slides the way the pages are ordered. The back arrow
 returns to the page that led there.
+
+## One notification daemon
+
+Only one program can own `org.freedesktop.Notifications`; another daemon (mako, dunst, swaync...) showing popups next to the
+island is why every notification appeared twice. At start the island therefore stops the daemon it finds (its systemd unit
+when it is named after it, else SIGTERM) and takes the name. Set `"take_over_notifications": false` to keep the other one (the
+island then only watches, without actions or replies). D-Bus can start the old daemon again when a notification arrives while
+the island is not running: `systemctl --user mask mako` stops that. A shell that owns the name itself (Noctalia: set
+`enable_daemon = false` in its `[notification]`) is never killed, the island says so in its log.
 
 ## Controlling it
 

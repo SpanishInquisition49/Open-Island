@@ -194,18 +194,80 @@ impl Daemon {
 }
 
 /// Runs the daemon when the name is free (never queueing for it), the bus watcher otherwise.
+/// Other notification daemons the island is allowed to replace: they would show every notification a second time.
+const KNOWN_DAEMONS: [&str; 10] = ["mako", "dunst", "swaync", "fnott", "wired", "deadd-notification-center", "xfce4-notifyd", "notify-osd", "lxqt-notificationd", "herbe"];
+
+pub fn is_known_daemon(comm: &str) -> bool {
+    KNOWN_DAEMONS.contains(&comm.trim())
+}
+
+/// The systemd user unit that is the daemon itself ("mako.service" for mako), from /proc/<pid>/cgroup. A unit
+/// with another name may hold other programs, so it is never stopped: only the process is then asked to quit.
+pub fn unit_from_cgroup(cgroup: &str, daemon: &str) -> Option<String> {
+    cgroup.lines().find_map(|l| {
+        let last = l.trim().rsplit('/').next()?;
+        let stem = last.strip_suffix(".service")?;
+        (!daemon.is_empty() && (stem == daemon || stem.starts_with(&format!("{daemon}-")) || stem.starts_with(&format!("{daemon}@")))).then(|| last.to_string())
+    })
+}
+
+fn request_name(conn: &zbus::blocking::Connection) -> Result<(), String> {
+    conn.request_name_with_flags(IFACE, zbus::fdo::RequestNameFlags::DoNotQueue.into()).map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// (pid, command name) of whoever owns the notification name.
+fn owner(conn: &zbus::blocking::Connection) -> Option<(u32, String)> {
+    let dbus = zbus::blocking::Proxy::new(conn, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus").ok()?;
+    let name: String = dbus.call("GetNameOwner", &(IFACE,)).ok()?;
+    let pid: u32 = dbus.call("GetConnectionUnixProcessID", &(name,)).ok()?;
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?.trim().to_string();
+    Some((pid, comm))
+}
+
+/// Gets the notification name, replacing another daemon when allowed (`take_over`): the island is the only
+/// place notifications should appear. The daemon is stopped through its systemd unit when it has one (so it is
+/// not restarted), else with SIGTERM, and the name is claimed the moment it is free.
+fn acquire(conn: &zbus::blocking::Connection, take_over: bool) -> Result<(), String> {
+    if request_name(conn).is_ok() {
+        return Ok(());
+    }
+    let Some((pid, comm)) = owner(conn) else { return Err("the name is taken by an unknown process".into()) };
+    if comm == "open-island" {
+        return Err("another open-island already runs".into());
+    }
+    if !take_over {
+        return Err(format!("{comm} (pid {pid}) is the notification daemon and take_over_notifications is off: every notification shows twice"));
+    }
+    if !is_known_daemon(&comm) {
+        return Err(format!("{comm} (pid {pid}) owns the notification name and is not a daemon I know how to stop: set enable_daemon = false in it, or stop it yourself"));
+    }
+    log::info!("replacing the notification daemon {comm} (pid {pid})");
+    let unit = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok().and_then(|c| unit_from_cgroup(&c, &comm));
+    let stopped = unit.as_ref().is_some_and(|u| std::process::Command::new("systemctl").args(["--user", "stop", u]).status().is_ok_and(|s| s.success()));
+    if !stopped {
+        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+    }
+    // claim the name the moment it is free, before D-Bus activation starts the old daemon again
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if request_name(conn).is_ok() {
+            return Ok(());
+        }
+    }
+    Err(format!("{comm} did not let go of the notification name"))
+}
+
 pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, initial_dnd: bool) {
     std::thread::spawn(move || {
         let dnd = Arc::new(AtomicBool::new(initial_dnd));
         let (tx, rx) = channel::<Msg>();
+        let take_over = settings.take_over_notifications && std::env::var_os("OPEN_ISLAND_NO_TAKEOVER").is_none();
         let daemon = Daemon { rep: rep.clone(), tx: tx.clone(), shared: Arc::new(Mutex::new(Shared { next_id: 0, tags: HashMap::new() })), dnd: dnd.clone(), _settings: settings };
         let built = zbus::blocking::connection::Builder::session()
             .and_then(|b| b.serve_at(PATH, daemon))
             .and_then(|b| b.build())
-            .and_then(|conn| {
-                conn.request_name_with_flags(IFACE, zbus::fdo::RequestNameFlags::DoNotQueue.into())?;
-                Ok(conn)
-            });
+            .map_err(|e| e.to_string())
+            .and_then(|conn| acquire(&conn, take_over).map(|()| conn));
         match built {
             Ok(conn) => {
                 log::info!("open-island is the notification daemon");
@@ -231,7 +293,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                 }
             }
             Err(e) => {
-                log::info!("another notification daemon is running ({e}): watching the bus instead (no actions)");
+                log::warn!("not the notification daemon: {e}; watching the bus instead (no actions)");
                 watch_bus(rep);
             }
         }
@@ -278,6 +340,30 @@ fn watch_bus(rep: Reporter) {
 mod tests {
     use super::*;
     use zbus::zvariant::StructureBuilder;
+
+    #[test]
+    fn knows_which_daemons_it_may_replace() {
+        for d in ["mako", "dunst", "swaync", "fnott"] {
+            assert!(is_known_daemon(d), "{d}");
+        }
+        assert!(is_known_daemon("mako\n"));
+        for d in ["noctalia", "gnome-shell", "plasmashell", "open-island", "systemd", ""] {
+            assert!(!is_known_daemon(d), "{d} is not something to kill");
+        }
+    }
+
+    #[test]
+    fn only_a_unit_named_after_the_daemon_is_stopped() {
+        let cg = |unit: &str| format!("0::/user.slice/user-1000.slice/user@1000.service/app.slice/{unit}\n");
+        assert_eq!(unit_from_cgroup(&cg("mako.service"), "mako").as_deref(), Some("mako.service"));
+        assert_eq!(unit_from_cgroup(&cg("dunst.service"), "dunst").as_deref(), Some("dunst.service"));
+        assert_eq!(unit_from_cgroup(&cg("app-dunst@autostart.service"), "dunst"), None, "an autostart wrapper may hold more");
+        assert_eq!(unit_from_cgroup(&cg("terminal.service"), "mako"), None, "a unit that also holds other programs is left alone");
+        assert_eq!(unit_from_cgroup(&cg("app-niri-mako-123.scope"), "mako"), None, "a scope is not a unit");
+        assert_eq!(unit_from_cgroup("0::/user.slice/user-1000.slice/user@1000.service\n", "mako"), None, "never the user manager");
+        assert_eq!(unit_from_cgroup("", "mako"), None);
+        assert_eq!(unit_from_cgroup(&cg("mako.service"), ""), None);
+    }
 
     fn hints(pairs: Vec<(&str, Value<'static>)>) -> HashMap<String, OwnedValue> {
         pairs.into_iter().map(|(k, v)| (k.to_string(), OwnedValue::try_from(v).unwrap())).collect()

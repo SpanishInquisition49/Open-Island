@@ -146,6 +146,8 @@ pub struct Settings {
     pub filters: Vec<Filter>,
     /// Keep the notification history on disk between runs.
     pub persist_history: bool,
+    /// Stop another notification daemon (mako, dunst, ...) so notifications show once, in the island.
+    pub take_over_notifications: bool,
     /// A font family name or the path of a font file; empty = the built-in list (SF Pro first).
     pub font: String,
 }
@@ -163,6 +165,7 @@ impl Default for Settings {
             timer_sound: None,
             filters: vec![],
             persist_history: true,
+            take_over_notifications: true,
             font: String::new(),
         }
     }
@@ -224,6 +227,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
             .collect();
     }
     s.font = v.get("font").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    s.take_over_notifications = v.get("take_over_notifications").and_then(|x| x.as_bool()).unwrap_or(true);
     s.persist_history = v.get("persist_history").and_then(|x| x.as_bool()).unwrap_or(true);
     s.latitude = v.get("latitude").and_then(|x| x.as_f64()).filter(|x| (-90.0..=90.0).contains(x));
     s.longitude = v.get("longitude").and_then(|x| x.as_f64()).filter(|x| (-180.0..=180.0).contains(x));
@@ -380,6 +384,12 @@ mod tests {
         assert_eq!(l.iter().filter(|c| c.is_icloud()).count(), 2, "one per Apple ID");
         assert!(matches!(&l.iter().find(|c| c.detail().contains("me@")).unwrap().kind, CalendarKind::CalDav { password, .. } if password == "two"), "the newer password replaced the old");
         assert_eq!(l.iter().find(|c| c.is_icloud()).unwrap().color, None, "an account keeps its calendars' own colours");
+    }
+
+    #[test]
+    fn taking_over_the_notification_daemon_is_on_unless_switched_off() {
+        assert!(parse("{}").unwrap().take_over_notifications);
+        assert!(!parse(r#"{"take_over_notifications": false}"#).unwrap().take_over_notifications);
     }
 
     #[test]
