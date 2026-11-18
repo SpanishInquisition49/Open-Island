@@ -41,6 +41,17 @@ raw-window-handle = "0.6"
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 ureq = { version = "3", default-features = false, features = ["native-tls", "json", "gzip"] }
 attohttpc = { version = "0.32", default-features = false, features = ["tls-native"] }
+sysinfo = { version = "0.40", default-features = false, features = ["system", "disk", "network", "component"] }
+starship-battery = "0.12"
+arboard = { version = "3", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+windows = { version = "0.62", features = [
+  "Foundation", "Foundation_Collections", "Media_Control", "Storage_Streams",
+  "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints",
+  "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_Power", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 png = "0.18"

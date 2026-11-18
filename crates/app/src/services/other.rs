@@ -6,13 +6,21 @@ use super::Reporter;
 use island_ui::model::Command;
 use std::sync::mpsc::Receiver;
 
-pub fn start(_rep: Reporter, cmd_rx: Receiver<Command>, _settings: std::sync::Arc<crate::config::Settings>) {
+pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, _settings: std::sync::Arc<crate::config::Settings>) {
+    super::generic::start_system(rep.clone());
+    super::generic::start_battery(rep.clone());
+    super::generic::start_clipboard(rep.clone());
+    #[cfg(target_os = "windows")]
+    super::windows::start(rep.clone());
     std::thread::spawn(move || {
         for c in cmd_rx {
-            if let Command::OpenUrl(u) = c {
-                if u.starts_with("http://") || u.starts_with("https://") {
-                    open_url(&u);
-                }
+            match c {
+                Command::OpenUrl(u) if u.starts_with("http://") || u.starts_with("https://") => open_url(&u),
+                Command::RestoreClipboard(t) => super::generic::restore_clipboard(&t),
+                #[cfg(target_os = "windows")]
+                other => super::windows::command(other),
+                #[cfg(not(target_os = "windows"))]
+                _ => {}
             }
         }
     });
@@ -26,4 +34,9 @@ fn open_url(u: &str) {
 #[cfg(target_os = "macos")]
 fn open_url(u: &str) {
     let _ = std::process::Command::new("open").arg(u).spawn();
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn open_url(u: &str) {
+    let _ = std::process::Command::new("xdg-open").arg(u).spawn();
 }

@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 /// CPU, memory, network, disk and temperature, sampled only while the system page is open.
 pub fn start_system(rep: Reporter) {
     std::thread::spawn(move || {
-        let mut sys = sysinfo::System::new();
-        let mut nets = sysinfo::Networks::new_with_refreshed_list();
-        let mut disks = sysinfo::Disks::new_with_refreshed_list();
-        let mut comps = sysinfo::Components::new_with_refreshed_list();
+        // sysinfo 0.40 reports a platform that cannot be read as an error: then the page stays empty
+        let (Ok(mut sys), Ok(mut nets), Ok(mut disks), Ok(mut comps)) = (sysinfo::System::new(), sysinfo::Networks::new_with_refreshed_list(), sysinfo::Disks::new_with_refreshed_list(), sysinfo::Components::new_with_refreshed_list()) else {
+            log::warn!("the system page needs sysinfo, which cannot read this system");
+            return;
+        };
         let mut last_net: Option<((u64, u64), Instant)> = None;
         let mut disk_at: Option<Instant> = None;
         let mut disk: Option<(f64, f64)> = None;
@@ -52,7 +53,7 @@ pub fn start_system(rep: Reporter) {
                 cpu_percent: sys.global_cpu_usage(),
                 cpu_temp_c: cpu_temp,
                 cpu_ghz: (!cpus.is_empty()).then(|| cpus.iter().map(|c| c.frequency() as f32).sum::<f32>() / cpus.len() as f32 / 1000.0),
-                cores: cpus.iter().map(|c| c.cpu_usage()).collect(),
+                cores: cpus.iter().map(|c| c.usage()).collect(),
                 memory: Some(mem),
                 gpu: None,
                 battery_watts: battery_now().and_then(|b| b.1),

@@ -1,5 +1,8 @@
 //! open-island: a macOS-style dynamic island for any desktop.
 
+// parts that only the Linux services use are dead code on the other platforms
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 mod app;
 mod cli;
 mod doctor;

@@ -7,6 +7,7 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 
 pub mod art;
+pub mod clipboard_history;
 pub mod caldav;
 pub mod clock;
 pub mod icons;
@@ -30,7 +31,11 @@ pub mod spectrum;
 #[cfg(target_os = "linux")]
 pub mod sysmon;
 #[cfg(not(target_os = "linux"))]
+pub mod generic;
+#[cfg(not(target_os = "linux"))]
 pub mod other;
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 /// Set by the app while the system page / the quick settings page is open: the sampling threads idle otherwise.
 pub static SYSTEM_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
