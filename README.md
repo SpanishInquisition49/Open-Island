@@ -94,8 +94,8 @@ Only one program can own `org.freedesktop.Notifications`; another daemon (mako, 
 island is why every notification appeared twice. At start the island therefore stops the daemon it finds (its systemd unit
 when it is named after it, else SIGTERM) and takes the name. Set `"take_over_notifications": false` to keep the other one (the
 island then only watches, without actions or replies). D-Bus can start the old daemon again when a notification arrives while
-the island is not running: `systemctl --user mask mako` stops that. A shell that owns the name itself (Noctalia: set
-`enable_daemon = false` in its `[notification]`) is never killed, the island says so in its log.
+the island is not running: `systemctl --user mask mako` stops that. Noctalia is never killed: the island asks it, with `noctalia msg config-set notification.enable_daemon false`, to stop
+claiming notifications (undo with `... true`). Any other owner is left alone and named in the log.
 
 ## Controlling it
 

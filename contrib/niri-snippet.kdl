@@ -1,0 +1,14 @@
+// Add to ~/.config/niri/config.kdl (replace the Noctalia bar and its notification daemon).
+// Start the island with the session:
+spawn-at-startup "open-island"
+
+binds {
+    // keyboard navigation: arrows move a focus ring, Enter activates, Tab changes page, Escape closes
+    Mod+I { spawn "open-island" "msg" "open"; }
+    Mod+Shift+I { spawn "open-island" "msg" "open" "qs"; }
+    Mod+N { spawn "open-island" "msg" "open" "notifs"; }
+    Mod+Shift+N { spawn "open-island" "msg" "dnd" "on"; }
+    Mod+C { spawn "open-island" "msg" "page" "clip"; }
+    // reply to the notification on screen
+    Mod+R { spawn "open-island" "msg" "reply"; }
+}

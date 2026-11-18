@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=open-island
+Comment=A macOS-style dynamic island
+Exec=open-island
+Icon=preferences-desktop-notification
+Categories=Utility;
+X-GNOME-Autostart-enabled=true

@@ -211,6 +211,25 @@ pub fn unit_from_cgroup(cgroup: &str, daemon: &str) -> Option<String> {
     })
 }
 
+/// What to do about the program that owns the notification name.
+#[derive(Debug, PartialEq)]
+pub enum Plan {
+    /// A notification daemon: stop it.
+    Stop,
+    /// The Noctalia shell: ask it to stop claiming notifications.
+    AskNoctalia,
+    /// Anything else is left alone.
+    Refuse,
+}
+
+pub fn plan(comm: &str) -> Plan {
+    match comm.trim() {
+        c if is_known_daemon(c) => Plan::Stop,
+        "noctalia" => Plan::AskNoctalia,
+        _ => Plan::Refuse,
+    }
+}
+
 fn request_name(conn: &zbus::blocking::Connection) -> Result<(), String> {
     conn.request_name_with_flags(IFACE, zbus::fdo::RequestNameFlags::DoNotQueue.into()).map(|_| ()).map_err(|e| e.to_string())
 }
@@ -238,14 +257,24 @@ fn acquire(conn: &zbus::blocking::Connection, take_over: bool) -> Result<(), Str
     if !take_over {
         return Err(format!("{comm} (pid {pid}) is the notification daemon and take_over_notifications is off: every notification shows twice"));
     }
-    if !is_known_daemon(&comm) {
-        return Err(format!("{comm} (pid {pid}) owns the notification name and is not a daemon I know how to stop: set enable_daemon = false in it, or stop it yourself"));
-    }
-    log::info!("replacing the notification daemon {comm} (pid {pid})");
-    let unit = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok().and_then(|c| unit_from_cgroup(&c, &comm));
-    let stopped = unit.as_ref().is_some_and(|u| std::process::Command::new("systemctl").args(["--user", "stop", u]).status().is_ok_and(|s| s.success()));
-    if !stopped {
-        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+    match plan(&comm) {
+        Plan::Stop => {
+            log::info!("replacing the notification daemon {comm} (pid {pid})");
+            let unit = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok().and_then(|c| unit_from_cgroup(&c, &comm));
+            let stopped = unit.as_ref().is_some_and(|u| std::process::Command::new("systemctl").args(["--user", "stop", u]).status().is_ok_and(|s| s.success()));
+            if !stopped {
+                let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+            }
+        }
+        Plan::AskNoctalia => {
+            // the shell is not killed: it is asked, through its own setting, to stop claiming notifications
+            log::info!("asking Noctalia to stop being the notification daemon (notification.enable_daemon = false)");
+            let ok = std::process::Command::new("noctalia").args(["msg", "config-set", "notification.enable_daemon", "false"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+            if !ok {
+                return Err("Noctalia owns the notification name and `noctalia msg config-set` failed: set [notification] enable_daemon = false in its settings".into());
+            }
+        }
+        Plan::Refuse => return Err(format!("{comm} (pid {pid}) owns the notification name and is not a daemon I know how to stop: set it to not claim notifications, or stop it yourself")),
     }
     // claim the name the moment it is free, before D-Bus activation starts the old daemon again
     for _ in 0..40 {
@@ -349,6 +378,16 @@ mod tests {
         assert!(is_known_daemon("mako\n"));
         for d in ["noctalia", "gnome-shell", "plasmashell", "open-island", "systemd", ""] {
             assert!(!is_known_daemon(d), "{d} is not something to kill");
+        }
+    }
+
+    #[test]
+    fn plans_what_to_do_with_the_owner() {
+        assert_eq!(plan("mako"), Plan::Stop);
+        assert_eq!(plan("noctalia"), Plan::AskNoctalia, "the shell is asked, never killed");
+        assert_eq!(plan("noctalia\n"), Plan::AskNoctalia);
+        for other in ["gnome-shell", "plasmashell", "open-island", "systemd", ""] {
+            assert_eq!(plan(other), Plan::Refuse, "{other}");
         }
     }
 

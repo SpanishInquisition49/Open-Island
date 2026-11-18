@@ -1,0 +1,18 @@
+# A systemd user unit: ~/.config/systemd/user/open-island.service, then
+#   systemctl --user enable --now open-island
+# Starts with the graphical session (niri, sway, Hyprland...). The island replaces the notification daemon
+# (mako, dunst...) at start, so mask the old one to keep D-Bus from bringing it back: systemctl --user mask mako
+[Unit]
+Description=open-island, a dynamic island for the desktop
+PartOf=graphical-session.target
+After=graphical-session.target
+ConditionEnvironment=WAYLAND_DISPLAY
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/open-island
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
