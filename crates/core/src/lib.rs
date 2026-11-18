@@ -4,6 +4,7 @@
 pub mod calendar;
 pub mod color;
 pub mod duration;
+pub mod face;
 pub mod ics;
 pub mod lyrics;
 pub mod notify;
