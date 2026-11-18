@@ -2107,4 +2107,27 @@ mod tests {
         hover(&mut j, false);
         assert_eq!(j.current_face(), Face::IdleHover);
     }
+
+    #[test]
+    fn a_click_on_the_pill_and_a_click_on_the_bubble_open_different_pages() {
+        let mut i = Island::new(Config::default());
+        i.data = data();
+        i.push(T0, Input::StartTimer(600));
+        draw_frames(&mut i, 200);
+        let (px, py, _, ph) = i.pill_rect();
+        let y = py + ph / 2.0;
+        // the left part of the pill used to be covered by the bubble's hit region
+        i.pointer_down(i.now, px + 20.0, y);
+        assert_eq!(i.page, Some(Page::Media), "a click on the pill opens the music");
+        i.activate(Action::Back);
+        i.page = None;
+        i.expand_until = 0;
+        draw_frames(&mut i, 300);
+        let (px, py, _, ph) = i.pill_rect();
+        i.pointer_down(i.now, px + i.spring.w.pos + BUBBLE_GAP + BUBBLE_W / 2.0, py + ph / 2.0);
+        assert_eq!(i.page, Some(Page::Timer), "a click on the bubble opens the timer");
+        for h in &i.hits {
+            assert!(h.rect.x1 <= i.spring.w.pos + BUBBLE_GAP + BUBBLE_W + 1.0, "no hit outside the group");
+        }
+    }
 }

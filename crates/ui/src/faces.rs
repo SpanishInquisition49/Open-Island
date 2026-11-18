@@ -92,6 +92,8 @@ impl Island {
             scene.fill(Fill::NonZero, bt, with_alpha(theme::BG, kk as f32), None, &RoundedRect::new(0.0, 0.0, BUBBLE_W, h, (h / 2.0).min(30.0)));
             let mut p = Painter { scene, fonts, hits: &mut hits, opacity: kk as f32, pointer: None, transform: bt, base: (kk as f32, bt), since_enter: 10_000 };
             self.draw_bubble(&mut p, side, BUBBLE_W, h);
+            // the bubble's hit region is in the pill's coordinates (its own drawing is shifted and scaled)
+            hits.push(Hit { rect: rect(bx, 0.0, BUBBLE_W, h), action: Action::Open(side_to_page(side)) });
         }
         self.hits = hits;
     }
@@ -1007,7 +1009,6 @@ impl Island {
         let x0 = (w - group) / 2.0;
         p.icon(icon, x0 + 6.5, h / 2.0, 13.0, theme::ACCENT);
         p.text(&text, x0 + 17.0, h / 2.0, 12.0, SEMI, theme::FG, Align::Left, 50.0);
-        p.hit(rect(0.0, 0.0, w, h), Action::Open(side_to_page(side)));
     }
 }
 
