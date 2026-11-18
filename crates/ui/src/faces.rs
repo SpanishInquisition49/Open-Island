@@ -28,6 +28,8 @@ pub(crate) struct QsLayout {
     pub vol_cy: f64,
     pub bri_cy: Option<f64>,
     pub out_top: Option<f64>,
+    /// The first of the connected Bluetooth devices (rows of 32 with 6 between).
+    pub dev_top: Option<f64>,
     pub height: f64,
 }
 const SEMI: Weight = Weight::Semibold;
@@ -668,27 +670,8 @@ impl Island {
                 let ww = p.text(&when, w - 22.0, y, 11.0, REG, theme::DIM, Align::Right, 100.0) as f64;
                 p.text(&e.title, 46.0, y, 12.0, SEMI, theme::FG, Align::Left, (w - 46.0 - ww - 36.0) as f32);
             }
-            y += 24.0;
         }
-        // connected Bluetooth devices and their battery: always here, not only when they connect
-        if !self.data.devices.is_empty() && y < h {
-            let mut x = 22.0;
-            for d in self.data.devices.iter().take(4) {
-                let low = d.battery.is_some_and(|b| b <= 20);
-                let col = if low { theme::RED } else { theme::FG };
-                p.icon(d.kind.icon(), x + 7.0, y, 14.0, col);
-                x += 19.0;
-                let avail = (w - 14.0 - x).max(0.0);
-                if avail < 40.0 {
-                    break;
-                }
-                let bat = d.battery.map(|b| format!(" {b}%")).unwrap_or_default();
-                let bat_w = p.fonts.measure(&bat, 11.0, REG) as f64;
-                let name_w = p.text(&d.name, x, y, 11.0, REG, if low { theme::RED } else { theme::DIM }, Align::Left, (avail - bat_w).min(150.0) as f32) as f64;
-                p.text(&bat, x + name_w, y, 11.0, SEMI, col, Align::Left, 40.0);
-                x += name_w + bat_w + 16.0;
-            }
-        }
+        let _ = y;
     }
 
     /// The header of a page: a back button and the title; returns the vertical centre of the header.
@@ -846,7 +829,13 @@ impl Island {
             bottom = t + 32.0;
             t
         });
-        QsLayout { chips_top, focus_y, vol_cy, bri_cy, out_top, height: bottom + 14.0 }
+        let dev_top = (!d.devices.is_empty()).then(|| {
+            let t = bottom + 10.0;
+            let n = d.devices.len().min(3) as f64;
+            bottom = t + n * 32.0 + (n - 1.0) * 6.0;
+            t
+        });
+        QsLayout { chips_top, focus_y, vol_cy, bri_cy, out_top, dev_top, height: bottom + 14.0 }
     }
 
     fn face_qs(&self, p: P, w: f64, _h: f64) {
@@ -882,6 +871,30 @@ impl Island {
                 p.text("switch", r.x1 - 12.0, r.center().y, 11.0, REG, theme::DIM, Align::Right, 60.0);
             }
             p.hit(r, Action::Cmd(Command::NextSink));
+        }
+        // connected Bluetooth devices with their battery, in the same quiet rows
+        if let Some(top) = l.dev_top {
+            for (i, dev) in d.devices.iter().take(3).enumerate() {
+                p.stagger(7 + i);
+                let r = rect(14.0, top + i as f64 * 38.0, w - 28.0, 32.0);
+                let low = dev.battery.is_some_and(|b| b <= 20);
+                p.rrect(r, 12.0, theme::CHIP);
+                p.icon(dev.kind.icon(), r.x0 + 18.0, r.center().y, 16.0, if low { theme::RED } else { theme::FG });
+                let right = match dev.battery {
+                    Some(b) => {
+                        let t = format!("{b}%");
+                        let tw = 34.0; // a fixed column, so the bars line up
+                        p.text(&t, r.x1 - 14.0, r.center().y, 12.0, SEMI, if low { theme::RED } else { theme::FG }, Align::Right, 44.0);
+                        p.bar(rect(r.x1 - 14.0 - tw - 10.0 - 46.0, r.center().y - 2.0, 46.0, 4.0), b as f64 / 100.0, if low { theme::RED } else { theme::GREEN }, theme::TRACK);
+                        tw + 10.0 + 46.0 + 14.0
+                    }
+                    None => {
+                        p.text("connected", r.x1 - 14.0, r.center().y, 11.0, REG, theme::DIM, Align::Right, 70.0);
+                        70.0 + 14.0
+                    }
+                };
+                p.text(&dev.name, r.x0 + 34.0, r.center().y, 12.0, SEMI, theme::FG, Align::Left, (r.width() - 34.0 - right - 8.0) as f32);
+            }
         }
     }
 

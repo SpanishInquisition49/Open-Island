@@ -196,4 +196,4 @@ icons are the ones bundled (Tabler names such as `git-branch`, `bolt`, `cloud`, 
 ## Bluetooth devices (Linux)
 
 Through `bluetoothctl`: a card when headphones, earbuds, a mouse or a keyboard connect (with the battery when the
-device reports it), a warning once when it falls to 15%, and the connected ones with their battery on the System page.
+device reports it), a warning once when it falls to 15%, and the connected ones with their battery on the Quick settings and System pages.

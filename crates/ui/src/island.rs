@@ -1347,9 +1347,6 @@ impl Island {
                 if self.next_event().is_some() {
                     h += 10.0 + 18.0 + 4.0;
                 }
-                if !self.data.devices.is_empty() {
-                    h += 26.0;
-                }
             }
             Face::Cal => {
                 let weeks = calendar::month_grid(self.cal.year, self.cal.month).len() as f64;
@@ -2503,16 +2500,25 @@ mod tests {
     }
 
     #[test]
-    fn the_home_page_keeps_showing_the_devices_and_their_battery() {
+    fn the_quick_settings_page_lists_the_devices_and_their_battery() {
         let mut i = Island::new(Config::default());
-        let (_, h0) = i.face_size(Face::IdleHover);
+        let h0 = i.qs_layout().height;
         i.data.devices = vec![headphones(Some(85))];
-        let (_, h1) = i.face_size(Face::IdleHover);
-        assert_eq!(h1, h0 + 26.0, "a row for them");
-        i.push(T0, Input::OpenPage(Page::Home));
+        assert_eq!(i.qs_layout().height, h0 + 10.0 + 32.0, "one row");
+        i.data.devices = vec![headphones(Some(85)), headphones(Some(12)), headphones(None), headphones(Some(5))];
+        assert_eq!(i.qs_layout().height, h0 + 10.0 + 3.0 * 32.0 + 2.0 * 6.0, "three at most");
+        i.push(T0, Input::OpenPage(Page::Qs));
         draw_frames(&mut i, 300);
         i.data.devices.clear();
-        assert_eq!(i.face_size(Face::IdleHover).1, h0, "and none when nothing is connected");
+        assert_eq!(i.qs_layout().height, h0, "and nothing when none is connected");
+    }
+
+    #[test]
+    fn the_home_page_is_left_as_it_was() {
+        let mut i = Island::new(Config::default());
+        let h0 = i.face_size(Face::IdleHover).1;
+        i.data.devices = vec![headphones(Some(85))];
+        assert_eq!(i.face_size(Face::IdleHover).1, h0);
     }
 
     #[test]

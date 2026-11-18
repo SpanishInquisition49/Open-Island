@@ -177,7 +177,7 @@ fn main() {
         ("progress-bubble", Box::new(|i, _| i.push(NOW - 5000, Input::Progress("64 rsync backup".into())))),
         ("device", Box::new(|i, _| i.push(NOW, Input::DeviceConnected(island_ui::model::Device { id: "x".into(), name: "Sony XM5".into(), kind: island_core::bluetooth::Kind::Headphones, battery: Some(85) })))),
         ("device-low", Box::new(|i, _| i.push(NOW, Input::DeviceLow(island_ui::model::Device { id: "x".into(), name: "Nothing Ear".into(), kind: island_core::bluetooth::Kind::Earbuds, battery: Some(12) })))),
-        ("home-devices", Box::new(|i, d| { d.devices = vec![island_ui::model::Device { id: "x".into(), name: "Sony XM5".into(), kind: island_core::bluetooth::Kind::Headphones, battery: Some(85) }, island_ui::model::Device { id: "y".into(), name: "Nothing Ear".into(), kind: island_core::bluetooth::Kind::Earbuds, battery: Some(12) }, island_ui::model::Device { id: "z".into(), name: "MX Master".into(), kind: island_core::bluetooth::Kind::Mouse, battery: None }]; i.push(NOW, Input::OpenPage(island_core::face::Page::Home)) })),
+        ("qs-devices", Box::new(|i, d| { d.devices = vec![island_ui::model::Device { id: "x".into(), name: "Sony XM5".into(), kind: island_core::bluetooth::Kind::Headphones, battery: Some(85) }, island_ui::model::Device { id: "y".into(), name: "Nothing Ear".into(), kind: island_core::bluetooth::Kind::Earbuds, battery: Some(12) }, island_ui::model::Device { id: "z".into(), name: "MX Master".into(), kind: island_core::bluetooth::Kind::Mouse, battery: None }]; i.push(NOW, Input::OpenPage(island_core::face::Page::Qs)) })),
         ("progress-done", Box::new(|i, _| { i.push(NOW, Input::Progress("64 rsync backup".into())); i.push(NOW, Input::ProgressDone("rsync backup".into())) })),
         ("activity-run", Box::new(|i, _| i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { label: "CI main".into(), detail: "building 3/5".into(), icon: Some("git-branch".into()), tint: Some((255, 159, 10)), frac: None })))),
         ("activity-fail", Box::new(|i, _| { i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { label: "CI main".into(), icon: Some("git-branch".into()), ..Default::default() })); i.push(NOW, Input::Activity(island_core::progress::State::Fail, island_core::progress::Activity { label: "CI main".into(), detail: "2 tests failed".into(), ..Default::default() })) })),
@@ -213,7 +213,7 @@ fn main() {
         setup(&mut i, &mut d);
         i.data = d.clone();
         // pages need a page request; "home" and "meeting" go through the hover-less path
-        let hold = name == "lyrics-scroll" || name == "page-sys-opening" || name == "media-transition" || name.contains("full") || name.starts_with("focus-full") || name.contains("lyrics") || name == "home" || name == "home-devices" || name.starts_with("page-");
+        let hold = name == "lyrics-scroll" || name == "page-sys-opening" || name == "media-transition" || name.contains("full") || name.starts_with("focus-full") || name.contains("lyrics") || name == "home" || name == "qs-devices" || name.starts_with("page-");
         let frames = if name == "media-transition" { 26 } else if name == "page-sys-opening" { 38 } else if name == "lyrics-scroll" { 40 } else { 400 };
         let f = settle(&mut i, &d, frames, hold);
         let (sw, sh) = (f.surface.0.ceil().max(520.0) as u32, f.surface.1.ceil().max(90.0) as u32);
