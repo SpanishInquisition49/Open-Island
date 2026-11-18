@@ -1,0 +1,146 @@
+//! The part of the application that does not depend on the windowing system: it owns the island, the
+//! fonts and the channel the services report on, and turns window events into island events.
+
+use crate::services::{self, Msg};
+use island_ui::model::{Command, Data};
+use island_ui::text::Fonts;
+use island_ui::{Config, Island};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
+use std::time::Instant;
+
+/// Wakes the event loop from another thread.
+pub type Waker = Arc<dyn Fn() + Send + Sync>;
+
+pub struct App {
+    pub island: Island,
+    pub fonts: Fonts,
+    rx: Receiver<Msg>,
+    cmd_tx: Sender<Command>,
+    start: Instant,
+    epoch_at_start: i64,
+    last_tick: Instant,
+    pub quit: bool,
+    persist_history: bool,
+    /// The focused window covers the whole screen (the island hides under it).
+    pub fullscreen: bool,
+    last_pointer: (f64, f64),
+}
+
+impl App {
+    pub fn new(waker: Waker) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cmd_tx = services::start(tx, waker);
+        let fonts = Fonts::load_system();
+        if !fonts.has_text_font() {
+            log::warn!("no text font found: the island will show icons only");
+        }
+        let epoch_at_start = chrono::Utc::now().timestamp_millis();
+        let now = Instant::now();
+        let mut island = Island::new(Config::default());
+        island.restore_announced(services::load_announced());
+        if crate::config::load().persist_history {
+            island.restore_history(services::load_history());
+        }
+        Self { island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, quit: false, persist_history: crate::config::load().persist_history, fullscreen: false, last_pointer: (0.0, 0.0) }
+    }
+
+    /// Epoch milliseconds, monotonic (not affected by clock changes while running).
+    pub fn now(&self) -> i64 {
+        self.epoch_at_start + self.start.elapsed().as_millis() as i64
+    }
+
+    /// Applies everything the services have reported.
+    pub fn pump(&mut self) {
+        let now = self.now();
+        while let Ok(msg) = self.rx.try_recv() {
+            match msg {
+                Msg::Patch(f) => {
+                    let mut data: Data = self.island.data.clone();
+                    f(&mut data);
+                    self.island.data = data;
+                }
+                Msg::Input(i) => {
+                    log::debug!("input at {now}");
+                    self.island.push(now, i)
+                }
+                Msg::Quit => self.quit = true,
+                Msg::Fullscreen(f) => self.fullscreen = f,
+            }
+        }
+    }
+
+    /// Advances the island; returns the surface size it needs and whether another frame is wanted.
+    pub fn tick(&mut self) -> island_ui::Frame {
+        self.pump();
+        let dt = self.last_tick.elapsed().as_secs_f64() * 1000.0;
+        self.last_tick = Instant::now();
+        let now = self.now();
+        let frame = self.island.tick(now, dt);
+        let cmds = self.island.take_commands();
+        self.exec(cmds);
+        let keys = self.island.announced_keys();
+        services::save_announced_if_changed(&keys);
+        if self.persist_history {
+            services::save_history_if_changed(self.island.history());
+        }
+        if let Some(dnd) = self.island.dnd_changed() {
+            services::save_dnd(dnd);
+        }
+        frame
+    }
+
+    pub fn exec(&self, cmds: Vec<Command>) {
+        for c in cmds {
+            let _ = self.cmd_tx.send(c);
+        }
+    }
+
+    pub fn pointer_moved(&mut self, x: f64, y: f64) {
+        self.last_pointer = (x, y);
+        let now = self.now();
+        let cmds = self.island.pointer_moved(now, x, y);
+        self.exec(cmds);
+    }
+
+    pub fn pointer_left(&mut self) {
+        let now = self.now();
+        self.island.pointer_left(now);
+    }
+
+    pub fn pointer_down_at_last(&mut self) {
+        let (x, y) = self.last_pointer;
+        self.pointer_down(x, y);
+    }
+
+    pub fn pointer_down(&mut self, x: f64, y: f64) {
+        let now = self.now();
+        let mut cmds = self.island.pointer_down(now, x, y);
+        cmds.extend(self.island.take_commands());
+        self.exec(cmds);
+    }
+
+    /// Feeds a key to the inline reply field.
+    pub fn key(&mut self, k: island_ui::model::KeyInput) {
+        let now = self.now();
+        self.island.push(now, island_ui::model::Input::Key(k));
+        let cmds = self.island.take_commands();
+        self.exec(cmds);
+    }
+
+    pub fn pointer_up(&mut self) {
+        let now = self.now();
+        self.island.pointer_up(now);
+    }
+
+    pub fn right_click(&mut self) {
+        let now = self.now();
+        self.island.right_click(now);
+    }
+
+    pub fn scroll(&mut self, dx: f64, dy: f64) {
+        let now = self.now();
+        let cmds = self.island.scroll(now, dx, dy);
+        self.exec(cmds);
+    }
+}

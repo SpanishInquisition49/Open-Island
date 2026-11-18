@@ -1,0 +1,40 @@
+[package]
+name = "open-island"
+description = "A macOS-style dynamic island for any desktop (Linux, Windows, macOS)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "open-island"
+path = "src/main.rs"
+
+[dependencies]
+island-core = { path = "../core" }
+island-ui = { path = "../ui" }
+vello = "0.12"
+winit = "0.30"
+pollster = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+interprocess = "2"
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+log = "0.4"
+env_logger = "0.11"
+
+# TLS: rustls on Linux; the system's own stack (schannel / Secure Transport) elsewhere, which needs no C toolchain
+[target.'cfg(target_os = "linux")'.dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls", "json", "gzip"] }
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+smithay-client-toolkit = "0.20"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+calloop = "0.14"
+calloop-wayland-source = "0.4"
+raw-window-handle = "0.6"
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["native-tls", "json", "gzip"] }
+
+[dev-dependencies]
+png = "0.18"
