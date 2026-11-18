@@ -3,6 +3,7 @@
 
 pub mod color;
 pub mod duration;
+pub mod lyrics;
 pub mod notify;
 pub mod pomodoro;
 pub mod progress;
