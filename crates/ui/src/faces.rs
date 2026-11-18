@@ -540,10 +540,10 @@ impl Island {
         let Some((d, low)) = &self.device_ev else { return };
         let tint = if *low { theme::RED } else { theme::FG };
         p.icon(d.kind.icon(), 30.0, h / 2.0, 20.0, tint);
-        let label = if *low { format!("{} · low battery", d.name) } else { d.name.clone() };
+        let label = d.name.clone();
         match d.battery {
             Some(b) => {
-                p.text(&label, 50.0, h / 2.0, 13.0, SEMI, if *low { theme::RED } else { theme::FG }, Align::Left, (w - 50.0 - 150.0) as f32);
+                p.text(&label, 50.0, h / 2.0, 13.0, SEMI, if *low { theme::RED } else { theme::FG }, Align::Left, (w - 50.0 - 160.0) as f32);
                 p.bar(rect(w - 150.0, h / 2.0 - 3.0, 90.0, 6.0), b as f64 / 100.0, if b <= 20 { theme::RED } else { theme::GREEN }, theme::TRACK);
                 p.text(&format!("{b}%"), w - 16.0, h / 2.0, 13.0, SEMI, theme::FG, Align::Right, 44.0);
             }

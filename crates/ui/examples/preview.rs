@@ -175,6 +175,8 @@ fn main() {
         ("timer-full", Box::new(|i, _| { i.push(NOW, Input::StartTimer(1500)); i.push(NOW, Input::Peek); })),
         ("progress-card", Box::new(|i, _| i.push(NOW, Input::Progress("64 rsync backup".into())))),
         ("progress-bubble", Box::new(|i, _| i.push(NOW - 5000, Input::Progress("64 rsync backup".into())))),
+        ("device", Box::new(|i, _| i.push(NOW, Input::DeviceConnected(island_ui::model::Device { id: "x".into(), name: "Sony XM5".into(), kind: island_core::bluetooth::Kind::Headphones, battery: Some(85) })))),
+        ("device-low", Box::new(|i, _| i.push(NOW, Input::DeviceLow(island_ui::model::Device { id: "x".into(), name: "Nothing Ear".into(), kind: island_core::bluetooth::Kind::Earbuds, battery: Some(12) })))),
         ("progress-done", Box::new(|i, _| { i.push(NOW, Input::Progress("64 rsync backup".into())); i.push(NOW, Input::ProgressDone("rsync backup".into())) })),
         ("activity-run", Box::new(|i, _| i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { label: "CI main".into(), detail: "building 3/5".into(), icon: Some("git-branch".into()), tint: Some((255, 159, 10)), frac: None })))),
         ("activity-fail", Box::new(|i, _| { i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { label: "CI main".into(), icon: Some("git-branch".into()), ..Default::default() })); i.push(NOW, Input::Activity(island_core::progress::State::Fail, island_core::progress::Activity { label: "CI main".into(), detail: "2 tests failed".into(), ..Default::default() })) })),
