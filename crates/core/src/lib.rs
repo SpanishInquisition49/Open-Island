@@ -6,5 +6,6 @@ pub mod duration;
 pub mod notify;
 pub mod pomodoro;
 pub mod progress;
+pub mod spring;
 pub mod system;
 pub mod weather;
