@@ -53,6 +53,14 @@ impl Island {
             let mut p = Painter { scene, fonts, hits: &mut hits, opacity: op, pointer, transform: content_t };
             self.draw_face(&mut p, self.shown, w, h);
         }
+        // the keyboard focus ring
+        if let Some(kb) = self.kb {
+            let nav: Vec<usize> = hits.iter().enumerate().filter(|(_, hit)| !(hit.rect.width() > w * 0.9 && hit.rect.height() > h * 0.5)).map(|(i, _)| i).collect();
+            if let Some(hit) = nav.get(kb.index % nav.len().max(1)).and_then(|i| hits.get(*i)) {
+                let r = hit.rect.inflate(2.0, 2.0);
+                scene.stroke(&vello::kurbo::Stroke::new(2.0), content_t, theme::FG, None, &RoundedRect::from_rect(r, (r.height() / 2.0).min(14.0)));
+            }
+        }
         // the cover art is one image that travels between the small pill's spot and the open player's,
         // following the shape's height, so it never cross-fades with the rest of the content
         if matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric) {

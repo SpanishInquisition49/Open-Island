@@ -19,6 +19,7 @@ pub const BUBBLE_W: f64 = 66.0;
 pub const BUBBLE_GAP: f64 = 6.0;
 pub const ICON_W: f64 = 19.0;
 const REPLY_IDLE_MS: i64 = 20_000;
+const KB_IDLE_MS: i64 = 9_000;
 const HOVER_INTENT_MS: i64 = 140;
 const HOVER_GRACE_MS: i64 = 320;
 const FADE_OUT_MS: f64 = 70.0;
@@ -133,6 +134,12 @@ pub struct Reply {
     pub until: i64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct Kb {
+    pub index: usize,
+    pub last_key: i64,
+}
+
 pub struct Cal {
     pub year: i32,
     pub month: u32,
@@ -178,6 +185,8 @@ pub struct Island {
     pub(crate) notif: Option<Incoming>,
     notif_until: i64,
     pub(crate) reply: Option<Reply>,
+    /// Keyboard navigation: the focused control among the drawn ones.
+    pub(crate) kb: Option<Kb>,
     pub(crate) queue: Vec<notify::Notification>,
     waiting: std::collections::VecDeque<Incoming>,
     pub(crate) history: Vec<(Incoming, i64)>,
@@ -241,6 +250,7 @@ impl Island {
             notif: None,
             notif_until: 0,
             reply: None,
+            kb: None,
             queue: vec![],
             waiting: Default::default(),
             history: vec![],
@@ -298,6 +308,12 @@ impl Island {
             }
             Input::Key(k) => self.on_key(k),
             Input::StartReply => self.start_reply(),
+            Input::OpenKeyboard(p) => {
+                self.kb = Some(Kb { index: 0, last_key: now });
+                self.page = p.or(Some(Page::Home));
+                self.hover_page = self.page;
+                self.expand_until = now + KB_IDLE_MS;
+            }
             Input::SetDnd(on) => {
                 self.data.dnd = on;
                 self.pending.push(Command::SetDnd(on));
@@ -408,6 +424,10 @@ impl Island {
 
     fn on_key(&mut self, k: KeyInput) {
         let now = self.now;
+        if self.reply.is_none() {
+            self.kb_key(k);
+            return;
+        }
         let Some(r) = self.reply.as_mut() else { return };
         r.until = now + REPLY_IDLE_MS;
         let chars = r.text.chars().count();
@@ -460,6 +480,45 @@ impl Island {
         std::mem::take(&mut self.pending)
     }
 
+    /// The controls the keyboard can reach: every drawn hit except the ones that cover the whole face.
+    pub(crate) fn nav_hits(&self) -> Vec<usize> {
+        let (w, h) = (self.spring.w.pos, self.spring.h.pos);
+        self.hits.iter().enumerate().filter(|(_, hit)| !(hit.rect.width() > w * 0.9 && hit.rect.height() > h * 0.5)).map(|(i, _)| i).collect()
+    }
+
+    fn kb_key(&mut self, k: KeyInput) {
+        let now = self.now;
+        let Some(mut kb) = self.kb else { return };
+        kb.last_key = now;
+        self.expand_until = now + KB_IDLE_MS;
+        let nav = self.nav_hits();
+        let n = nav.len().max(1);
+        match k {
+            KeyInput::Right | KeyInput::Down => kb.index = (kb.index + 1) % n,
+            KeyInput::Left | KeyInput::Up => kb.index = (kb.index + n - 1) % n,
+            KeyInput::Enter => {
+                if let Some(action) = nav.get(kb.index).and_then(|i| self.hits.get(*i)).map(|h| h.action.clone()) {
+                    match action {
+                        Action::SeekBar | Action::VolumeBar | Action::BrightnessBar => {}
+                        a => {
+                            let cmds = self.activate(a);
+                            self.pending.extend(cmds);
+                        }
+                    }
+                }
+            }
+            KeyInput::Escape => {
+                self.kb = None;
+                self.expand_until = 0;
+                self.page = None;
+                self.hover_page = None;
+                return;
+            }
+            _ => {}
+        }
+        self.kb = Some(kb);
+    }
+
     /// True while the island needs the keyboard (an inline reply is being typed).
     /// True when the equalizer is on screen with music playing: the audio analysis is worth running.
     pub fn wants_spectrum(&self) -> bool {
@@ -469,7 +528,7 @@ impl Island {
     }
 
     pub fn wants_keyboard(&self) -> bool {
-        self.reply.is_some()
+        self.reply.is_some() || self.kb.is_some()
     }
 
     fn start_timer(&mut self, secs: u64) {
@@ -961,6 +1020,9 @@ impl Island {
         self.slow_checks();
         self.sync_lyrics();
         // notifications: expiry and the next waiting one
+        if self.kb.is_some_and(|k| now - k.last_key > KB_IDLE_MS) {
+            self.kb = None;
+        }
         if self.reply.as_ref().is_some_and(|r| now > r.until) {
             self.end_reply(false);
         }
@@ -1520,5 +1582,39 @@ mod tests {
                 assert!(fr.surface.0 < 1500.0 && fr.surface.1 < 1200.0 && fr.surface.1.is_finite(), "{page:?}");
             }
         }
+    }
+
+    #[test]
+    fn the_keyboard_reaches_the_controls() {
+        let f = fonts();
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenKeyboard(Some(Page::Home)));
+        assert!(i.wants_keyboard());
+        for _ in 0..200 {
+            let fr = i.tick(i.now + 8, 8.0);
+            let mut scene = Scene::new();
+            i.draw(&mut scene, &f, fr.surface, 1.0);
+        }
+        let nav = i.nav_hits();
+        assert!(nav.len() >= 5, "the preset chips and the calendar button: {}", nav.len());
+        let key = |i: &mut Island, k: KeyInput| i.push(i.now, Input::Key(k));
+        key(&mut i, KeyInput::Right);
+        assert_eq!(i.kb.unwrap().index, 1);
+        key(&mut i, KeyInput::Left);
+        key(&mut i, KeyInput::Left);
+        assert_eq!(i.kb.unwrap().index, nav.len() - 1, "wraps around");
+        key(&mut i, KeyInput::Right);
+        key(&mut i, KeyInput::Enter);
+        assert!(i.timer.is_some(), "Enter on the first chip starts the 5 min timer");
+        key(&mut i, KeyInput::Escape);
+        assert!(i.kb.is_none() && !i.wants_keyboard());
+    }
+
+    #[test]
+    fn the_keyboard_lets_go_when_idle() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenKeyboard(None));
+        run(&mut i, 10_000);
+        assert!(i.kb.is_none(), "an abandoned keyboard session ends");
     }
 }

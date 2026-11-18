@@ -219,6 +219,8 @@ impl Wl {
             Keysym::Right => Some(KeyInput::Right),
             Keysym::Home => Some(KeyInput::Home),
             Keysym::End => Some(KeyInput::End),
+            Keysym::Up => Some(KeyInput::Up),
+            Keysym::Down => Some(KeyInput::Down),
             Keysym::Return | Keysym::KP_Enter => Some(KeyInput::Enter),
             Keysym::Escape => Some(KeyInput::Escape),
             _ if self.ctrl => None,

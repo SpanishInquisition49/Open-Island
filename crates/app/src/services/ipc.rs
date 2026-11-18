@@ -14,13 +14,32 @@ fn socket_name() -> String {
     }
 }
 
+fn page(name: &str) -> Option<island_core::face::Page> {
+    use island_core::face::Page;
+    Some(match name {
+        "home" => Page::Home,
+        "cal" | "calendar" => Page::Cal,
+        "qs" => Page::Qs,
+        "sys" | "system" => Page::Sys,
+        "notifs" | "notifications" => Page::Notifs,
+        "media" => Page::Media,
+        "clip" | "clipboard" => Page::Clip,
+        "focus" => Page::Focus,
+        "timer" => Page::Timer,
+        _ => return None,
+    })
+}
+
 fn parse(line: &str) -> Option<Input> {
     let line = line.trim();
     let (event, payload) = line.split_once(char::is_whitespace).map_or((line, ""), |(a, b)| (a, b.trim()));
-    use island_core::face::Page;
     Some(match event {
         "peek" => Input::Peek,
         "reply" => Input::StartReply,
+        "open" => Input::OpenKeyboard(match payload {
+            "" => None,
+            p => Some(page(p)?),
+        }),
         "dnd" => match payload {
             "on" => Input::SetDnd(true),
             "off" => Input::SetDnd(false),
@@ -34,18 +53,7 @@ fn parse(line: &str) -> Option<Input> {
         "pomodoro" => Input::StartPomodoro,
         "stopwatch" => Input::StartStopwatch,
         "timer-cancel" => Input::CancelTimer,
-        "page" => Input::OpenPage(match payload {
-            "home" => Page::Home,
-            "cal" | "calendar" => Page::Cal,
-            "qs" => Page::Qs,
-            "sys" => Page::Sys,
-            "notifs" | "notifications" => Page::Notifs,
-            "media" => Page::Media,
-            "focus" => Page::Focus,
-            "clip" | "clipboard" => Page::Clip,
-            "timer" => Page::Timer,
-            _ => return None,
-        }),
+        "page" => Input::OpenPage(page(payload)?),
         _ => return None,
     })
 }
@@ -98,6 +106,9 @@ mod tests {
         assert!(matches!(parse("progress 42 Copying"), Some(Input::Progress(p)) if p == "42 Copying"));
         assert!(matches!(parse("timer 25m"), Some(Input::StartTimer(1500))));
         assert!(matches!(parse("page cal"), Some(Input::OpenPage(_))));
+        assert!(matches!(parse("open qs"), Some(Input::OpenKeyboard(Some(_)))));
+        assert!(matches!(parse("open"), Some(Input::OpenKeyboard(None))));
+        assert!(parse("open nowhere").is_none());
         assert!(parse("page nope").is_none());
         assert!(parse("garbage").is_none());
     }

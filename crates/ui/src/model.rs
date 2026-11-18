@@ -195,6 +195,8 @@ pub enum KeyInput {
     Right,
     Home,
     End,
+    Up,
+    Down,
     Enter,
     Escape,
 }
@@ -230,6 +232,8 @@ pub enum Input {
     Key(KeyInput),
     /// Reply to the notification on screen (from a shortcut).
     StartReply,
+    /// Open the island for keyboard use (arrows move the focus, Enter activates, Escape closes).
+    OpenKeyboard(Option<island_core::face::Page>),
     /// Levels (0..=1) of the audio spectrum bands, for the equalizer.
     Spectrum(Vec<f32>),
     /// Open the island for a few seconds ("peek").
