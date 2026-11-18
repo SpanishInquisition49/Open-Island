@@ -47,6 +47,8 @@ pub struct Config {
     pub status_icons: bool,
     pub lyrics: bool,
     pub clipboard_history: bool,
+    /// The current lyric line in the small pill instead of the title.
+    pub lyrics_in_pill: bool,
     pub timer_presets: Vec<u64>,
 }
 
@@ -65,6 +67,7 @@ impl Default for Config {
             status_icons: true,
             lyrics: true,
             clipboard_history: true,
+            lyrics_in_pill: false,
             timer_presets: vec![300, 600, 1500],
         }
     }
@@ -1182,9 +1185,16 @@ impl Island {
         Some(lyrics::strip(self.lyric_idx, progress, self.lyric_dir).into_iter().map(|(n, slot)| (text(n), slot)).collect())
     }
 
+    /// The line being sung and how far its entrance has come (0..=1), when the track has synced lyrics and one is due.
+    pub(crate) fn lyric_now(&self) -> Option<(String, f64)> {
+        let lines = self.lyric_lines.as_ref()?;
+        let line = lines.get(self.lyric_idx.checked_sub(1)?)?;
+        (!line.text.is_empty()).then(|| (line.text.clone(), lyrics::ease_out((self.now - self.lyric_at) as f64 / 300.0)))
+    }
+
     /// The strip is still scrolling: frames are needed.
     fn lyrics_scrolling(&self) -> bool {
-        self.lyric_lines.is_some() && ((self.now - self.lyric_at) as f64) < lyrics::SCROLL_MS && matches!(self.shown, Face::MediaLyric)
+        self.lyric_lines.is_some() && ((self.now - self.lyric_at) as f64) < lyrics::SCROLL_MS && matches!(self.shown, Face::MediaLyric | Face::MediaMini)
     }
 
     fn snapshot(&mut self) -> (Snapshot, bool) {
@@ -2320,5 +2330,38 @@ mod tests {
         let mut i = Island::new(Config::default());
         assert_eq!(i.activate(Action::Cmd(Command::RefreshCalendars)), vec![Command::RefreshCalendars]);
         assert!(i.note.is_some());
+    }
+
+    #[test]
+    fn the_pill_can_show_the_line_being_sung() {
+        let f = fonts();
+        let mut i = Island::new(Config { lyrics_in_pill: true, ..Config::default() });
+        i.data = data();
+        i.data.lyrics_lrc = Some("[00:01.00] First line\n[00:30.00] Second line".into());
+        i.data.media.as_mut().unwrap().position_ms = 5000.0;
+        i.data.media.as_mut().unwrap().sampled_at_ms = T0;
+        run(&mut i, 600);
+        assert_eq!(i.current_face(), Face::MediaMini);
+        assert_eq!(i.lyric_now().map(|(t, _)| t).as_deref(), Some("First line"));
+        let mut scene = Scene::new();
+        let fr = i.tick(i.now + 8, 8.0);
+        i.draw(&mut scene, &f, fr.surface, 1.0);
+        // time moves on past the second line: the entrance restarts from nothing
+        i.data.media.as_mut().unwrap().position_ms = 29_900.0;
+        i.data.media.as_mut().unwrap().sampled_at_ms = i.now;
+        run(&mut i, 200);
+        let (t, e) = i.lyric_now().unwrap();
+        assert_eq!(t, "Second line");
+        assert!(e < 1.0, "still coming in");
+        run(&mut i, 600);
+        assert_eq!(i.lyric_now().unwrap().1, 1.0);
+        // a blank line (an instrumental gap) shows nothing
+        let mut j = Island::new(Config::default());
+        j.data = data();
+        j.data.lyrics_lrc = Some("[00:01.00] \n[00:30.00] x".into());
+        j.data.media.as_mut().unwrap().position_ms = 5000.0;
+        j.data.media.as_mut().unwrap().sampled_at_ms = T0;
+        run(&mut j, 600);
+        assert!(j.lyric_now().is_none());
     }
 }

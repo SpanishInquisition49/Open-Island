@@ -247,7 +247,18 @@ impl Island {
         right = self.status_icons(p, right, cy, 13.0);
         self.equalizer(p, right - 22.0, cy, 4, 12.0, 2.5, m.playing, self.art_tint());
         let max = (right - 26.0 - 38.0).max(20.0) as f32;
-        p.text(&m.title, 38.0, cy, 12.0, SEMI, theme::FG, Align::Left, max);
+        // with the option on, the line being sung replaces the title and rises into place on every change
+        match self.cfg.lyrics_in_pill.then(|| self.lyric_now()).flatten().filter(|_| m.playing) {
+            Some((line, e)) => {
+                let base = p.opacity;
+                p.opacity = base * e as f32;
+                p.text(&line, 38.0, cy + 5.0 * (1.0 - e), 12.0, SEMI, theme::FG, Align::Left, max);
+                p.opacity = base;
+            }
+            None => {
+                p.text(&m.title, 38.0, cy, 12.0, SEMI, theme::FG, Align::Left, max);
+            }
+        }
         p.hit(rect(0.0, 0.0, w, h), Action::Open(Page::Media));
     }
 
