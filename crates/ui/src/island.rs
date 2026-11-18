@@ -799,7 +799,9 @@ impl Island {
 
     fn hit_at(&self, x: f64, y: f64) -> Option<&Hit<Action>> {
         let (lx, ly) = self.local(x, y);
-        self.hits.iter().rev().find(|h| h.rect.contains(vello::kurbo::Point::new(lx, ly)))
+        // the most specific control wins: a button on a row beats the row, whatever was drawn first
+        let at = vello::kurbo::Point::new(lx, ly);
+        self.hits.iter().rev().filter(|h| h.rect.contains(at)).min_by(|a, b| (a.rect.width() * a.rect.height()).total_cmp(&(b.rect.width() * b.rect.height())))
     }
 
     fn slider_at(&mut self, x: f64, _y: f64) -> Vec<Command> {
@@ -1305,6 +1307,9 @@ impl Island {
         }
         if self.notif.is_some() && self.reply.is_none() && now >= self.notif_until {
             self.close_notif(CloseReason::Expired);
+        }
+        // whatever took the card off the screen (expiry, the x, a click), the next waiting one comes up
+        if self.notif.is_none() && self.reply.is_none() {
             if let Some(n) = self.waiting.pop_front() {
                 self.queue.retain(|q| q.id != n.id);
                 self.show_notif(n);
@@ -2439,5 +2444,53 @@ mod tests {
             }
             assert_eq!(j.current_face(), Face::Qs, "{label}");
         }
+    }
+
+    /// Presses the middle of the first drawn control with this action.
+    fn press(i: &mut Island, action: Action) -> bool {
+        let Some(h) = i.hits.iter().find(|h| h.action == action).map(|h| h.rect) else { return false };
+        let cmds = i.pointer_down(i.now, h.center().x + i.pill_origin.0, h.center().y + i.pill_origin.1);
+        i.pending.extend(cmds);
+        true
+    }
+
+    #[test]
+    fn the_x_on_a_notification_in_the_list_removes_only_that_one() {
+        let mut i = Island::new(Config::default());
+        for n in 0..3u32 {
+            i.history.push((Incoming { id: n, app: "a".into(), summary: format!("n{n}"), ..Default::default() }, T0));
+        }
+        i.push(T0, Input::OpenPage(Page::Notifs));
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::HistoryRemove(1)), "the x of the second row is drawn");
+        assert_eq!(i.history.iter().map(|(n, _)| n.summary.as_str()).collect::<Vec<_>>(), ["n0", "n2"]);
+        draw_frames(&mut i, 10);
+        assert!(press(&mut i, Action::HistoryRemove(0)));
+        assert_eq!(i.history.len(), 1, "and the first one");
+    }
+
+    #[test]
+    fn the_x_on_the_notification_card_skips_to_the_next_one() {
+        let mut i = Island::new(Config::default());
+        let n = |id: u32, app: &str| Input::Notification(Incoming { id, app: app.into(), summary: format!("n{id}"), ..Default::default() });
+        i.push(T0, n(1, "a"));
+        i.push(T0, n(2, "b"));
+        draw_frames(&mut i, 200);
+        assert_eq!(i.notif.as_ref().map(|n| n.id), Some(1));
+        assert!(press(&mut i, Action::NextNotif), "the x is drawn while another one waits");
+        assert!(i.take_commands().iter().any(|c| matches!(c, Command::NotificationClosed { id: 1, reason: CloseReason::Dismissed })));
+        draw_frames(&mut i, 400);
+        assert_eq!(i.notif.as_ref().map(|n| n.id), Some(2), "the next one is shown");
+    }
+
+    #[test]
+    fn a_button_inside_a_row_beats_the_row_in_every_page() {
+        let mut i = Island::new(Config::default());
+        i.data.config.calendars = vec![CalendarView { name: "A".into(), detail: "a.org".into(), color: (1, 2, 3) }];
+        i.push(T0, Input::OpenPage(Page::Settings));
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::RemoveCalendar(0)), "the calendar's x");
+        assert!(i.take_commands().contains(&Command::RemoveCalendar(0)));
+        assert!(i.edit.is_none(), "and not the rename field under it");
     }
 }
