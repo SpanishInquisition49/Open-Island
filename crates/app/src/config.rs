@@ -247,6 +247,9 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     let b = |k: &str, d: bool| v.get(k).and_then(|x| x.as_bool()).unwrap_or(d);
     u.meeting_alerts = b("meeting_alerts", u.meeting_alerts);
     u.rain_alerts = b("rain_alerts", u.rain_alerts);
+    u.quiet_in_meetings = b("quiet_in_meetings", u.quiet_in_meetings);
+    u.quiet_on_mic = b("quiet_on_mic", u.quiet_on_mic);
+    u.quiet_on_screen_share = b("quiet_on_screen_share", u.quiet_on_screen_share);
     u.battery_alerts = b("battery_alerts", u.battery_alerts);
     u.media_auto_expand = b("media_auto_expand", u.media_auto_expand);
     u.clock_in_pill = b("clock_in_pill", u.clock_in_pill);
@@ -316,7 +319,7 @@ mod tests {
 
     #[test]
     fn reads_the_known_keys() {
-        let s = parse(r##"{"latitude":43.7,"longitude":10.4,"calendar_urls":["https://x/y.ics"],"calendars":[{"name":"Uni","url":"https://x/u.ics","color":"#0a84ff"},{"type":"icloud","user":"me@icloud.com","password":"abcd"}],"timer_presets":["5m",10],"meeting_lead_minutes":15,"lyrics":false}"##).unwrap();
+        let s = parse(r##"{"latitude":43.7,"longitude":10.4,"calendar_urls":["https://x/y.ics"],"calendars":[{"name":"Uni","url":"https://x/u.ics","color":"#0a84ff"},{"type":"icloud","user":"me@icloud.com","password":"abcd"}],"timer_presets":["5m",10],"meeting_lead_minutes":15,"lyrics":false,"quiet_on_mic":false}"##).unwrap();
         assert_eq!(s.latitude, Some(43.7));
         assert_eq!(s.calendars.len(), 3);
         assert_eq!(s.calendars[0], CalendarSource { name: String::new(), kind: CalendarKind::Ics { url: "https://x/y.ics".into() }, color: None });
@@ -328,6 +331,7 @@ mod tests {
         assert_eq!(s.ui.timer_presets, vec![300, 600]);
         assert_eq!(s.ui.meeting_lead_ms, 15 * 60_000);
         assert!(!s.ui.lyrics);
+        assert!(!s.ui.quiet_on_mic && s.ui.quiet_in_meetings && s.ui.quiet_on_screen_share, "quiet: only what is switched off is off");
     }
 
     #[test]

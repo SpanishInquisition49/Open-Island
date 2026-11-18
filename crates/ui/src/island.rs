@@ -51,6 +51,10 @@ pub struct Config {
     /// The current lyric line in the small pill instead of the title.
     pub lyrics_in_pill: bool,
     pub timer_presets: Vec<u64>,
+    /// Notifications are held (not shown) during a calendar event / while the microphone or the screen share is on.
+    pub quiet_in_meetings: bool,
+    pub quiet_on_mic: bool,
+    pub quiet_on_screen_share: bool,
 }
 
 impl Default for Config {
@@ -70,6 +74,9 @@ impl Default for Config {
             clipboard_history: true,
             lyrics_in_pill: false,
             timer_presets: vec![300, 600, 1500],
+            quiet_in_meetings: true,
+            quiet_on_mic: true,
+            quiet_on_screen_share: true,
         }
     }
 }
@@ -348,6 +355,9 @@ pub struct Island {
     pub(crate) copied: Option<(usize, i64)>,
     pub(crate) pending: Vec<Command>,
     dnd_seen: bool,
+    /// Why notifications are held without the user having asked (a meeting, the microphone, a screen share).
+    pub(crate) auto_quiet: Option<&'static str>,
+    dnd_sent: bool,
 }
 
 impl Island {
@@ -426,6 +436,8 @@ impl Island {
             copied: None,
             pending: vec![],
             dnd_seen: false,
+            auto_quiet: None,
+            dnd_sent: false,
         }
     }
 
@@ -483,7 +495,8 @@ impl Island {
             }
             Input::SetDnd(on) => {
                 self.data.dnd = on;
-                self.pending.push(Command::SetDnd(on));
+                self.dnd_sent = self.quiet();
+                self.pending.push(Command::SetDnd(self.dnd_sent));
             }
             Input::Spectrum(v) => {
                 self.spectrum = v;
@@ -538,7 +551,7 @@ impl Island {
         log::debug!("notification {} from {:?}: dnd={} showing={}", n.id, n.app, self.data.dnd, self.notif.is_some());
         self.history.insert(0, (n.clone(), self.now));
         self.history.truncate(30);
-        if self.data.dnd && !n.critical {
+        if self.quiet() && !n.critical {
             return;
         }
         if self.notif.as_ref().is_some_and(|c| c.id == n.id) {
@@ -1255,7 +1268,8 @@ impl Island {
             }
             Action::ToggleDnd => {
                 self.data.dnd = !self.data.dnd;
-                return vec![Command::SetDnd(self.data.dnd)];
+                self.dnd_sent = self.quiet();
+                return vec![Command::SetDnd(self.dnd_sent)];
             }
             Action::SeekBar | Action::VolumeBar | Action::BrightnessBar => {}
         }
@@ -1326,7 +1340,7 @@ impl Island {
         }
         let p = self.data.privacy;
         let _ = compact_busy;
-        p.mic as usize + p.camera as usize + p.screen as usize
+        p.mic as usize + p.camera as usize + p.screen as usize + self.quiet() as usize
     }
 
     fn sync_lyrics(&mut self) {
@@ -1418,8 +1432,39 @@ impl Island {
         (snap, big)
     }
 
+    /// Notifications are held: asked for, or one of the automatic reasons holds.
+    pub fn quiet(&self) -> bool {
+        self.data.dnd || self.auto_quiet.is_some()
+    }
+
+    /// Why the island holds notifications by itself right now.
+    pub fn auto_quiet_reason(&self) -> Option<&'static str> {
+        self.auto_quiet
+    }
+
+    fn update_quiet(&mut self, now: i64) {
+        let p = self.data.privacy;
+        let in_meeting = self.cfg.quiet_in_meetings
+            && self.data.events.iter().any(|e| !e.all_day && e.start_ms <= now && now < e.end_ms && e.end_ms - e.start_ms <= 3 * 3_600_000);
+        self.auto_quiet = if in_meeting {
+            Some("meeting")
+        } else if self.cfg.quiet_on_screen_share && p.screen {
+            Some("screen share")
+        } else if self.cfg.quiet_on_mic && p.mic {
+            Some("microphone")
+        } else {
+            None
+        };
+        // the daemon holds the sounds back too: tell it whenever the state it should keep changes
+        if self.quiet() != self.dnd_sent {
+            self.dnd_sent = self.quiet();
+            self.pending.push(Command::SetDnd(self.dnd_sent));
+        }
+    }
+
     fn slow_checks(&mut self) {
         let now = self.now;
+        self.update_quiet(now);
         // meeting heads-up: once per event
         if self.cfg.meeting_alerts {
             if let Some(e) = self.announcer.new_heads_up(&self.data.events, now, self.cfg.meeting_lead_ms).cloned() {
@@ -2179,6 +2224,63 @@ mod tests {
         type_line(&mut i, "focus 45");
         i.push(i.now, Input::Key(KeyInput::Enter));
         assert!(i.take_commands().contains(&Command::StartFocus(45)));
+    }
+
+    fn count_cards(i: &Island) -> usize {
+        i.notif.is_some() as usize + i.waiting.len()
+    }
+
+    #[test]
+    fn notifications_are_held_during_a_calendar_event_and_come_back_after() {
+        let mut i = Island::new(Config::default());
+        i.data.events = vec![Event { id: "e".into(), title: "Lesson".into(), start_ms: T0 + 60_000, end_ms: T0 + 3_600_000, ..Default::default() }];
+        let n = |id: u32| Input::Notification(Incoming { id, app: "Chat".into(), summary: format!("m{id}"), ..Default::default() });
+        run(&mut i, 5000);
+        i.push(i.now, n(1));
+        assert_eq!(count_cards(&i), 1, "before the event: shown");
+        run(&mut i, 20_000);
+        run(&mut i, 61_000 - 25_000);
+        assert_eq!(i.auto_quiet_reason(), Some("meeting"));
+        assert!(i.take_commands().contains(&Command::SetDnd(true)), "the daemon is told, so it stays silent too");
+        i.push(i.now, n(2));
+        assert_eq!(count_cards(&i), 0, "during the event: held back");
+        assert_eq!(i.history.len(), 2, "but kept in the history");
+        i.push(i.now, Input::Notification(Incoming { id: 3, critical: true, ..Default::default() }));
+        assert_eq!(count_cards(&i), 1, "a critical one still gets through");
+        run(&mut i, 3_600_000);
+        assert_eq!(i.auto_quiet_reason(), None);
+        assert!(i.take_commands().contains(&Command::SetDnd(false)));
+    }
+
+    #[test]
+    fn the_microphone_and_a_screen_share_hold_notifications_unless_switched_off() {
+        let mut i = Island::new(Config::default());
+        i.data.privacy.mic = true;
+        run(&mut i, 2000);
+        assert_eq!(i.auto_quiet_reason(), Some("microphone"));
+        i.data.privacy.screen = true;
+        run(&mut i, 2000);
+        assert_eq!(i.auto_quiet_reason(), Some("screen share"));
+        i.data.privacy = Default::default();
+        run(&mut i, 2000);
+        assert!(!i.quiet());
+        let mut j = Island::new(Config { quiet_on_mic: false, quiet_on_screen_share: false, quiet_in_meetings: false, ..Config::default() });
+        j.data.privacy.mic = true;
+        j.data.privacy.screen = true;
+        j.data.events = vec![Event { id: "e".into(), start_ms: 0, end_ms: i64::MAX / 2, ..Default::default() }];
+        run(&mut j, 2000);
+        assert!(!j.quiet(), "all three can be switched off");
+    }
+
+    #[test]
+    fn an_all_day_or_very_long_event_does_not_silence_the_island() {
+        let mut i = Island::new(Config::default());
+        i.data.events = vec![
+            Event { id: "a".into(), start_ms: 0, end_ms: i64::MAX / 2, all_day: true, ..Default::default() },
+            Event { id: "b".into(), start_ms: 0, end_ms: i64::MAX / 2, ..Default::default() },
+        ];
+        run(&mut i, 2000);
+        assert!(!i.quiet());
     }
 
     #[test]

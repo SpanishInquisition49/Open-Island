@@ -183,7 +183,7 @@ impl Island {
             return x_right;
         }
         let mut x = x_right;
-        for (on, icon, color) in [(pr.screen, "screen-share", theme::ORANGE), (pr.camera, "video", theme::GREEN), (pr.mic, "microphone", theme::ORANGE)] {
+        for (on, icon, color) in [(self.quiet(), "bell-off", theme::DIM), (pr.screen, "screen-share", theme::ORANGE), (pr.camera, "video", theme::GREEN), (pr.mic, "microphone", theme::ORANGE)] {
             if on {
                 p.icon(icon, x - size as f64 / 2.0, cy, size, color);
                 x -= ICON_W;
@@ -753,7 +753,7 @@ impl Island {
         if let Some(on) = d.bluetooth {
             v.push((if on { "bluetooth" } else { "bluetooth-off" }, "Bluetooth".into(), on, Action::Cmd(Command::ToggleBluetooth)));
         }
-        v.push(("bell-off", "DND".into(), d.dnd, Action::ToggleDnd));
+        v.push(("bell-off", "DND".into(), d.dnd || self.auto_quiet.is_some(), Action::ToggleDnd));
         v.push(("coffee", "Keep awake".into(), d.keep_awake, Action::Cmd(Command::ToggleKeepAwake)));
         if let Some(profile) = d.profile.as_deref().filter(|p| !p.is_empty()) {
             let label = profile[..1].to_uppercase() + &profile[1..];
@@ -1110,7 +1110,7 @@ impl Island {
             p.button(rect(w - 14.0 - clear, hy - 15.0, clear, 30.0), "Clear", Action::ClearHistory);
         }
         let dnd = rect(w - 14.0 - clear - 8.0 - 76.0, hy - 15.0, 76.0, 30.0);
-        let on = self.data.dnd;
+        let on = self.quiet();
         p.rrect(dnd, 15.0, if on { theme::ACCENT } else if p.hovered(dnd) { theme::HOT_CHIP } else { theme::CHIP });
         p.icon("bell-off", dnd.x0 + 16.0, hy, 14.0, if on { theme::ON_ACCENT } else { theme::FG });
         p.text("DND", dnd.x0 + 28.0, hy, 12.0, SEMI, if on { theme::ON_ACCENT } else { theme::FG }, Align::Left, 40.0);

@@ -167,3 +167,10 @@ Bind `open-island msg bar` to a key (niri: `Mod+Space { spawn "open-island" "msg
 | `pomodoro`, `stopwatch`, `focus 45`, `dnd on` / `dnd off` | the matching mode |
 | `12*7+3`, `sqrt(2)`, `2^10`, `(1+2)*3` | a sum; Enter copies the result |
 | `5 km in mi`, `70 f to c`, `1 gib to mb` | a conversion (length, mass, volume, speed, data, temperature); Enter copies it |
+
+## Quiet by itself
+
+Notifications are held (they stay in the history, and the sound stays off) while a calendar event is on (timed, up to
+3 hours), while the microphone is in use and while the screen is shared; a small crossed bell shows it in the pill and
+`critical` notifications still come through. Switch any of the three off in the configuration:
+`"quiet_in_meetings": false`, `"quiet_on_mic": false`, `"quiet_on_screen_share": false`.
