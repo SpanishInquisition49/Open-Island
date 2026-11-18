@@ -53,6 +53,18 @@ impl Island {
             let mut p = Painter { scene, fonts, hits: &mut hits, opacity: op, pointer, transform: content_t };
             self.draw_face(&mut p, self.shown, w, h);
         }
+        // the cover art is one image that travels between the small pill's spot and the open player's,
+        // following the shape's height, so it never cross-fades with the rest of the content
+        if matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric) {
+            let t = ((h - 28.0) / (160.0 - 28.0)).clamp(0.0, 1.0);
+            let t = t * t * (3.0 - 2.0 * t);
+            let lerp = |a: f64, b: f64| a + (b - a) * t;
+            let size = lerp(20.0, 64.0);
+            let (x, y, r) = (lerp(8.0, 14.0), lerp((28.0 - 20.0) / 2.0, 14.0), lerp(6.0, 12.0));
+            let mut p = Painter { scene, fonts, hits: &mut hits, opacity: 1.0, pointer: None, transform: base };
+            let art = self.data.media.as_ref().and_then(|m| m.art.as_ref());
+            self.draw_art(&mut p, art, x, y, size, r);
+        }
         scene.pop_layer();
 
         // the side bubble
@@ -188,7 +200,6 @@ impl Island {
     fn face_media_mini(&self, p: P, w: f64, h: f64) {
         let Some(m) = self.data.media.as_ref() else { return };
         let cy = h / 2.0;
-        self.draw_art(p, m.art.as_ref(), 8.0, cy - 10.0, 20.0, 6.0);
         let mut right = self.pill_clock(p, w - 14.0, cy);
         right = self.status_icons(p, right, cy, 13.0);
         self.equalizer(p, right - 22.0, cy, 4, 12.0, 2.5, m.playing, self.art_tint());
@@ -199,7 +210,6 @@ impl Island {
 
     fn face_media_full(&self, p: P, w: f64, _h: f64, lyric: bool) {
         let Some(m) = self.data.media.as_ref() else { return };
-        self.draw_art(p, m.art.as_ref(), 14.0, 14.0, 64.0, 12.0);
         p.text(&m.title, 92.0, 30.0, 14.0, SEMI, theme::FG, Align::Left, (w - 92.0 - 56.0) as f32);
         p.text(&m.artist, 92.0, 50.0, 12.0, REG, theme::DIM, Align::Left, (w - 92.0 - 56.0) as f32);
         self.equalizer(p, w - 40.0, 30.0, 4, 14.0, 3.0, m.playing, self.art_tint());
