@@ -506,8 +506,15 @@ impl Island {
         }
         buttons.push(("Pomodoro".into(), Action::PomodoroStart));
         buttons.push(("Calendar".into(), Action::Open(Page::Cal)));
-        let widths: Vec<f64> = buttons.iter().map(|(l, _)| p.button_width(l)).collect();
-        let total: f64 = widths.iter().sum::<f64>() + 8.0 * (buttons.len() - 1) as f64;
+        let mut widths: Vec<f64> = buttons.iter().map(|(l, _)| p.button_width(l)).collect();
+        let avail = w - 28.0;
+        let mut total: f64 = widths.iter().sum::<f64>() + 8.0 * (buttons.len() - 1) as f64;
+        if total > avail {
+            // a wide font: trim the padding of every chip so the row still fits
+            let cut = ((total - avail) / buttons.len() as f64).min(16.0);
+            widths.iter_mut().for_each(|x| *x -= cut);
+            total = widths.iter().sum::<f64>() + 8.0 * (buttons.len() - 1) as f64;
+        }
         let mut x = (w - total) / 2.0;
         for ((label, action), bw) in buttons.iter().zip(widths) {
             p.button(rect(x, y - 17.0, bw, 34.0), label, action.clone());

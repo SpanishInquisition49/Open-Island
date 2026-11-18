@@ -31,7 +31,11 @@ impl App {
     pub fn new(waker: Waker) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         let cmd_tx = services::start(tx, waker);
-        let fonts = Fonts::load_system();
+        let wanted = crate::config::load().font;
+        let fonts = Fonts::load_system(Some(&wanted));
+        if !wanted.is_empty() && !fonts.preferred_found() {
+            log::warn!("font {wanted:?} not found: using the default");
+        }
         if !fonts.has_text_font() {
             log::warn!("no text font found: the island will show icons only");
         }

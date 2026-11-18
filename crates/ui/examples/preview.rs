@@ -153,7 +153,7 @@ fn render(g: &mut Gpu, scene: &Scene, w: u32, h: u32, path: &std::path::Path) {
 fn main() {
     let dir = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "preview".into()));
     std::fs::create_dir_all(&dir).unwrap();
-    let fonts = Fonts::load_system();
+    let fonts = Fonts::load_system(std::env::var("ISLAND_FONT").ok().as_deref());
     assert!(fonts.has_text_font(), "no text font found");
     let mut g = gpu();
     let scale = 2.0;

@@ -11,6 +11,13 @@ use vello::{Glyph, Scene};
 
 const TABLER: &[u8] = include_bytes!("../assets/tabler.ttf");
 
+fn shellexpand_home(p: &str) -> std::path::PathBuf {
+    match (p.strip_prefix("~/"), std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))) {
+        (Some(rest), Some(h)) => std::path::Path::new(&h).join(rest),
+        _ => p.into(),
+    }
+}
+
 /// One loaded face.
 pub struct Face {
     data: FontData,
@@ -54,6 +61,7 @@ pub struct Fonts {
     text: HashMap<Weight, Vec<Face>>, // each weight: preferred face first, then fallbacks
     icons: Face,
     icon_map: HashMap<&'static str, u32>,
+    preferred_found: bool,
 }
 
 /// Preferred UI families, first match wins: the macOS look needs SF Pro (not redistributable, so it is
@@ -74,17 +82,41 @@ const FAMILIES: &[&str] = &[
 ];
 
 impl Fonts {
-    pub fn load_system() -> Self {
+    /// Loads the system fonts. `preferred` is a family name ("Inter", "SF Pro Text") or the path of a font
+    /// file (.ttf, .otf, .ttc); it is tried before the built-in list.
+    pub fn load_system(preferred: Option<&str>) -> Self {
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
-        Self::from_db(&db)
+        let mut family = preferred.map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
+        if let Some(p) = family.clone().filter(|p| p.contains('/') || p.contains('\\') || [".ttf", ".otf", ".ttc"].iter().any(|e| p.to_lowercase().ends_with(e))) {
+            let before = db.len();
+            family = match db.load_font_file(shellexpand_home(&p)) {
+                Ok(()) => db.faces().nth(before).and_then(|f| f.families.first().map(|(n, _)| n.clone())),
+                Err(e) => {
+                    log::warn!("font file {p}: {e}");
+                    None
+                }
+            };
+        }
+        Self::from_db_with(&db, family.as_deref())
     }
 
     pub fn from_db(db: &fontdb::Database) -> Self {
+        Self::from_db_with(db, None)
+    }
+
+    /// True when the requested family was found (always true when none was requested).
+    pub fn preferred_found(&self) -> bool {
+        self.preferred_found
+    }
+
+    pub fn from_db_with(db: &fontdb::Database, preferred: Option<&str>) -> Self {
         let mut text = HashMap::new();
+        let mut preferred_found = preferred.is_none();
+        let families: Vec<&str> = preferred.into_iter().chain(FAMILIES.iter().copied()).collect();
         for (weight, w) in [(Weight::Regular, 400), (Weight::Semibold, 600), (Weight::Bold, 700)] {
             let mut faces = Vec::new();
-            for fam in FAMILIES {
+            for (n, fam) in families.iter().enumerate() {
                 let q = fontdb::Query {
                     families: &[fontdb::Family::Name(fam)],
                     weight: fontdb::Weight(w),
@@ -94,6 +126,9 @@ impl Fonts {
                 if let Some(id) = db.query(&q) {
                     if let Some(face) = Self::face_of(db, id) {
                         faces.push(face);
+                        if preferred.is_some() && n == 0 {
+                            preferred_found = true;
+                        }
                     }
                 }
                 if faces.len() >= 3 {
@@ -114,7 +149,7 @@ impl Fonts {
         }
         let icons = Face::new(TABLER.to_vec(), 0).expect("bundled icon font is valid");
         let icon_map = crate::icon_table::ICONS.iter().copied().collect();
-        Self { text, icons, icon_map }
+        Self { text, icons, icon_map, preferred_found }
     }
 
     fn face_of(db: &fontdb::Database, id: fontdb::ID) -> Option<Face> {
@@ -222,6 +257,18 @@ impl Fonts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_preferred_family_comes_first_and_an_unknown_one_is_reported() {
+        let mut db = fontdb::Database::new();
+        db.load_font_data(TABLER.to_vec());
+        let family = db.faces().next().unwrap().families[0].0.clone();
+        let f = Fonts::from_db_with(&db, Some(&family));
+        assert!(f.has_text_font() && f.preferred_found(), "the font's own family is found");
+        let f = Fonts::from_db_with(&db, Some("No Such Family"));
+        assert!(!f.preferred_found());
+        assert!(Fonts::from_db_with(&db, None).preferred_found(), "nothing requested counts as found");
+    }
 
     #[test]
     fn icon_table_resolves_in_the_bundled_font() {

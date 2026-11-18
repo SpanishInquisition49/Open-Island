@@ -3,7 +3,8 @@
 //! ```json
 //! { "latitude": 43.72, "longitude": 10.40,
 //!   "calendar_urls": ["https://example.org/calendar.ics"],
-//!   "timer_presets": ["5m", "10m", "25m"], "meeting_lead_minutes": 10, "lyrics": true }
+//!   "timer_presets": ["5m", "10m", "25m"], "meeting_lead_minutes": 10, "lyrics": true,
+//!   "font": "Inter" }
 //! ```
 //! Weather needs a location (the island never guesses one); calendars are read from iCal feed URLs.
 
@@ -24,6 +25,8 @@ pub struct Settings {
     pub filters: Vec<Filter>,
     /// Keep the notification history on disk between runs.
     pub persist_history: bool,
+    /// A font family name or the path of a font file; empty = the built-in list (SF Pro first).
+    pub font: String,
 }
 
 impl Default for Settings {
@@ -39,6 +42,7 @@ impl Default for Settings {
             timer_sound: None,
             filters: vec![],
             persist_history: true,
+            font: String::new(),
         }
     }
 }
@@ -98,6 +102,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
             })
             .collect();
     }
+    s.font = v.get("font").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
     s.persist_history = v.get("persist_history").and_then(|x| x.as_bool()).unwrap_or(true);
     s.latitude = v.get("latitude").and_then(|x| x.as_f64()).filter(|x| (-90.0..=90.0).contains(x));
     s.longitude = v.get("longitude").and_then(|x| x.as_f64()).filter(|x| (-180.0..=180.0).contains(x));
@@ -156,6 +161,14 @@ mod tests {
         assert_eq!(s.ui.timer_presets, vec![300, 600]);
         assert_eq!(s.ui.meeting_lead_ms, 15 * 60_000);
         assert!(!s.ui.lyrics);
+    }
+
+    #[test]
+    fn reads_the_font() {
+        assert_eq!(parse(r#"{"font":"  Inter "}"#).unwrap().font, "Inter");
+        assert_eq!(parse(r#"{"font":"~/fonts/My Font.ttf"}"#).unwrap().font, "~/fonts/My Font.ttf");
+        assert_eq!(parse("{}").unwrap().font, "");
+        assert_eq!(parse(r#"{"font":3}"#).unwrap().font, "", "not a string");
     }
 
     #[test]
