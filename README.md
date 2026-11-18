@@ -38,6 +38,17 @@ On X11 with the proprietary NVIDIA driver the window cannot be transparent (the 
 mode), so a black rectangle shows around the pill; Wayland has no such limit. A clipping shape for that case
 is planned.
 
+## Install (Linux)
+
+```sh
+cargo install --path crates/app          # or: makepkg -si -D contrib   (contrib/PKGBUILD)
+open-island doctor                       # what works here, what is missing
+cp contrib/open-island.service ~/.config/systemd/user/ && systemctl --user enable --now open-island
+```
+
+On niri, `contrib/niri-snippet.kdl` has `spawn-at-startup` and key bindings (open, quick settings, notifications, reply,
+clipboard). The island replaces the notification daemon at start (see below); at rest it uses under 1% of a core.
+
 ## Build and run
 
 ```sh
