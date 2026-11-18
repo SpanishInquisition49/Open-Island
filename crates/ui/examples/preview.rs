@@ -179,6 +179,7 @@ fn main() {
         ("rain", Box::new(|_, d| { d.weather.as_mut().unwrap().rain_slots[1].mm = 0.6; })),
         ("home", Box::new(|i, _| { i.push(NOW, Input::Peek); })),
         ("page-cal", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Cal)))),
+        ("page-clip", Box::new(|i, d| { d.clipboard = vec!["cargo test --workspace".into(), "https://example.org/a/very/long/link/that/needs/an/ellipsis?with=query&and=more".into(), "Reti di calcolatori\n  lezione 12".into()]; i.push(NOW, Input::OpenPage(island_core::face::Page::Clip)); })),
         ("page-qs", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Qs)))),
         ("page-sys", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Sys)))),
         ("page-notifs", Box::new(|i, _| {

@@ -98,8 +98,9 @@ impl Island {
             Face::Qs => self.face_qs(p, w, h),
             Face::Sys => self.face_sys(p, w, h),
             Face::Notifs => self.face_notifs(p, w, h),
+            Face::Clip => self.face_clip(p, w, h),
             // not part of this build (no clipboard history, focus mode or update check yet)
-            Face::Clip | Face::FocusMini | Face::FocusFull | Face::Update => {}
+            Face::FocusMini | Face::FocusFull | Face::Update => {}
         }
     }
 
@@ -218,6 +219,9 @@ impl Island {
         p.icon_button(cx + 64.0, cy, 36.0, "player-skip-forward", 20.0, Action::Cmd(Command::MediaNext));
         if m.players > 1 {
             p.icon_button(cx - 128.0, cy, 34.0, "arrows-exchange", 17.0, Action::CyclePlayer);
+        }
+        if self.cfg.clipboard_history {
+            p.icon_button(cx + 128.0, cy, 34.0, "clipboard-text", 17.0, Action::Open(Page::Clip));
         }
         if lyric {
             if let Some((prev, cur, next)) = self.lyric_window() {
@@ -701,6 +705,25 @@ impl Island {
         if let Some((used, total)) = st.disk {
             let f = if total > 0.0 { used / total } else { 0.0 };
             self.metric_row(p, w, y, "Disk /", Some(f), &format!("{} / {}", island_core::system::fmt_mb(used), island_core::system::fmt_mb(total)), load_color(f));
+        }
+    }
+
+    fn face_clip(&self, p: P, w: f64, _h: f64) {
+        let hy = self.page_header(p, w, "Clipboard");
+        p.text("click to copy", w - 14.0, hy, 11.0, REG, theme::DIM, Align::Right, 120.0);
+        let mut y = 14.0 + 34.0 + 4.0;
+        if self.data.clipboard.is_empty() {
+            p.text("Clipboard history is empty", 14.0, y + 14.0, 12.0, REG, theme::DIM, Align::Left, 300.0);
+        }
+        for (i, t) in self.data.clipboard.iter().take(5).enumerate() {
+            let row = rect(14.0, y, w - 28.0, 28.0);
+            p.rrect(row, 10.0, if p.hovered(row) { theme::HOT_CHIP } else { theme::CHIP });
+            let copied = self.copied.is_some_and(|(j, until)| j == i && self.now < until);
+            p.icon(if copied { "circle-check" } else { "clipboard-text" }, row.x0 + 18.0, y + 14.0, 14.0, if copied { theme::ACCENT } else { theme::DIM });
+            let one_line: String = t.split_whitespace().collect::<Vec<_>>().join(" ");
+            p.text(&one_line, row.x0 + 34.0, y + 14.0, 12.0, REG, theme::FG, Align::Left, (row.width() - 46.0) as f32);
+            p.hit(row, Action::ClipRestore(i));
+            y += 32.0;
         }
     }
 

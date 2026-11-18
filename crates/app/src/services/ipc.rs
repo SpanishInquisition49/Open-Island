@@ -6,7 +6,13 @@ use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions}
 use island_ui::model::Input;
 use std::io::{BufRead, BufReader, Write};
 
-const NAME: &str = "open-island.sock";
+/// The socket's name; OPEN_ISLAND_SOCKET adds a suffix so a second island (a test run) can live next to the first.
+fn socket_name() -> String {
+    match std::env::var("OPEN_ISLAND_SOCKET") {
+        Ok(suffix) if !suffix.is_empty() => format!("open-island-{suffix}.sock"),
+        _ => "open-island.sock".to_string(),
+    }
+}
 
 fn parse(line: &str) -> Option<Input> {
     let line = line.trim();
@@ -30,6 +36,7 @@ fn parse(line: &str) -> Option<Input> {
             "sys" => Page::Sys,
             "notifs" | "notifications" => Page::Notifs,
             "media" => Page::Media,
+            "clip" | "clipboard" => Page::Clip,
             "timer" => Page::Timer,
             _ => return None,
         }),
@@ -38,7 +45,7 @@ fn parse(line: &str) -> Option<Input> {
 }
 
 pub fn start(rep: Reporter) {
-    let Ok(name) = NAME.to_ns_name::<GenericNamespaced>() else { return };
+    let Ok(name) = socket_name().to_ns_name::<GenericNamespaced>() else { return };
     let listener = match ListenerOptions::new().name(name).create_sync() {
         Ok(l) => l,
         Err(e) => {
@@ -67,7 +74,7 @@ pub fn start(rep: Reporter) {
 
 /// Sends one message to a running island (the `msg` subcommand). Returns false when none is running.
 pub fn send(line: &str) -> bool {
-    let Ok(name) = NAME.to_ns_name::<GenericNamespaced>() else { return false };
+    let Ok(name) = socket_name().to_ns_name::<GenericNamespaced>() else { return false };
     let Ok(mut conn) = interprocess::local_socket::Stream::connect(name) else { return false };
     conn.write_all(format!("{line}\n").as_bytes()).is_ok()
 }

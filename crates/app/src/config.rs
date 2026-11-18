@@ -119,6 +119,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     u.clock_in_pill = b("clock_in_pill", u.clock_in_pill);
     u.status_icons = b("status_icons", u.status_icons);
     u.lyrics = b("lyrics", u.lyrics);
+    u.clipboard_history = b("clipboard_history", u.clipboard_history);
     if let Some(m) = v.get("meeting_lead_minutes").and_then(|x| x.as_i64()).filter(|m| (1..=120).contains(m)) {
         u.meeting_lead_ms = m * 60_000;
     }

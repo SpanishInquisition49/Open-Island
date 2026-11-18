@@ -2,7 +2,7 @@
 //! notifications (the island becomes the notification daemon when the name is free, otherwise it watches
 //! the bus), and the camera / microphone indicators.
 
-use super::{art, net, notif, quick, sound, sysmon, Reporter};
+use super::{art, clipboard, net, notif, quick, sound, sysmon, Reporter};
 use island_ui::model::*;
 use std::collections::HashMap;
 use std::process::Command as Proc;
@@ -21,6 +21,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
     let (notif_cmd_tx, notif_cmd_rx) = std::sync::mpsc::channel::<Command>();
     media(rep.clone(), media_cmd_rx);
     sysmon::start(rep.clone());
+    clipboard::start(rep.clone());
     let (quick_tx, quick_rx) = std::sync::mpsc::channel::<Command>();
     quick::start(rep.clone(), quick_rx);
     notif::start(rep.clone(), notif_cmd_rx, settings.clone(), initial_dnd);
@@ -37,6 +38,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                 Command::ToggleWifi | Command::ToggleBluetooth | Command::ToggleKeepAwake | Command::NextProfile | Command::NextSink | Command::RefreshQuick => {
                     let _ = quick_tx.send(c);
                 }
+                Command::RestoreClipboard(t) => clipboard::restore(&t),
                 Command::SetVolume(v) => {
                     run("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{:.2}", v)]);
                 }

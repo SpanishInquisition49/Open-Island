@@ -127,6 +127,8 @@ pub struct Data {
     pub sinks: Vec<Sink>,
     pub sink: Option<String>,
     pub system: Option<SystemStats>,
+    /// Text copied recently, newest first (password-manager entries are never in it).
+    pub clipboard: Vec<String>,
     /// Lyrics of the current track, as LRC text (the platform layer fetches them).
     pub lyrics_lrc: Option<String>,
     pub utc_offset_secs: i32,
@@ -244,6 +246,8 @@ pub enum Command {
     NextSink,
     /// Re-read the quick-settings state (the page was just opened).
     RefreshQuick,
+    /// Put this text back on the clipboard.
+    RestoreClipboard(String),
     OpenUrl(String),
     InvokeAction { id: u32, key: String },
     CloseNotification(u32),

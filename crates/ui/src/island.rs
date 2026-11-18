@@ -38,6 +38,7 @@ pub struct Config {
     pub clock_in_pill: bool,
     pub status_icons: bool,
     pub lyrics: bool,
+    pub clipboard_history: bool,
     pub timer_presets: Vec<u64>,
 }
 
@@ -55,6 +56,7 @@ impl Default for Config {
             clock_in_pill: true,
             status_icons: true,
             lyrics: true,
+            clipboard_history: true,
             timer_presets: vec![300, 600, 1500],
         }
     }
@@ -90,6 +92,7 @@ pub enum Action {
     CalToday,
     HistoryRemove(usize),
     HistoryOpen(usize),
+    ClipRestore(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -196,6 +199,8 @@ pub struct Island {
     lyric_lines: Option<Vec<Line>>,
     lyric_src: Option<String>,
     pub(crate) cal: Cal,
+    /// The clipboard entry just restored, and until when it shows a check mark.
+    pub(crate) copied: Option<(usize, i64)>,
     pub(crate) pending: Vec<Command>,
     dnd_seen: bool,
 }
@@ -255,6 +260,7 @@ impl Island {
             lyric_lines: None,
             lyric_src: None,
             cal: Cal { year: 1970, month: 1, day: 1 },
+            copied: None,
             pending: vec![],
             dnd_seen: false,
         }
@@ -743,6 +749,12 @@ impl Island {
                 }
             }
             Action::HistoryOpen(_) => {}
+            Action::ClipRestore(i) => {
+                if let Some(t) = self.data.clipboard.get(i).cloned() {
+                    self.copied = Some((i, now + 1500));
+                    return vec![Command::RestoreClipboard(t)];
+                }
+            }
             Action::ToggleDnd => {
                 self.data.dnd = !self.data.dnd;
                 return vec![Command::SetDnd(self.data.dnd)];
@@ -771,6 +783,7 @@ impl Island {
             }
             Face::Notif if self.notif.as_ref().is_some_and(|n| n.progress.is_some()) => h += 14.0,
             Face::Notifs => h = 14.0 + 34.0 + 6.0 + self.history.len().clamp(1, 5) as f64 * 46.0 + if self.history.is_empty() { 20.0 } else { 8.0 },
+            Face::Clip => h = 14.0 + 34.0 + 4.0 + self.data.clipboard.len().clamp(1, 5) as f64 * 32.0 + 10.0,
             Face::Qs => h = 14.0 + 34.0 + 8.0 + 36.0 + 8.0 + 36.0 + 8.0 + 28.0 + 8.0 + 28.0 + 8.0 + 32.0 + 14.0,
             Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
             Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
@@ -859,7 +872,7 @@ impl Island {
             update: false,
             big,
             page: self.page,
-            clipboard: false,
+            clipboard: self.cfg.clipboard_history,
             media,
             lyrics: media && self.lyric_lines.is_some(),
             timer: self.timer.is_some(),
