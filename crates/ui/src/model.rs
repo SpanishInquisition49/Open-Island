@@ -106,6 +106,18 @@ pub struct SystemStats {
     pub load: Option<[f32; 3]>,
 }
 
+/// The settings the menu shows and changes (the platform layer owns the file).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConfigView {
+    pub font: String,
+    /// The configured font was not found.
+    pub font_missing: bool,
+    pub calendars: Vec<String>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub notification_sound: String,
+}
+
 /// The study mode (`~/.local/bin/focus`): sites blocked and notifications silenced until `end_epoch`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Focus {
@@ -135,6 +147,7 @@ pub struct Data {
     pub sinks: Vec<Sink>,
     pub sink: Option<String>,
     pub system: Option<SystemStats>,
+    pub config: ConfigView,
     /// None when there is no focus script on this machine.
     pub focus: Option<Focus>,
     /// Text copied recently, newest first (password-manager entries are never in it).
@@ -236,6 +249,8 @@ pub enum Input {
     OpenKeyboard(Option<island_core::face::Page>),
     /// Levels (0..=1) of the audio spectrum bands, for the equalizer.
     Spectrum(Vec<f32>),
+    /// A line for the settings page ("Font not found"); shown for a few seconds.
+    SettingsNote(String),
     /// Open the island for a few seconds ("peek").
     Peek,
     /// Do not disturb on/off, from a script (focus mode).
@@ -264,6 +279,13 @@ pub enum Command {
     NextSink,
     /// Re-read the quick-settings state (the page was just opened).
     RefreshQuick,
+    /// A calendar feed address (https://, http:// or webcal://).
+    AddCalendar(String),
+    RemoveCalendar(usize),
+    SetFont(String),
+    SetLatitude(f64),
+    SetLongitude(f64),
+    SetNotificationSound(String),
     StartFocus(u32),
     StopFocus,
     /// Put this text back on the clipboard.

@@ -33,6 +33,22 @@ pub mod other;
 
 /// Set by the app while the system page / the quick settings page is open: the sampling threads idle otherwise.
 pub static SYSTEM_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Bumped whenever the settings change, so the services that read them (weather, calendars) refetch at once.
+pub static CONFIG_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Sleeps up to `secs`, or until the settings change. Returns true when they did.
+pub fn wait_or_config_change(secs: u64) -> bool {
+    let start = CONFIG_GEN.load(std::sync::atomic::Ordering::Relaxed);
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    while std::time::Instant::now() < end {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        if CONFIG_GEN.load(std::sync::atomic::Ordering::Relaxed) != start {
+            return true;
+        }
+    }
+    false
+}
+
 pub static SPECTRUM_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static QUICK_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 

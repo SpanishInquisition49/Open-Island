@@ -5,6 +5,7 @@
 use crate::model::*;
 use crate::paint::Hit;
 use island_core::calendar::{self, Announcer};
+use crate::config_check::is_calendar_url;
 use island_core::duration;
 use island_core::face::{self, Face, NotifFace, Page, Side, Snapshot};
 use island_core::lyrics::{self, Line};
@@ -20,6 +21,7 @@ pub const BUBBLE_GAP: f64 = 6.0;
 pub const ICON_W: f64 = 19.0;
 const REPLY_IDLE_MS: i64 = 20_000;
 const KB_IDLE_MS: i64 = 9_000;
+const EDIT_IDLE_MS: i64 = 40_000;
 const HOVER_INTENT_MS: i64 = 140;
 const HOVER_GRACE_MS: i64 = 320;
 const FADE_OUT_MS: f64 = 70.0;
@@ -89,6 +91,8 @@ pub enum Action {
     ReplySend,
     ReplyCancel,
     CyclePlayer,
+    EditField(Field),
+    RemoveCalendar(usize),
     Back,
     CalToday,
     HistoryRemove(usize),
@@ -132,6 +136,58 @@ pub struct Reply {
     /// Caret position in characters.
     pub cursor: usize,
     pub until: i64,
+}
+
+/// A setting being edited in the settings menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Field {
+    Calendar,
+    Font,
+    Latitude,
+    Longitude,
+    Sound,
+}
+
+#[derive(Clone, Debug)]
+pub struct Edit {
+    pub field: Field,
+    pub text: String,
+    pub cursor: usize,
+    pub until: i64,
+}
+
+/// Edits `text` with a text-field key (insert, delete, move). Returns false for any other key.
+pub fn edit_text(text: &mut String, cursor: &mut usize, k: &KeyInput) -> bool {
+    let chars = text.chars().count();
+    *cursor = (*cursor).min(chars);
+    let byte = |t: &str, ci: usize| t.char_indices().nth(ci).map_or(t.len(), |(b, _)| b);
+    match k {
+        KeyInput::Text(t) => {
+            let t: String = t.chars().filter(|c| !c.is_control()).collect();
+            let at = byte(text, *cursor);
+            text.insert_str(at, &t);
+            *cursor += t.chars().count();
+        }
+        KeyInput::Backspace => {
+            if *cursor > 0 {
+                let (a, b) = (byte(text, *cursor - 1), byte(text, *cursor));
+                text.replace_range(a..b, "");
+                *cursor -= 1;
+            }
+        }
+        KeyInput::Delete => {
+            if *cursor < chars {
+                let (a, b) = (byte(text, *cursor), byte(text, *cursor + 1));
+                text.replace_range(a..b, "");
+            }
+        }
+        KeyInput::Left => *cursor = cursor.saturating_sub(1),
+        KeyInput::Right => *cursor = (*cursor + 1).min(chars),
+        KeyInput::Home => *cursor = 0,
+        KeyInput::End => *cursor = chars,
+        _ => return false,
+    }
+    true
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -187,6 +243,8 @@ pub struct Island {
     pub(crate) reply: Option<Reply>,
     /// Keyboard navigation: the focused control among the drawn ones.
     pub(crate) kb: Option<Kb>,
+    pub(crate) edit: Option<Edit>,
+    pub(crate) note: Option<(String, i64)>,
     pub(crate) queue: Vec<notify::Notification>,
     waiting: std::collections::VecDeque<Incoming>,
     pub(crate) history: Vec<(Incoming, i64)>,
@@ -253,6 +311,8 @@ impl Island {
             notif_until: 0,
             reply: None,
             kb: None,
+            edit: None,
+            note: None,
             queue: vec![],
             waiting: Default::default(),
             history: vec![],
@@ -311,6 +371,7 @@ impl Island {
             }
             Input::Key(k) => self.on_key(k),
             Input::StartReply => self.start_reply(),
+            Input::SettingsNote(t) => self.note = Some((t, now + 5000)),
             Input::OpenKeyboard(p) => {
                 self.kb = Some(Kb { index: 0, last_key: now });
                 self.page = p.or(Some(Page::Home));
@@ -427,34 +488,20 @@ impl Island {
 
     fn on_key(&mut self, k: KeyInput) {
         let now = self.now;
+        if self.edit.is_some() {
+            self.edit_key(k);
+            return;
+        }
         if self.reply.is_none() {
             self.kb_key(k);
             return;
         }
         let Some(r) = self.reply.as_mut() else { return };
         r.until = now + REPLY_IDLE_MS;
-        let chars = r.text.chars().count();
-        let byte = |text: &str, ci: usize| text.char_indices().nth(ci).map_or(text.len(), |(b, _)| b);
+        if edit_text(&mut r.text, &mut r.cursor, &k) {
+            return;
+        }
         match k {
-            KeyInput::Text(t) => {
-                let t: String = t.chars().filter(|c| !c.is_control()).collect();
-                let at = byte(&r.text, r.cursor);
-                r.text.insert_str(at, &t);
-                r.cursor += t.chars().count();
-            }
-            KeyInput::Backspace if r.cursor > 0 => {
-                let (a, b) = (byte(&r.text, r.cursor - 1), byte(&r.text, r.cursor));
-                r.text.replace_range(a..b, "");
-                r.cursor -= 1;
-            }
-            KeyInput::Delete if r.cursor < chars => {
-                let (a, b) = (byte(&r.text, r.cursor), byte(&r.text, r.cursor + 1));
-                r.text.replace_range(a..b, "");
-            }
-            KeyInput::Left => r.cursor = r.cursor.saturating_sub(1),
-            KeyInput::Right => r.cursor = (r.cursor + 1).min(chars),
-            KeyInput::Home => r.cursor = 0,
-            KeyInput::End => r.cursor = chars,
             KeyInput::Enter => self.end_reply(true),
             KeyInput::Escape => self.end_reply(false),
             _ => {}
@@ -487,6 +534,58 @@ impl Island {
     pub(crate) fn nav_hits(&self) -> Vec<usize> {
         let (w, h) = (self.spring.w.pos, self.spring.h.pos);
         self.hits.iter().enumerate().filter(|(_, hit)| !(hit.rect.width() > w * 0.9 && hit.rect.height() > h * 0.5)).map(|(i, _)| i).collect()
+    }
+
+    fn start_edit(&mut self, field: Field) {
+        let c = &self.data.config;
+        let text = match field {
+            Field::Calendar => String::new(),
+            Field::Font => c.font.clone(),
+            Field::Latitude => c.latitude.map(|v| v.to_string()).unwrap_or_default(),
+            Field::Longitude => c.longitude.map(|v| v.to_string()).unwrap_or_default(),
+            Field::Sound => c.notification_sound.clone(),
+        };
+        let cursor = text.chars().count();
+        self.edit = Some(Edit { field, text, cursor, until: self.now + EDIT_IDLE_MS });
+        self.expand_until = self.now + EDIT_IDLE_MS;
+    }
+
+    fn edit_key(&mut self, k: KeyInput) {
+        let now = self.now;
+        let Some(e) = self.edit.as_mut() else { return };
+        e.until = now + EDIT_IDLE_MS;
+        self.expand_until = now + EDIT_IDLE_MS;
+        if edit_text(&mut e.text, &mut e.cursor, &k) {
+            return;
+        }
+        match k {
+            KeyInput::Escape => self.edit = None,
+            KeyInput::Enter => {
+                let Some(e) = self.edit.take() else { return };
+                let t = e.text.trim().to_string();
+                let note = |s: &str| Some((s.to_string(), now + 5000));
+                match e.field {
+                    Field::Calendar if is_calendar_url(&t) => self.pending.push(Command::AddCalendar(t)),
+                    Field::Calendar => {
+                        self.note = note("Paste an https:// or webcal:// calendar address");
+                        self.edit = Some(Edit { text: t.clone(), cursor: t.chars().count(), ..e });
+                    }
+                    Field::Font => self.pending.push(Command::SetFont(t)),
+                    Field::Sound => self.pending.push(Command::SetNotificationSound(t)),
+                    Field::Latitude | Field::Longitude => {
+                        let (range, lat) = if e.field == Field::Latitude { (-90.0..=90.0, true) } else { (-180.0..=180.0, false) };
+                        match t.replace(',', ".").parse::<f64>() {
+                            Ok(v) if range.contains(&v) => self.pending.push(if lat { Command::SetLatitude(v) } else { Command::SetLongitude(v) }),
+                            _ => {
+                                self.note = note(if lat { "Latitude is a number from -90 to 90" } else { "Longitude is a number from -180 to 180" });
+                                self.edit = Some(Edit { text: t.clone(), cursor: t.chars().count(), ..e });
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     fn kb_key(&mut self, k: KeyInput) {
@@ -531,7 +630,7 @@ impl Island {
     }
 
     pub fn wants_keyboard(&self) -> bool {
-        self.reply.is_some() || self.kb.is_some()
+        self.reply.is_some() || self.kb.is_some() || self.edit.is_some()
     }
 
     fn start_timer(&mut self, secs: u64) {
@@ -831,6 +930,8 @@ impl Island {
                 return vec![Command::OpenUrl(url)];
             }
             Action::ClearHistory => self.history.clear(),
+            Action::EditField(f) => self.start_edit(f),
+            Action::RemoveCalendar(i) => return vec![Command::RemoveCalendar(i)],
             Action::CalToday => {
                 let c = crate::clock::civil(now, self.data.utc_offset_secs);
                 self.cal = Cal { year: c.year, month: c.month, day: c.day };
@@ -877,6 +978,7 @@ impl Island {
             Face::Notifs => h = 14.0 + 34.0 + 6.0 + self.history.len().clamp(1, 5) as f64 * 46.0 + if self.history.is_empty() { 20.0 } else { 8.0 },
             Face::Clip => h = 14.0 + 34.0 + 4.0 + self.data.clipboard.len().clamp(1, 5) as f64 * 32.0 + 10.0,
             Face::FocusMini => w += self.icon_count(true) as f64 * ICON_W,
+            Face::Settings => h = 14.0 + 34.0 + self.settings_content_height() + 14.0,
             Face::Qs => h = 14.0 + 34.0 + 8.0 + 36.0 + 8.0 + 36.0 + 8.0 + 28.0 + 8.0 + 28.0 + 8.0 + 32.0 + 14.0 + if self.data.focus.is_some() { 44.0 } else { 0.0 },
             Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
             Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
@@ -892,6 +994,13 @@ impl Island {
         let mut n = 2; // cpu, cores
         n += st.memory.is_some() as usize + st.gpu.is_some() as usize + self.data.battery.is_some() as usize + st.disk.is_some() as usize;
         n + 1 // network
+    }
+
+    /// Height of the settings page below its header: four sections and their rows.
+    pub(crate) fn settings_content_height(&self) -> f64 {
+        let cals = self.data.config.calendars.len().min(4) as f64;
+        // section titles (4 x 22), calendar rows, the add row, latitude, longitude, font, sound, the note line
+        4.0 * 22.0 + (cals + 1.0 + 2.0 + 1.0 + 1.0) * 34.0 + 20.0
     }
 
     pub(crate) fn day_events(&self) -> Vec<&calendar::Event> {
@@ -1023,6 +1132,12 @@ impl Island {
         self.slow_checks();
         self.sync_lyrics();
         // notifications: expiry and the next waiting one
+        if self.edit.as_ref().is_some_and(|e| now > e.until) || (self.edit.is_some() && self.page != Some(Page::Settings)) {
+            self.edit = None;
+        }
+        if self.note.as_ref().is_some_and(|(_, until)| now > *until) {
+            self.note = None;
+        }
         if self.kb.is_some_and(|k| now - k.last_key > KB_IDLE_MS) {
             self.kb = None;
         }
@@ -1609,9 +1724,12 @@ mod tests {
         key(&mut i, KeyInput::Left);
         key(&mut i, KeyInput::Left);
         assert_eq!(i.kb.unwrap().index, nav.len() - 1, "wraps around");
-        key(&mut i, KeyInput::Right);
+        let target = nav.iter().position(|ix| i.hits[*ix].action == Action::TimerStart(300)).expect("the 5 min chip is drawn");
+        for _ in 0..(target + 1) % nav.len() {
+            key(&mut i, KeyInput::Right);
+        }
         key(&mut i, KeyInput::Enter);
-        assert!(i.timer.is_some(), "Enter on the first chip starts the 5 min timer");
+        assert!(i.timer.is_some(), "Enter on the 5 min chip starts the timer");
         key(&mut i, KeyInput::Escape);
         assert!(i.kb.is_none() && !i.wants_keyboard());
     }
@@ -1622,5 +1740,80 @@ mod tests {
         i.push(T0, Input::OpenKeyboard(None));
         run(&mut i, 10_000);
         assert!(i.kb.is_none(), "an abandoned keyboard session ends");
+    }
+
+    fn type_text(i: &mut Island, t: &str) {
+        i.push(i.now, Input::Key(KeyInput::Text(t.into())));
+    }
+
+    #[test]
+    fn the_settings_menu_adds_a_calendar_and_checks_what_you_type() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenPage(Page::Settings));
+        i.activate(Action::EditField(Field::Calendar));
+        assert!(i.wants_keyboard());
+        type_text(&mut i, "not a calendar");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert!(i.take_commands().is_empty(), "rejected");
+        assert!(i.note.is_some() && i.edit.is_some(), "the field stays open with a hint");
+        i.push(i.now, Input::Key(KeyInput::Home));
+        for _ in 0..14 {
+            i.push(i.now, Input::Key(KeyInput::Delete));
+        }
+        type_text(&mut i, "webcal://p01-caldav.icloud.com/published/2/abc");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert_eq!(i.take_commands(), vec![Command::AddCalendar("webcal://p01-caldav.icloud.com/published/2/abc".into())]);
+        assert!(i.edit.is_none() && !i.wants_keyboard());
+    }
+
+    #[test]
+    fn coordinates_font_and_sound_are_validated_and_escape_cancels() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenPage(Page::Settings));
+        i.data.config.latitude = Some(43.7);
+        i.activate(Action::EditField(Field::Latitude));
+        assert_eq!(i.edit.as_ref().unwrap().text, "43.7", "starts from the current value");
+        i.push(i.now, Input::Key(KeyInput::Home));
+        i.push(i.now, Input::Key(KeyInput::Delete));
+        type_text(&mut i, "9");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert!(i.take_commands().is_empty(), "93.7 is not a latitude");
+        i.push(i.now, Input::Key(KeyInput::Escape));
+        assert!(i.edit.is_none());
+        i.activate(Action::EditField(Field::Longitude));
+        type_text(&mut i, "10,4017");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert_eq!(i.take_commands(), vec![Command::SetLongitude(10.4017)], "a decimal comma is accepted");
+        i.activate(Action::EditField(Field::Font));
+        type_text(&mut i, "Inter");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert_eq!(i.take_commands(), vec![Command::SetFont("Inter".into())]);
+        i.activate(Action::EditField(Field::Sound));
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert_eq!(i.take_commands(), vec![Command::SetNotificationSound(String::new())], "empty clears it");
+        assert_eq!(i.activate(Action::RemoveCalendar(2)), vec![Command::RemoveCalendar(2)]);
+    }
+
+    #[test]
+    fn leaving_the_settings_page_drops_an_open_edit_and_the_page_draws_with_an_edit() {
+        let f = fonts();
+        let mut i = Island::new(Config::default());
+        i.data.config.calendars = vec!["https://a.org/x.ics".into(); 6];
+        i.push(T0, Input::OpenPage(Page::Settings));
+        i.activate(Action::EditField(Field::Font));
+        type_text(&mut i, &"long ".repeat(30));
+        for _ in 0..200 {
+            let fr = i.tick(i.now + 8, 8.0);
+            i.push(i.now, Input::OpenPage(Page::Settings));
+            let mut scene = Scene::new();
+            i.draw(&mut scene, &f, fr.surface, 1.0);
+            assert!(fr.surface.1 < 1000.0);
+        }
+        assert_eq!(i.current_face(), Face::Settings);
+        i.push(i.now, Input::Key(KeyInput::Escape));
+        i.activate(Action::EditField(Field::Font));
+        i.activate(Action::Back);
+        run(&mut i, 600);
+        assert!(i.edit.is_none(), "the edit does not outlive its page");
     }
 }

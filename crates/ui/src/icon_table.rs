@@ -48,6 +48,7 @@ pub const ICONS: &[(&str, u32)] = &[
     ("player-skip-back", 0xED48),
     ("player-skip-forward", 0xED49),
     ("plug", 0xEBD9),
+    ("plus", 0xEB0B),
     ("screen-share", 0xED18),
     ("send", 0xEB1E),
     ("settings", 0xEB20),

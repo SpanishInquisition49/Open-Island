@@ -32,7 +32,8 @@ struct Daemon {
     tx: Sender<Msg>,
     shared: Arc<Mutex<Shared>>,
     dnd: Arc<AtomicBool>,
-    settings: Arc<Settings>,
+    /// Only used for the first read; every notification reads the file again so a new sound applies at once.
+    _settings: Arc<Settings>,
 }
 
 /// Everything a `Notify` call carries, decoded.
@@ -151,12 +152,13 @@ impl Daemon {
             }
             id
         };
+        let settings = crate::config::load();
         // filters: a notification can be dropped altogether
-        if self.settings.filters.iter().any(|f| f.matches(&app_name, &summary, &body) && !f.show) {
+        if settings.filters.iter().any(|f| f.matches(&app_name, &summary, &body) && !f.show) {
             return id;
         }
         let dnd = self.dnd.load(Ordering::Relaxed);
-        if let Some(file) = sound::choose(&self.settings, &app_name, &hs.desktop_entry, &summary, &body, hs.sound_file.as_deref(), hs.suppress_sound, dnd, hs.critical) {
+        if let Some(file) = sound::choose(&settings, &app_name, &hs.desktop_entry, &summary, &body, hs.sound_file.as_deref(), hs.suppress_sound, dnd, hs.critical) {
             sound::play(&file);
         }
         let image = ["image-data", "image_data", "icon_data"]
@@ -196,7 +198,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
     std::thread::spawn(move || {
         let dnd = Arc::new(AtomicBool::new(initial_dnd));
         let (tx, rx) = channel::<Msg>();
-        let daemon = Daemon { rep: rep.clone(), tx: tx.clone(), shared: Arc::new(Mutex::new(Shared { next_id: 0, tags: HashMap::new() })), dnd: dnd.clone(), settings };
+        let daemon = Daemon { rep: rep.clone(), tx: tx.clone(), shared: Arc::new(Mutex::new(Shared { next_id: 0, tags: HashMap::new() })), dnd: dnd.clone(), _settings: settings };
         let built = zbus::blocking::connection::Builder::session()
             .and_then(|b| b.serve_at(PATH, daemon))
             .and_then(|b| b.build())

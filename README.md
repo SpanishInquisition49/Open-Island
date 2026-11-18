@@ -53,6 +53,10 @@ else Helvetica Neue, Inter, Segoe UI, Roboto, Noto Sans, DejaVu Sans, Arial. Ico
 
 ## Configuration
 
+Everything below can be changed from the island itself: the gear on the home page (or `open-island msg page settings`) opens a
+menu to add and remove calendars (paste an .ics or webcal:// address, Ctrl+V works), set the weather location, the font and the
+notification sound. It writes the file below, keeping the keys it does not know, and weather and calendars refresh at once.
+
 `~/.config/open-island/config.json` (`%APPDATA%\open-island\config.json` on Windows,
 `~/Library/Application Support/open-island/config.json` on macOS):
 
@@ -60,7 +64,7 @@ else Helvetica Neue, Inter, Segoe UI, Roboto, Noto Sans, DejaVu Sans, Arial. Ico
 { "latitude": 43.72, "longitude": 10.40,
   "calendar_urls": ["https://example.org/calendar.ics"],
   "timer_presets": ["5m", "10m", "25m"], "meeting_lead_minutes": 10,
-  "notification_seconds": 5, "low_battery_percent": 15, "lyrics": true,
+  "notification_seconds": 5, "font": "Inter", "low_battery_percent": 15, "lyrics": true,
   "notification_sound": "~/Music/uwu.ogg", "app_sounds": {"telegram": "~/Music/t.ogg"},
   "volume_sound": "~/Music/bloop.mp3", "timer_sound": "~/Music/bloop.mp3",
   "notification_filters": [{"app": "zen browser", "content": "unseen", "show": false}] }

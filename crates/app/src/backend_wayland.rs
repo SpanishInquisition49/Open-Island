@@ -57,6 +57,7 @@ struct Wl {
     loop_handle: calloop::LoopHandle<'static, Wl>,
     keyboard_on: bool,
     ctrl: bool,
+    alt: bool,
     app: App,
     gpu: Gpu,
     scale: f64,
@@ -209,6 +210,13 @@ impl PointerHandler for Wl {
     }
 }
 
+/// The text on the clipboard, for Ctrl+V in a text field (single line, at most 2000 characters).
+fn paste() -> Option<String> {
+    let out = std::process::Command::new("wl-paste").args(["--no-newline", "--type", "text"]).stderr(std::process::Stdio::null()).output().ok()?;
+    let t: String = String::from_utf8_lossy(&out.stdout).chars().take(2000).collect();
+    (!t.is_empty()).then_some(t)
+}
+
 impl Wl {
     fn key_event(&mut self, e: KeyEvent) {
         use island_ui::model::KeyInput;
@@ -223,7 +231,8 @@ impl Wl {
             Keysym::Down => Some(KeyInput::Down),
             Keysym::Return | Keysym::KP_Enter => Some(KeyInput::Enter),
             Keysym::Escape => Some(KeyInput::Escape),
-            _ if self.ctrl => None,
+            Keysym::v | Keysym::V if self.ctrl && !self.alt => paste().map(KeyInput::Text),
+            _ if self.ctrl || self.alt => None,
             _ => e.utf8.filter(|t| !t.is_empty()).map(KeyInput::Text),
         };
         if let Some(k) = k {
@@ -244,7 +253,8 @@ impl KeyboardHandler for Wl {
     }
     fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {}
     fn update_modifiers(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, modifiers: Modifiers, _: smithay_client_toolkit::seat::keyboard::RawModifiers, _: u32) {
-        self.ctrl = modifiers.ctrl || modifiers.alt;
+        self.ctrl = modifiers.ctrl;
+        self.alt = modifiers.alt;
     }
 }
 
@@ -342,6 +352,7 @@ pub fn run() -> Result<(), String> {
         loop_handle: event_loop.handle(),
         keyboard_on: false,
         ctrl: false,
+        alt: false,
         app: App::new(waker),
         gpu,
         scale: 1.0,

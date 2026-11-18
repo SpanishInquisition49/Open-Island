@@ -119,6 +119,7 @@ impl Island {
             Face::Sys => self.face_sys(p, w, h),
             Face::Notifs => self.face_notifs(p, w, h),
             Face::Clip => self.face_clip(p, w, h),
+            Face::Settings => self.face_settings(p, w, h),
             Face::FocusMini => self.face_focus_mini(p, w, h),
             Face::FocusFull => self.face_focus_full(p, w, h),
             // not part of this build (no clipboard history, focus mode or update check yet)
@@ -498,6 +499,7 @@ impl Island {
             p.text(&format!("{}°", wx.temp_c.round() as i32), x, 38.0, 22.0, SEMI, theme::FG, Align::Right, 80.0);
             p.text(&format!("{}° / {}°", wx.high_c.round() as i32, wx.low_c.round() as i32), x, 62.0, 11.0, REG, theme::DIM, Align::Right, 100.0);
         }
+        p.icon_button(w - 22.0, 18.0, 24.0, "settings", 14.0, Action::Open(Page::Settings));
         let mut y = 28.0 + 44.0 + 10.0 + 17.0;
         // buttons row
         let mut buttons: Vec<(String, Action)> = vec![];
@@ -776,6 +778,103 @@ impl Island {
         p.text(&label, x + 32.0, 30.0, 22.0, SEMI, theme::FG, Align::Left, (w - 60.0) as f32);
         p.text("Sites blocked · notifications silenced", w / 2.0, 56.0, 11.0, REG, theme::DIM, Align::Center, (w - 28.0) as f32);
         self.button_row(p, &[("End focus", Action::Cmd(Command::StopFocus))], w / 2.0, 88.0);
+    }
+
+    /// A text field in place of a row while a setting is edited.
+    fn edit_row(&self, p: P, r: Rect, e: &Edit, placeholder: &str) {
+        p.rrect(r, 10.0, theme::CHIP);
+        p.rrect_stroke(r, 10.0, 1.5, theme::FG);
+        let inner = (r.width() - 24.0) as f32;
+        if e.text.is_empty() {
+            p.text(placeholder, r.x0 + 12.0, r.center().y, 12.0, REG, theme::DIM, Align::Left, inner);
+        } else {
+            // keep the caret in view: show the tail of a long text
+            let before: String = e.text.chars().take(e.cursor).collect();
+            let skip = (0..e.text.chars().count()).find(|n| p.fonts.measure(&before.chars().skip(*n).collect::<String>(), 12.0, REG) <= inner - 6.0).unwrap_or(0);
+            let shown: String = e.text.chars().skip(skip).collect();
+            p.text(&shown, r.x0 + 12.0, r.center().y, 12.0, REG, theme::FG, Align::Left, inner);
+            if (self.now / 530) % 2 == 0 {
+                let cx = r.x0 + 12.0 + p.fonts.measure(&before.chars().skip(skip).collect::<String>(), 12.0, REG).min(inner) as f64;
+                p.rrect(rect(cx, r.center().y - 7.0, 1.5, 14.0), 0.75, theme::FG);
+            }
+            return;
+        }
+        if (self.now / 530) % 2 == 0 {
+            p.rrect(rect(r.x0 + 11.0, r.center().y - 7.0, 1.5, 14.0), 0.75, theme::FG);
+        }
+    }
+
+    fn face_settings(&self, p: P, w: f64, _h: f64) {
+        self.page_header(p, w, "Settings");
+        let c = &self.data.config;
+        let editing = |f: Field| self.edit.as_ref().filter(|e| e.field == f);
+        let mut y = 14.0 + 34.0;
+        let mut n = 1;
+        let section = |p: P, y: f64, title: &str, n: usize| {
+            p.stagger(n);
+            p.text(&title.to_uppercase(), 18.0, y + 11.0, 10.0, SEMI, theme::DIM, Align::Left, 200.0);
+        };
+        // calendars
+        section(p, y, "Calendars", n);
+        y += 22.0;
+        for (i, url) in c.calendars.iter().take(4).enumerate() {
+            n += 1;
+            p.stagger(n);
+            let r = rect(14.0, y, w - 28.0, 30.0);
+            p.rrect(r, 10.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
+            p.icon("calendar-event", r.x0 + 18.0, y + 15.0, 14.0, theme::ACCENT);
+            let shown = url.split("://").nth(1).unwrap_or(url);
+            p.text(shown, r.x0 + 34.0, y + 15.0, 12.0, REG, theme::FG, Align::Left, (r.width() - 80.0) as f32);
+            p.icon_button(r.x1 - 18.0, y + 15.0, 26.0, "x", 13.0, Action::RemoveCalendar(i));
+            y += 34.0;
+        }
+        p.stagger(n + 1);
+        let r = rect(14.0, y, w - 28.0, 30.0);
+        match editing(Field::Calendar) {
+            Some(e) => self.edit_row(p, r, e, "Paste an .ics or webcal:// address"),
+            None => {
+                p.rrect(r, 10.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
+                p.icon("plus", r.x0 + 18.0, y + 15.0, 14.0, theme::DIM);
+                p.text("Add a calendar", r.x0 + 34.0, y + 15.0, 12.0, REG, theme::DIM, Align::Left, 300.0);
+                p.hit(r, Action::EditField(Field::Calendar));
+            }
+        }
+        y += 34.0;
+        // a labelled value row
+        let kv = |p: P, y: f64, label: &str, value: &str, f: Field, placeholder: &str, n: usize| {
+            p.stagger(n);
+            let r = rect(14.0, y, w - 28.0, 30.0);
+            match editing(f) {
+                Some(e) => self.edit_row(p, r, e, placeholder),
+                None => {
+                    p.rrect(r, 10.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
+                    p.text(label, r.x0 + 12.0, y + 15.0, 12.0, SEMI, theme::FG, Align::Left, 120.0);
+                    let lw = p.fonts.measure(label, 12.0, SEMI) as f64;
+                    p.text(value, r.x1 - 12.0, y + 15.0, 12.0, REG, theme::DIM, Align::Right, (r.width() - lw as f32 as f64 - 40.0).max(60.0) as f32);
+                    p.hit(r, Action::EditField(f));
+                }
+            }
+        };
+        section(p, y, "Weather location", n + 2);
+        y += 22.0;
+        let num = |v: Option<f64>| v.map_or("not set".to_string(), |v| format!("{v:.4}"));
+        kv(p, y, "Latitude", &num(c.latitude), Field::Latitude, "e.g. 43.7228", n + 3);
+        y += 34.0;
+        kv(p, y, "Longitude", &num(c.longitude), Field::Longitude, "e.g. 10.4017", n + 4);
+        y += 34.0;
+        section(p, y, "Appearance", n + 5);
+        y += 22.0;
+        let font = if c.font.is_empty() { "Default".to_string() } else if c.font_missing { format!("{} (not found)", c.font) } else { c.font.clone() };
+        kv(p, y, "Font", &font, Field::Font, "A family name or a font file path; empty = default", n + 6);
+        y += 34.0;
+        section(p, y, "Notifications", n + 7);
+        y += 22.0;
+        let sound = if c.notification_sound.is_empty() { "None".to_string() } else { c.notification_sound.rsplit('/').next().unwrap_or("").to_string() };
+        kv(p, y, "Sound", &sound, Field::Sound, "Path of a sound file; empty = silent", n + 8);
+        y += 34.0;
+        if let Some((t, _)) = &self.note {
+            p.text(t, w / 2.0, y + 8.0, 11.0, SEMI, theme::ORANGE, Align::Center, (w - 28.0) as f32);
+        }
     }
 
     fn face_clip(&self, p: P, w: f64, _h: f64) {

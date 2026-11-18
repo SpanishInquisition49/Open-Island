@@ -12,6 +12,23 @@ use std::time::Instant;
 /// Wakes the event loop from another thread.
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
+/// Builds the first settings view before the app exists.
+struct ConfigViewInit;
+
+impl ConfigViewInit {
+    fn view(fonts: &Fonts) -> island_ui::model::ConfigView {
+        let s = crate::config::load();
+        island_ui::model::ConfigView {
+            font_missing: !s.font.is_empty() && !fonts.preferred_found(),
+            font: s.font,
+            calendars: s.calendar_urls,
+            latitude: s.latitude,
+            longitude: s.longitude,
+            notification_sound: s.notification_sound.unwrap_or_default(),
+        }
+    }
+}
+
 pub struct App {
     pub island: Island,
     pub fonts: Fonts,
@@ -46,6 +63,7 @@ impl App {
         if crate::config::load().persist_history {
             island.restore_history(services::load_history());
         }
+        island.data.config = ConfigViewInit::view(&fonts);
         Self { island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, quit: false, persist_history: crate::config::load().persist_history, fullscreen: false, last_pointer: (0.0, 0.0) }
     }
 
@@ -108,10 +126,91 @@ impl App {
         frame
     }
 
-    pub fn exec(&self, cmds: Vec<Command>) {
+    pub fn exec(&mut self, cmds: Vec<Command>) {
         for c in cmds {
+            if self.settings_command(&c) {
+                continue;
+            }
             let _ = self.cmd_tx.send(c);
         }
+    }
+
+    /// The configuration as the settings menu shows it.
+    fn config_view(&self) -> island_ui::model::ConfigView {
+        let s = crate::config::load();
+        island_ui::model::ConfigView {
+            font_missing: !s.font.is_empty() && !self.fonts.preferred_found(),
+            font: s.font,
+            calendars: s.calendar_urls,
+            latitude: s.latitude,
+            longitude: s.longitude,
+            notification_sound: s.notification_sound.unwrap_or_default(),
+        }
+    }
+
+    fn note(&mut self, text: &str) {
+        let now = self.now();
+        self.island.push(now, island_ui::model::Input::SettingsNote(text.to_string()));
+    }
+
+    /// Handles the commands of the settings menu: writes config.json, applies the change, tells the services.
+    fn settings_command(&mut self, c: &Command) -> bool {
+        use serde_json::{json, Value};
+        let result = match c {
+            Command::AddCalendar(url) => crate::config::update(|o| {
+                let list = o.entry("calendar_urls").or_insert_with(|| json!([]));
+                if let Some(a) = list.as_array_mut() {
+                    if !a.iter().any(|u| u.as_str() == Some(url)) {
+                        a.push(Value::String(url.clone()));
+                    }
+                }
+            }),
+            Command::RemoveCalendar(i) => crate::config::update(|o| {
+                if let Some(a) = o.get_mut("calendar_urls").and_then(|v| v.as_array_mut()) {
+                    if *i < a.len() {
+                        a.remove(*i);
+                    }
+                }
+            }),
+            Command::SetFont(f) => crate::config::update(|o| {
+                if f.is_empty() {
+                    o.remove("font");
+                } else {
+                    o.insert("font".into(), json!(f));
+                }
+            }),
+            Command::SetLatitude(v) => crate::config::update(|o| {
+                o.insert("latitude".into(), json!(v));
+            }),
+            Command::SetLongitude(v) => crate::config::update(|o| {
+                o.insert("longitude".into(), json!(v));
+            }),
+            Command::SetNotificationSound(f) => crate::config::update(|o| {
+                if f.is_empty() {
+                    o.remove("notification_sound");
+                } else {
+                    o.insert("notification_sound".into(), json!(f));
+                }
+            }),
+            _ => return false,
+        };
+        match result {
+            Ok(()) => {
+                if let Command::SetFont(f) = c {
+                    self.fonts = Fonts::load_system(Some(f));
+                    if !f.is_empty() && !self.fonts.preferred_found() {
+                        self.note("Font not found: using the default");
+                    }
+                }
+                self.island.data.config = self.config_view();
+                services::CONFIG_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Err(e) => {
+                log::error!("settings: {e}");
+                self.note(&e);
+            }
+        }
+        true
     }
 
     pub fn pointer_moved(&mut self, x: f64, y: f64) {

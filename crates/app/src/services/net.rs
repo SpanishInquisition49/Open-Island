@@ -17,24 +17,25 @@ pub fn agent() -> ureq::Agent {
 }
 
 pub fn start(rep: Reporter) {
-    let settings = crate::config::load();
-    if let (Some(lat), Some(lon)) = (settings.latitude, settings.longitude) {
-        let rep = rep.clone();
-        std::thread::spawn(move || loop {
-            match fetch_weather(lat, lon) {
-                Ok(w) => rep.patch(move |d| d.weather = Some(w)),
+    // the settings are read again on every round, so a location or calendar added from the menu applies at once
+    let weather_rep = rep.clone();
+    std::thread::spawn(move || loop {
+        let s = crate::config::load();
+        match (s.latitude, s.longitude) {
+            (Some(lat), Some(lon)) => match fetch_weather(lat, lon) {
+                Ok(w) => weather_rep.patch(move |d| d.weather = Some(w)),
                 Err(e) => log::warn!("weather: {e}"),
-            }
-            std::thread::sleep(Duration::from_secs(600));
-        });
-    }
-    if !settings.calendar_urls.is_empty() {
-        std::thread::spawn(move || loop {
-            let events = fetch_calendars(&settings);
-            rep.patch(move |d| d.events = events);
-            std::thread::sleep(Duration::from_secs(900));
-        });
-    }
+            },
+            _ => weather_rep.patch(|d| d.weather = None),
+        }
+        super::wait_or_config_change(600);
+    });
+    std::thread::spawn(move || loop {
+        let s = crate::config::load();
+        let events = if s.calendar_urls.is_empty() { vec![] } else { fetch_calendars(&s) };
+        rep.patch(move |d| d.events = events);
+        super::wait_or_config_change(900);
+    });
 }
 
 fn fetch_weather(lat: f64, lon: f64) -> Result<Weather, String> {

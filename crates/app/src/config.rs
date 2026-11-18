@@ -137,6 +137,32 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     Ok(s)
 }
 
+/// Changes `config.json` in place: the keys the island does not know are kept. The file and its directory are
+/// created when missing; a broken file is not overwritten.
+pub fn update_at(path: &std::path::Path, change: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>)) -> Result<(), String> {
+    let mut obj = match std::fs::read_to_string(path) {
+        Ok(t) if t.trim().is_empty() => serde_json::Map::new(),
+        Ok(t) => match serde_json::from_str::<serde_json::Value>(&t) {
+            Ok(serde_json::Value::Object(o)) => o,
+            _ => return Err(format!("{} is not a JSON object: fix it by hand first", path.display())),
+        },
+        Err(_) => serde_json::Map::new(),
+    };
+    change(&mut obj);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(&serde_json::Value::Object(obj)).map_err(|e| e.to_string())?;
+    // write next to it and rename: a crash never leaves half a file
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text + "\n").map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
+pub fn update(change: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>)) -> Result<(), String> {
+    update_at(&path().ok_or("no configuration directory")?, change)
+}
+
 /// Loads the settings; a missing file gives the defaults, a broken one is reported and ignored.
 pub fn load() -> Settings {
     let Some(p) = path() else { return Settings::default() };
@@ -161,6 +187,28 @@ mod tests {
         assert_eq!(s.ui.timer_presets, vec![300, 600]);
         assert_eq!(s.ui.meeting_lead_ms, 15 * 60_000);
         assert!(!s.ui.lyrics);
+    }
+
+    #[test]
+    fn updates_keep_the_unknown_keys_and_refuse_a_broken_file() {
+        let dir = std::env::temp_dir().join(format!("open-island-test-{}", std::process::id()));
+        let file = dir.join("config.json");
+        update_at(&file, |o| {
+            o.insert("font".into(), "Inter".into());
+        })
+        .unwrap();
+        update_at(&file, |o| {
+            o.insert("something_else".into(), 7.into());
+            o.insert("calendar_urls".into(), serde_json::json!(["https://x.org/a.ics"]));
+        })
+        .unwrap();
+        let s = parse(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!((s.font.as_str(), s.calendar_urls.len()), ("Inter", 1));
+        assert!(std::fs::read_to_string(&file).unwrap().contains("something_else"), "unknown keys survive");
+        std::fs::write(&file, "{ not json").unwrap();
+        assert!(update_at(&file, |_| {}).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{ not json", "a broken file is left alone");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

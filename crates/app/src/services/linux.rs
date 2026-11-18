@@ -50,6 +50,8 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                         focus::run(sc, &["off"]);
                     }
                 }
+                // the app itself writes the configuration for these
+                Command::AddCalendar(_) | Command::RemoveCalendar(_) | Command::SetFont(_) | Command::SetLatitude(_) | Command::SetLongitude(_) | Command::SetNotificationSound(_) => {}
                 Command::RestoreClipboard(t) => clipboard::restore(&t),
                 Command::SetVolume(v) => {
                     run("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{:.2}", v)]);
