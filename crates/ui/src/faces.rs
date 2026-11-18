@@ -668,6 +668,28 @@ impl Island {
                 let ww = p.text(&when, w - 22.0, y, 11.0, REG, theme::DIM, Align::Right, 100.0) as f64;
                 p.text(&e.title, 46.0, y, 12.0, SEMI, theme::FG, Align::Left, (w - 46.0 - ww - 36.0) as f32);
             }
+            y += 24.0;
+        }
+        // connected Bluetooth devices and their battery: always here, not only when they connect
+        if !self.data.devices.is_empty() && y < h {
+            let mut x = 22.0;
+            for d in self.data.devices.iter().take(4) {
+                let low = d.battery.is_some_and(|b| b <= 20);
+                let col = if low { theme::RED } else { theme::FG };
+                p.icon(d.kind.icon(), x + 7.0, y, 14.0, col);
+                x += 19.0;
+                let name = if d.name.chars().count() > 12 { d.name.chars().take(11).collect::<String>() + "…" } else { d.name.clone() };
+                let text = match d.battery {
+                    Some(b) => format!("{name} {b}%"),
+                    None => name,
+                };
+                let tw = (p.fonts.measure(&text, 11.0, REG) as f64).min(110.0);
+                if x + tw > w - 14.0 {
+                    break;
+                }
+                p.text(&text, x, y, 11.0, REG, if low { theme::RED } else { theme::DIM }, Align::Left, 110.0);
+                x += tw + 16.0;
+            }
         }
     }
 

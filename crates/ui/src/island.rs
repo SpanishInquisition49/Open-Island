@@ -1347,6 +1347,9 @@ impl Island {
                 if self.next_event().is_some() {
                     h += 10.0 + 18.0 + 4.0;
                 }
+                if !self.data.devices.is_empty() {
+                    h += 26.0;
+                }
             }
             Face::Cal => {
                 let weeks = calendar::month_grid(self.cal.year, self.cal.month).len() as f64;
@@ -2497,6 +2500,19 @@ mod tests {
         assert_eq!(i.sys_rows(), before + 2);
         i.push(T0, Input::OpenPage(Page::Sys));
         draw_frames(&mut i, 300);
+    }
+
+    #[test]
+    fn the_home_page_keeps_showing_the_devices_and_their_battery() {
+        let mut i = Island::new(Config::default());
+        let (_, h0) = i.face_size(Face::IdleHover);
+        i.data.devices = vec![headphones(Some(85))];
+        let (_, h1) = i.face_size(Face::IdleHover);
+        assert_eq!(h1, h0 + 26.0, "a row for them");
+        i.push(T0, Input::OpenPage(Page::Home));
+        draw_frames(&mut i, 300);
+        i.data.devices.clear();
+        assert_eq!(i.face_size(Face::IdleHover).1, h0, "and none when nothing is connected");
     }
 
     #[test]
