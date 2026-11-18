@@ -25,6 +25,8 @@ const REPLY_IDLE_MS: i64 = 20_000;
 const KB_IDLE_MS: i64 = 9_000;
 const EDIT_IDLE_MS: i64 = 40_000;
 const LYRIC_LEAD_MS: f64 = 250.0;
+/// Events older than this are read again when a page that shows them opens.
+const STALE_EVENTS_MS: i64 = 120_000;
 const HOVER_INTENT_MS: i64 = 140;
 const HOVER_GRACE_MS: i64 = 320;
 const FADE_OUT_MS: f64 = 70.0;
@@ -302,6 +304,8 @@ pub struct Island {
     pub(crate) enter_at: i64,
     pub(crate) spectrum: Vec<f32>,
     pub(crate) spectrum_at: i64,
+    /// When the calendars were last asked to refresh (so opening pages does not ask over and over).
+    last_refresh_req: i64,
     pub(crate) copied: Option<(usize, i64)>,
     pub(crate) pending: Vec<Command>,
     dnd_seen: bool,
@@ -375,6 +379,7 @@ impl Island {
             enter_at: -100_000,
             spectrum: vec![],
             spectrum_at: -100_000,
+            last_refresh_req: -100_000,
             copied: None,
             pending: vec![],
             dnd_seen: false,
@@ -950,6 +955,10 @@ impl Island {
         self.expand_until = self.expand_until.max(now + 4000);
         match a {
             Action::Cmd(c) => {
+                if c == Command::RefreshCalendars {
+                    self.last_refresh_req = now;
+                    self.note = Some(("Reading the calendars…".into(), now + 3000));
+                }
                 // the chips answer at once; the next sample confirms
                 match &c {
                     Command::ToggleWifi => self.data.wifi = self.data.wifi.map(|v| !v),
@@ -1082,7 +1091,7 @@ impl Island {
             Face::Cal => {
                 let weeks = calendar::month_grid(self.cal.year, self.cal.month).len() as f64;
                 let n = self.day_events().len().clamp(1, 4) as f64;
-                h = 14.0 + 34.0 + 4.0 + 16.0 + weeks * 30.0 + 10.0 + n * 24.0 + 6.0;
+                h = 14.0 + 34.0 + 4.0 + 16.0 + weeks * 30.0 + 10.0 + n * 24.0 + 20.0;
             }
             Face::Notif if self.notif.as_ref().is_some_and(|n| n.progress.is_some()) => h += 14.0,
             Face::Notifs => h = 14.0 + 34.0 + 6.0 + self.history.len().clamp(1, 5) as f64 * 46.0 + if self.history.is_empty() { 20.0 } else { 8.0 },
@@ -1325,6 +1334,11 @@ impl Island {
         if want == Face::Cal && (want != self.want || self.cal.year == 1970) {
             let c = crate::clock::civil(now, self.data.utc_offset_secs);
             self.cal = Cal { year: c.year, month: c.month, day: c.day };
+        }
+        // opening the calendar or the home page with stale events asks for a fresh read
+        if want != self.want && matches!(want, Face::Cal | Face::IdleHover) && !self.data.config.calendars.is_empty() && now - self.data.events_synced_at > STALE_EVENTS_MS && now - self.last_refresh_req > 30_000 {
+            self.last_refresh_req = now;
+            self.pending.push(Command::RefreshCalendars);
         }
         if want != self.want {
             // between two pages the content slides the way the page order goes
@@ -2264,5 +2278,40 @@ mod tests {
         i.push(i.now, Input::Key(KeyInput::Enter));
         type_text(&mut i, "secret");
         draw_frames(&mut i, 5);
+    }
+
+    #[test]
+    fn opening_the_calendar_with_stale_events_asks_for_a_refresh_once() {
+        let mut i = Island::new(Config::default());
+        i.data.config.calendars = vec![CalendarView { name: "A".into(), detail: "a.org".into(), color: (1, 2, 3) }];
+        i.data.events_synced_at = T0 - 600_000;
+        i.push(T0, Input::OpenPage(Page::Cal));
+        run(&mut i, 300);
+        let asks = |i: &mut Island| i.take_commands().iter().filter(|c| **c == Command::RefreshCalendars).count();
+        assert_eq!(asks(&mut i), 1, "stale: read again");
+        i.page = None;
+        i.expand_until = 0;
+        run(&mut i, 3000);
+        i.push(i.now, Input::OpenPage(Page::Cal));
+        run(&mut i, 300);
+        assert_eq!(asks(&mut i), 0, "not again within 30 seconds");
+        // fresh events and no calendars never ask
+        let mut j = Island::new(Config::default());
+        j.data.config.calendars = i.data.config.calendars.clone();
+        j.data.events_synced_at = T0 - 1000;
+        j.push(T0, Input::OpenPage(Page::Cal));
+        run(&mut j, 300);
+        assert_eq!(asks(&mut j), 0);
+        let mut k = Island::new(Config::default());
+        k.push(T0, Input::OpenPage(Page::Cal));
+        run(&mut k, 300);
+        assert_eq!(asks(&mut k), 0, "nothing to read");
+    }
+
+    #[test]
+    fn the_refresh_button_asks_at_once() {
+        let mut i = Island::new(Config::default());
+        assert_eq!(i.activate(Action::Cmd(Command::RefreshCalendars)), vec![Command::RefreshCalendars]);
+        assert!(i.note.is_some());
     }
 }

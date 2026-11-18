@@ -38,6 +38,7 @@ fn parse_command(line: &str) -> Option<island_ui::model::Command> {
     let line = line.trim();
     let (event, payload) = line.split_once(char::is_whitespace).map_or((line, ""), |(a, b)| (a, b.trim()));
     Some(match event {
+        "refresh" => Command::RefreshCalendars,
         "font" => Command::SetFont(payload.to_string()),
         "sound" => Command::SetNotificationSound(payload.to_string()),
         "calendar" => match payload.split_once(char::is_whitespace) {
@@ -139,6 +140,7 @@ mod tests {
         assert!(parse("page nope").is_none());
         assert!(parse("garbage").is_none());
         use island_ui::model::Command;
+        assert_eq!(parse_command("refresh"), Some(Command::RefreshCalendars));
         assert_eq!(parse_command("font Inter"), Some(Command::SetFont("Inter".into())));
         assert_eq!(parse_command("calendar remove 2"), Some(Command::RemoveCalendar(1)));
         assert_eq!(parse_command("calendar remove 0"), None);

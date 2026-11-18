@@ -7,6 +7,7 @@ use island_core::calendar::Event;
 use island_core::lyrics::{self, Version};
 use island_core::weather::Slot;
 use island_ui::model::Weather;
+use std::collections::HashMap;
 use std::time::Duration;
 
 pub fn agent() -> ureq::Agent {
@@ -28,16 +29,36 @@ pub fn start(rep: Reporter) {
             },
             _ => weather_rep.patch(|d| d.weather = None),
         }
-        super::wait_or_config_change(600);
+        super::wait_for(600, &[&super::CONFIG_GEN]);
     });
-    std::thread::spawn(move || loop {
-        let s = crate::config::load();
-        let (events, problems) = if s.calendars.is_empty() { (vec![], vec![]) } else { fetch_calendars(&s) };
-        rep.patch(move |d| d.events = events);
-        if let Some(p) = problems.first() {
-            rep.input(island_ui::model::Input::SettingsNote(p.clone()));
+    std::thread::spawn(move || {
+        let mut cache: HashMap<String, Vec<Event>> = HashMap::new();
+        loop {
+            let s = crate::config::load();
+            let mut retry = false;
+            if s.calendars.is_empty() {
+                cache.clear();
+                rep.patch(|d| {
+                    d.events = vec![];
+                    d.events_synced_at = 0;
+                });
+            } else {
+                let (events, problems, any_ok) = fetch_calendars(&s, &mut cache);
+                let now = chrono::Utc::now().timestamp_millis();
+                rep.patch(move |d| {
+                    d.events = events;
+                    if any_ok {
+                        d.events_synced_at = now;
+                    }
+                });
+                if let Some(p) = problems.first() {
+                    rep.input(island_ui::model::Input::SettingsNote(p.clone()));
+                    retry = true;
+                }
+            }
+            // every five minutes, a minute after a failure, at once when asked or when the settings change
+            super::wait_for(if retry { 60 } else { 300 }, &[&super::CONFIG_GEN, &super::CALENDAR_REFRESH]);
         }
-        super::wait_or_config_change(900);
     });
 }
 
@@ -70,42 +91,58 @@ pub fn parse_weather(v: &serde_json::Value) -> Option<Weather> {
     })
 }
 
-/// Reads every calendar source. Returns the events (named and coloured per calendar, sorted) and the problems.
-fn fetch_calendars(s: &Settings) -> (Vec<Event>, Vec<String>) {
+/// Reads every calendar source; a source that fails keeps its last events (a dropped connection must not empty
+/// the agenda). Returns the events (sorted), the problems, and whether at least one source was read.
+fn fetch_calendars(s: &Settings, cache: &mut HashMap<String, Vec<Event>>) -> (Vec<Event>, Vec<String>, bool) {
     use chrono::Offset;
     let off = chrono::Local::now().offset().fix().local_minus_utc();
     let now = chrono::Utc::now().timestamp_millis();
     let (from, to) = (now - 86_400_000, now + 62 * 86_400_000);
-    let (mut all, mut problems) = (vec![], vec![]);
-    for (i, src) in s.calendars.iter().enumerate() {
-        let default_color = crate::config::PALETTE[i % crate::config::PALETTE.len()];
-        match &src.kind {
-            CalendarKind::Ics { url } => {
-                // webcal:// is https:// for calendar apps
-                let url = url.replacen("webcal://", "https://", 1).replacen("Webcal://", "https://", 1);
-                match agent().get(&url).call().and_then(|mut r| r.body_mut().read_to_string()) {
-                    Ok(text) => {
-                        let name = if src.name.is_empty() { island_core::ics::calendar_name(&text).unwrap_or_else(|| src.detail()) } else { src.name.clone() };
-                        let color = src.color.unwrap_or(default_color);
-                        all.extend(island_core::ics::parse(&text, off, from, to).into_iter().map(|e| Event { color: Some(color), calendar: name.clone(), ..e }));
-                    }
-                    Err(e) => {
-                        log::warn!("calendar {url}: {e}");
-                        problems.push(format!("{}: {}", if src.name.is_empty() { src.detail() } else { src.name.clone() }, short(&e.to_string())));
-                    }
-                }
+    let results = s.calendars.iter().enumerate().map(|(i, src)| (source_key(src), src.detail(), fetch_source(src, i, off, from, to))).collect();
+    merge_results(results, cache)
+}
+
+fn source_key(src: &crate::config::CalendarSource) -> String {
+    src.to_json().to_string()
+}
+
+/// Combines the per-source results with the cache: a success refreshes it, a failure falls back on it, a source
+/// that is gone from the settings is dropped.
+pub fn merge_results(results: Vec<(String, String, Result<Vec<Event>, String>)>, cache: &mut HashMap<String, Vec<Event>>) -> (Vec<Event>, Vec<String>, bool) {
+    let keep: std::collections::HashSet<String> = results.iter().map(|(k, _, _)| k.clone()).collect();
+    cache.retain(|k, _| keep.contains(k));
+    let (mut all, mut problems, mut any_ok) = (vec![], vec![], false);
+    for (key, label, result) in results {
+        match result {
+            Ok(evs) => {
+                any_ok = true;
+                cache.insert(key, evs.clone());
+                all.extend(evs);
             }
-            CalendarKind::CalDav { .. } => match fetch_caldav(src, off, from, to, default_color) {
-                Ok(evs) => all.extend(evs),
-                Err(e) => {
-                    log::warn!("calendar {}: {e}", src.detail());
-                    problems.push(format!("{}: {e}", src.detail()));
-                }
-            },
+            Err(e) => {
+                problems.push(format!("{label}: {e}"));
+                all.extend(cache.get(&key).cloned().unwrap_or_default());
+            }
         }
     }
     all.sort_by_key(|e| e.start_ms);
-    (all, problems)
+    (all, problems, any_ok)
+}
+
+/// One source's events, named and coloured.
+fn fetch_source(src: &crate::config::CalendarSource, i: usize, off: i32, from: i64, to: i64) -> Result<Vec<Event>, String> {
+    let default_color = crate::config::PALETTE[i % crate::config::PALETTE.len()];
+    match &src.kind {
+        CalendarKind::Ics { url } => {
+            // webcal:// is https:// for calendar apps
+            let url = url.replacen("webcal://", "https://", 1).replacen("Webcal://", "https://", 1);
+            let text = agent().get(&url).call().and_then(|mut r| r.body_mut().read_to_string()).map_err(|e| short(&e.to_string()))?;
+            let name = if src.name.is_empty() { island_core::ics::calendar_name(&text).unwrap_or_else(|| src.detail()) } else { src.name.clone() };
+            let color = src.color.unwrap_or(default_color);
+            Ok(island_core::ics::parse(&text, off, from, to).into_iter().map(|e| Event { color: Some(color), calendar: name.clone(), ..e }).collect())
+        }
+        CalendarKind::CalDav { .. } => fetch_caldav(src, off, from, to, default_color),
+    }
 }
 
 fn short(s: &str) -> String {
@@ -215,6 +252,37 @@ mod tests {
         assert_eq!(w.rain_slots.len(), 3);
         assert_eq!(w.rain_slots[2].offset_min, 30);
         assert!(parse_weather(&serde_json::json!({})).is_none());
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    fn ev(t: &str, start: i64) -> Event {
+        Event { id: t.into(), title: t.into(), start_ms: start, end_ms: start + 1, ..Default::default() }
+    }
+
+    #[test]
+    fn a_failing_source_keeps_its_last_events_and_a_removed_one_goes() {
+        let mut cache = HashMap::new();
+        let ok = |k: &str, evs: Vec<Event>| (k.to_string(), k.to_string(), Ok(evs));
+        let (all, problems, any) = merge_results(vec![ok("a", vec![ev("one", 20)]), ok("b", vec![ev("two", 10)])], &mut cache);
+        assert_eq!(all.iter().map(|e| e.title.as_str()).collect::<Vec<_>>(), ["two", "one"], "sorted by start");
+        assert!(problems.is_empty() && any);
+        // the network drops: b fails, its events stay
+        let (all, problems, any) = merge_results(vec![ok("a", vec![ev("one", 20), ev("three", 30)]), ("b".into(), "Calendar B".into(), Err("timed out".into()))], &mut cache);
+        assert_eq!(all.len(), 3, "b's old event is still there");
+        assert_eq!(problems, vec!["Calendar B: timed out"]);
+        assert!(any);
+        // everything fails: the agenda keeps what it had, and nothing counts as synced
+        let (all, _, any) = merge_results(vec![("a".into(), "A".into(), Err("x".into())), ("b".into(), "B".into(), Err("y".into()))], &mut cache);
+        assert_eq!(all.len(), 3);
+        assert!(!any);
+        // b is removed from the settings: its cache goes, a failure of a never-read source gives nothing
+        let (all, _, _) = merge_results(vec![("a".into(), "A".into(), Err("x".into())), ("c".into(), "C".into(), Err("z".into()))], &mut cache);
+        assert_eq!(all.iter().map(|e| e.title.as_str()).collect::<Vec<_>>(), ["one", "three"]);
+        assert!(!cache.contains_key("b"));
     }
 }
 

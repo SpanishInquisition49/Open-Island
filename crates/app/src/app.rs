@@ -156,6 +156,10 @@ impl App {
 
     /// Handles the commands of the settings menu: writes config.json, applies the change, tells the services.
     fn settings_command(&mut self, c: &Command) -> bool {
+        if matches!(c, Command::RefreshCalendars) {
+            services::CALENDAR_REFRESH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return true;
+        }
         use serde_json::{json, Value};
         let result = match c {
             Command::AddCalendar(url) => self.edit_calendars(|list| crate::config::add_feed(list, url)),

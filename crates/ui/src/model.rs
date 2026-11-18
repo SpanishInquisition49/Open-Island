@@ -142,6 +142,8 @@ pub struct Data {
     pub battery: Option<Battery>,
     pub weather: Option<Weather>,
     pub events: Vec<Event>,
+    /// When the calendars were last read successfully (epoch ms; 0 = not yet).
+    pub events_synced_at: i64,
     pub privacy: Privacy,
     pub volume: Option<f32>,
     pub muted: bool,
@@ -293,6 +295,8 @@ pub enum Command {
     NextSink,
     /// Re-read the quick-settings state (the page was just opened).
     RefreshQuick,
+    /// Read the calendars again now.
+    RefreshCalendars,
     /// A calendar feed address (https://, http:// or webcal://).
     AddCalendar(String),
     /// Add an iCloud account: the Apple ID and an app-specific password.

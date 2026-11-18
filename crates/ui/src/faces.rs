@@ -599,6 +599,12 @@ impl Island {
     fn face_cal(&self, p: P, w: f64, h: f64) {
         let c = &self.cal;
         let hy = self.page_header(p, w, &format!("{} {}", clock::MONTHS[c.month as usize - 1], c.year));
+        // how fresh the events are
+        if !self.data.config.calendars.is_empty() {
+            let t = if self.data.events_synced_at == 0 { "Not synced yet".to_string() } else { sync_text(self.now - self.data.events_synced_at) };
+            p.text(&t, w - 14.0, h - 8.0, 9.0, REG, theme::DIM, Align::Right, 160.0);
+        }
+        p.icon_button(w - 14.0 - 14.0 - 90.0, hy, 28.0, "refresh", 15.0, Action::Cmd(Command::RefreshCalendars));
         p.icon_button(w - 14.0 - 14.0 - 60.0, hy, 28.0, "chevron-left", 16.0, Action::CalPrev);
         p.icon_button(w - 14.0 - 14.0 - 30.0, hy, 28.0, "calendar-event", 15.0, Action::CalToday);
         p.icon_button(w - 14.0 - 14.0, hy, 28.0, "chevron-right", 16.0, Action::CalNext);
@@ -661,7 +667,6 @@ impl Island {
             }
             y += 24.0;
         }
-        let _ = h;
     }
 
     /// Days (index = day of month) of the shown month that have an event, with the first event's colour.
@@ -1090,6 +1095,14 @@ fn side_to_page(s: Side) -> Page {
         Side::Focus => Page::Focus,
         Side::Media => Page::Media,
         Side::Op => Page::Op,
+    }
+}
+
+/// "Synced just now", "Synced 3 min ago", "Synced 2 h ago".
+fn sync_text(delta_ms: i64) -> String {
+    match ago(delta_ms).as_str() {
+        "now" => "Synced just now".to_string(),
+        a => format!("Synced {a} ago"),
     }
 }
 

@@ -37,13 +37,17 @@ pub static SYSTEM_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 /// Bumped whenever the settings change, so the services that read them (weather, calendars) refetch at once.
 pub static CONFIG_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Sleeps up to `secs`, or until the settings change. Returns true when they did.
-pub fn wait_or_config_change(secs: u64) -> bool {
-    let start = CONFIG_GEN.load(std::sync::atomic::Ordering::Relaxed);
+/// Bumped to make the calendar thread read the calendars now (the refresh button, opening a stale page).
+pub static CALENDAR_REFRESH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Sleeps up to `secs`, or until one of the counters changes. Returns true when one did.
+pub fn wait_for(secs: u64, gens: &[&std::sync::atomic::AtomicU64]) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    let start: Vec<u64> = gens.iter().map(|g| g.load(Relaxed)).collect();
     let end = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     while std::time::Instant::now() < end {
         std::thread::sleep(std::time::Duration::from_millis(400));
-        if CONFIG_GEN.load(std::sync::atomic::Ordering::Relaxed) != start {
+        if gens.iter().zip(&start).any(|(g, s)| g.load(Relaxed) != *s) {
             return true;
         }
     }

@@ -31,6 +31,8 @@ fn data() -> Data {
     let mut d = Data::default();
     d.utc_offset_secs = 3600;
     d.volume = Some(0.62);
+    d.events_synced_at = NOW - 3 * 60_000;
+    d.config.calendars = vec![CalendarView { name: "Università".into(), detail: "calendar.google.com".into(), color: (0xff, 0x9f, 0x0a) }];
     d.wifi = Some(true);
     d.bluetooth = Some(false);
     d.profile = Some("balanced".into());
