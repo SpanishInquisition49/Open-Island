@@ -14,7 +14,7 @@ pub enum Phase {
 /// After `phase` of round `round` (1-based): the next phase, its round and its length in seconds.
 pub fn next(phase: Phase, round: u32) -> (Phase, u32, u64) {
     match phase {
-        Phase::Focus => (Phase::Break, round, if round % ROUNDS == 0 { LONG } else { SHORT }),
+        Phase::Focus => (Phase::Break, round, if round.is_multiple_of(ROUNDS) { LONG } else { SHORT }),
         Phase::Break => (Phase::Focus, round + 1, FOCUS),
     }
 }

@@ -27,6 +27,7 @@ fn art() -> Image {
     Image { id: 1, width: w, height: h, rgba: Arc::new(px) }
 }
 
+#[allow(clippy::field_reassign_with_default)]
 fn data() -> Data {
     let mut d = Data::default();
     d.utc_offset_secs = 3600;

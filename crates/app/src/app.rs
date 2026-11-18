@@ -2,7 +2,7 @@
 //! fonts and the channel the services report on, and turns window events into island events.
 
 use crate::services::{self, Msg};
-use crate::config::{CalendarKind, CalendarSource};
+use crate::config::CalendarSource;
 use island_ui::model::{Command, Data};
 use island_ui::text::Fonts;
 use island_ui::{Config, Island};
@@ -160,7 +160,7 @@ impl App {
             services::CALENDAR_REFRESH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return true;
         }
-        use serde_json::{json, Value};
+        use serde_json::json;
         let result = match c {
             Command::AddCalendar(url) => self.edit_calendars(|list| crate::config::add_feed(list, url)),
             Command::AddICloud { user, password } => self.edit_calendars(|list| crate::config::add_icloud(list, user, password)),

@@ -74,11 +74,11 @@ pub fn fmt_bubble(ms: i64) -> String {
 
 /// 300 -> "5 min", 5400 -> "1 h 30", 90 -> "90 s".
 pub fn preset_label(secs: u64) -> String {
-    if secs % 3600 == 0 {
+    if secs.is_multiple_of(3600) {
         format!("{} h", secs / 3600)
     } else if secs >= 3600 {
         format!("{} h {}", secs / 3600, (secs % 3600) / 60)
-    } else if secs % 60 == 0 {
+    } else if secs.is_multiple_of(60) {
         format!("{} min", secs / 60)
     } else {
         format!("{secs} s")

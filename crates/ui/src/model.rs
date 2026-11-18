@@ -17,7 +17,7 @@ impl Image {
     /// Average colour of the opaque pixels, for the album-art tint.
     pub fn average(&self) -> Option<(u8, u8, u8)> {
         let (mut r, mut g, mut b, mut n) = (0u64, 0u64, 0u64, 0u64);
-        for px in self.rgba.chunks_exact(4).step_by(7) {
+        for px in self.rgba.as_chunks::<4>().0.iter().step_by(7) {
             if px[3] > 200 {
                 r += px[0] as u64;
                 g += px[1] as u64;

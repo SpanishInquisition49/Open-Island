@@ -90,9 +90,16 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>) {
         let mut sink: Option<String> = None;
         let mut profile: Option<String> = None;
         let mut wifi: Option<bool> = None;
-        let mut sample_now = true;
+        let mut sample_now;
+        let mut first = true;
         loop {
-            match cmd_rx.recv_timeout(Duration::from_secs(if super::QUICK_WANTED.load(Ordering::Relaxed) { 3 } else { 30 })) {
+            let got = if first {
+                first = false;
+                Ok(Command::RefreshQuick)
+            } else {
+                cmd_rx.recv_timeout(Duration::from_secs(if super::QUICK_WANTED.load(Ordering::Relaxed) { 3 } else { 30 }))
+            };
+            match got {
                 Ok(Command::ToggleWifi) => {
                     run("nmcli", &["radio", "wifi", if wifi == Some(true) { "off" } else { "on" }]);
                     sample_now = true;
@@ -160,7 +167,6 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>) {
             if !sample_now {
                 continue;
             }
-            sample_now = false;
             wifi = parse_wifi(&out("nmcli", &["radio", "wifi"]).unwrap_or_default());
             let bt = parse_bluetooth(&out("bluetoothctl", &["show"]).unwrap_or_default());
             sinks = parse_sinks(&out("pactl", &["-f", "json", "list", "sinks"]).unwrap_or_default());

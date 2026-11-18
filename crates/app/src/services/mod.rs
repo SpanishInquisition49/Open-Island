@@ -194,7 +194,6 @@ pub fn save_history_if_changed(history: &[(island_ui::model::Incoming, i64)]) {
             if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&p) {
                 let _ = f.write_all(text.as_bytes());
             }
-            return;
         }
         #[cfg(not(unix))]
         let _ = std::fs::write(&p, text);

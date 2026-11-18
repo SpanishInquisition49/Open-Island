@@ -1535,6 +1535,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::field_reassign_with_default)]
     fn data() -> Data {
         let mut d = Data::default();
         d.battery = Some(Battery { percent: 50.0, charging: false, on_ac: true });

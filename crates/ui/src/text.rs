@@ -254,16 +254,17 @@ impl Fonts {
     }
 
     /// Draws one line with its baseline at `baseline_y`, left edge at `x`.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(&self, scene: &mut Scene, text: &str, x: f64, baseline_y: f64, size: f32, w: Weight, color: Color) {
         let (glyphs, _) = self.layout(text, size, w);
         let faces = self.faces(w);
-        for fi in 0..faces.len() {
+        for (fi, face) in faces.iter().enumerate() {
             let run: Vec<Glyph> = glyphs.iter().filter(|(i, _)| *i == fi).map(|(_, g)| *g).collect();
             if run.is_empty() {
                 continue;
             }
             scene
-                .draw_glyphs(&faces[fi].data)
+                .draw_glyphs(&face.data)
                 .font_size(size)
                 .transform(Affine::translate((x, baseline_y)))
                 .brush(color)

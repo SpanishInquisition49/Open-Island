@@ -167,7 +167,7 @@ pub fn pick(results: &[Version], track_secs: f64, tolerance: f64) -> Option<Stri
     let mut winner: Option<&Group> = None;
     for k in &order {
         let g = &groups[k];
-        if winner.map_or(true, |w| g.count > w.count) {
+        if winner.is_none_or(|w| g.count > w.count) {
             winner = Some(g);
         }
     }

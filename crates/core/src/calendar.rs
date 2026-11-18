@@ -110,7 +110,7 @@ impl Announcer {
             return None;
         }
         let cutoff = now_ms - 86_400_000;
-        self.seen.retain(|k| k.rsplit(':').next().and_then(|s| s.parse::<i64>().ok()).map_or(true, |s| s > cutoff));
+        self.seen.retain(|k| k.rsplit(':').next().and_then(|s| s.parse::<i64>().ok()).is_none_or(|s| s > cutoff));
         Some(e)
     }
 }
@@ -156,7 +156,7 @@ mod tests {
         assert_eq!(next_event(&evs, 2500).unwrap().id, "a", "ongoing counts");
         assert_eq!(soon(&evs, 150, 1000), None);
         assert_eq!(soon(&evs, 1200, 1000).unwrap().id, "a");
-        assert_eq!(soon(&evs, 2000 + 61_000, 1000).map(|e| e.id.as_str()), Some("b").filter(|_| false), "a started >1 min ago is no longer soon");
+        assert_eq!(soon(&evs, 2000 + 61_000, 1000).map(|e| e.id.as_str()), None, "a started >1 min ago is no longer soon");
     }
 
     #[test]

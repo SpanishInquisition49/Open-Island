@@ -192,6 +192,7 @@ impl Island {
         p.hit(rect(0.0, 0.0, w, h), Action::Open(Page::Home));
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn equalizer(&self, p: P, x: f64, cy: f64, n: usize, max_h: f64, bar_w: f64, playing: bool, tint: Color) {
         let t = self.now as f64 / 1000.0;
         // real audio levels when fresh (lows on the left, a little gain), else a cheap animation
@@ -752,6 +753,7 @@ impl Island {
         p.hit(r, Action::Cmd(Command::NextSink));
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn metric_row(&self, p: P, w: f64, y: f64, label: &str, frac: Option<f64>, text: &str, color: Color) {
         p.stagger(1 + ((y - 62.0) / 28.0).round().max(0.0) as usize);
         p.text(label, 14.0, y, 11.0, SEMI, theme::DIM, Align::Left, 60.0);
