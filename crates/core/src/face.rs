@@ -11,6 +11,7 @@ pub enum Face {
     Sys,
     Notifs,
     Settings,
+    Weather,
     Update,
     Clip,
     MeetMini,
@@ -46,6 +47,7 @@ impl Face {
             Sys => (420.0, 286.0),
             Notifs => (420.0, 120.0),
             Settings => (440.0, 380.0),
+            Weather => (420.0, 318.0),
             Update => (400.0, 64.0),
             Clip => (400.0, 236.0),
             MeetMini => (270.0, 28.0),
@@ -94,6 +96,7 @@ pub enum Page {
     Qs,
     Notifs,
     Settings,
+    Weather,
     Cal,
     Sys,
     Focus,
@@ -184,6 +187,7 @@ pub fn choose(s: &Snapshot) -> (Face, Option<Side>) {
             Some(Page::Sys) => Some(Sys),
             Some(Page::Notifs) => Some(Notifs),
             Some(Page::Settings) => Some(Settings),
+            Some(Page::Weather) => Some(Weather),
             Some(Page::Media) if s.media => Some(media_face),
             Some(Page::Timer) if s.timer => Some(TimerFull),
             Some(Page::Focus) if s.focus => Some(FocusFull),
@@ -236,7 +240,7 @@ pub fn choose(s: &Snapshot) -> (Face, Option<Side>) {
 
 /// Pages a horizontal swipe cycles through while the island is open: the live activities first, then
 /// the fixed pages.
-pub fn swipe_pages(media: bool, timer: bool, focus: bool, soon: bool, op: bool, notifs: bool) -> Vec<Page> {
+pub fn swipe_pages(media: bool, timer: bool, focus: bool, soon: bool, op: bool, notifs: bool, weather: bool) -> Vec<Page> {
     let mut out = vec![];
     if media {
         out.push(Page::Media);
@@ -253,7 +257,11 @@ pub fn swipe_pages(media: bool, timer: bool, focus: bool, soon: bool, op: bool, 
     if op {
         out.push(Page::Op);
     }
-    out.extend([Page::Home, Page::Cal, Page::Qs, Page::Sys]);
+    out.extend([Page::Home, Page::Cal]);
+    if weather {
+        out.push(Page::Weather);
+    }
+    out.extend([Page::Qs, Page::Sys]);
     if notifs {
         out.push(Page::Notifs);
     }
@@ -337,8 +345,9 @@ mod tests {
 
     #[test]
     fn pages_cycle() {
-        let pages = swipe_pages(true, false, false, true, false, true);
+        let pages = swipe_pages(true, false, false, true, false, true, false);
         assert_eq!(pages, vec![Page::Media, Page::Meeting, Page::Home, Page::Cal, Page::Qs, Page::Sys, Page::Notifs]);
+        assert_eq!(swipe_pages(false, false, false, false, false, false, true), vec![Page::Home, Page::Cal, Page::Weather, Page::Qs, Page::Sys], "the weather sits after the calendar when there is a forecast");
         assert_eq!(cycle_page(&pages, Some(Page::Notifs), 1), Some(Page::Media));
         assert_eq!(cycle_page(&pages, Some(Page::Media), -1), Some(Page::Notifs));
         assert_eq!(cycle_page(&pages, None, 1), Some(Page::Media));

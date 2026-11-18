@@ -152,6 +152,7 @@ impl Island {
             Face::Notif | Face::NotifAct => self.face_notif(p, w, h, face == Face::NotifAct),
             Face::Reply => self.face_reply(p, w, h),
             Face::Device => self.face_device(p, w, h),
+            Face::Weather => self.face_weather(p, w, h),
             Face::Bar => self.face_bar(p, w, h),
             Face::Osd => self.face_osd(p, w, h),
             Face::Power => self.face_power(p, w, h),
@@ -538,6 +539,109 @@ impl Island {
         p.text(&format!("{}%", cap.round() as i32), w - 16.0, h / 2.0, 13.0, SEMI, theme::FG, Align::Right, 44.0);
     }
 
+    /// "25 min", "3 h", "3 h 20 min".
+    pub(crate) fn span_text(min: i32) -> String {
+        if min < 90 {
+            format!("{} min", min.max(1))
+        } else {
+            let (h, m) = ((min + 5) / 60, (min + 5) % 60 / 10 * 10);
+            if m == 0 || h >= 6 { format!("{h} h") } else { format!("{h} h {m} min") }
+        }
+    }
+
+    /// The rain line, short for the home page, with the time of day for the weather page. None when dry.
+    pub(crate) fn rain_text(&self, o: weather::Outlook, long: bool) -> Option<String> {
+        use weather::Outlook::*;
+        Some(match o {
+            Raining { clears_in_min: Some(m) } => format!("Raining · clears in {}", Self::span_text(m)),
+            Raining { clears_in_min: None } => "Raining now".to_string(),
+            Rain { in_min } if long && in_min >= 90 => {
+                let c = clock::civil(self.now + in_min as i64 * 60_000, self.data.utc_offset_secs);
+                format!("Rain around {} · in {}", c.hhmm(), Self::span_text(in_min))
+            }
+            Rain { in_min } => format!("Rain in {}", Self::span_text(in_min)),
+            Dry => return None,
+        })
+    }
+
+    fn face_weather(&self, p: P, w: f64, _h: f64) {
+        let hy = self.page_header(p, w, "Weather");
+        let Some(wx) = &self.data.weather else {
+            p.text("No forecast yet", 14.0, hy + 34.0, 12.0, REG, theme::DIM, Align::Left, 200.0);
+            return;
+        };
+        let top = 14.0 + 34.0 + 6.0;
+        p.stagger(1);
+        p.icon(weather::glyph(wx.code, wx.day), 14.0 + 20.0, top + 26.0, 36.0, theme::FG);
+        p.text(&format!("{}°", wx.temp_c.round() as i32), 14.0 + 50.0, top + 20.0, 34.0, SEMI, theme::FG, Align::Left, 110.0);
+        p.text(&format!("{} · feels {}°", weather::describe(wx.code), wx.feels_c.round() as i32), 14.0 + 50.0, top + 50.0, 12.0, REG, theme::DIM, Align::Left, 220.0);
+        p.text(&format!("H {}°", wx.high_c.round() as i32), w - 14.0, top + 14.0, 13.0, SEMI, theme::FG, Align::Right, 80.0);
+        p.text(&format!("L {}°", wx.low_c.round() as i32), w - 14.0, top + 34.0, 13.0, REG, theme::DIM, Align::Right, 80.0);
+        // when it rains next
+        p.stagger(2);
+        let row = rect(14.0, top + 66.0, w - 28.0, 32.0);
+        p.rrect(row, 12.0, theme::CHIP);
+        let o = self.rain_outlook().unwrap_or(weather::Outlook::Dry);
+        let (icon, text, col) = match self.rain_text(o, true) {
+            Some(t) => ("cloud-rain", t, theme::RAIN),
+            None => ("sun", "No rain expected in the next 24 hours".to_string(), theme::DIM),
+        };
+        p.icon(icon, row.x0 + 18.0, row.center().y, 16.0, col);
+        p.text(&text, row.x0 + 36.0, row.center().y, 13.0, SEMI, if col == theme::DIM { theme::DIM } else { theme::FG }, Align::Left, (row.width() - 48.0) as f32);
+        // today in steps of three hours
+        let off = self.data.utc_offset_secs;
+        let today = clock::civil(self.now, off);
+        let mid = clock::midnight_ms(today.year, today.month, today.day, off);
+        let hour_at = |i: i64| wx.hours.iter().find(|h| h.time_ms == mid + i * 3_600_000);
+        let now_h = ((self.now - mid) / 3_600_000).clamp(0, 23);
+        p.stagger(3);
+        let cols_top = row.y1 + 12.0;
+        let cw = (w - 28.0) / 8.0;
+        for c in 0..8i64 {
+            let hr = c * 3;
+            let x = 14.0 + c as f64 * cw;
+            let current = now_h >= hr && now_h < hr + 3;
+            if current {
+                p.rrect(rect(x + 2.0, cols_top, cw - 4.0, 66.0), 12.0, theme::CHIP);
+            }
+            let past = hr + 3 <= now_h;
+            let dim = |col: Color| if past { theme::with_alpha(col, 0.45) } else { col };
+            let cx = x + cw / 2.0;
+            p.text(&format!("{hr:02}"), cx, cols_top + 11.0, 10.0, REG, dim(theme::DIM), Align::Center, 30.0);
+            match hour_at(hr + 1).or_else(|| hour_at(hr)) {
+                Some(h) => {
+                    p.icon(weather::glyph(h.code, h.is_day), cx, cols_top + 33.0, 17.0, dim(theme::FG));
+                    p.text(&format!("{}°", h.temp_c.round() as i32), cx, cols_top + 55.0, 12.0, SEMI, dim(theme::FG), Align::Center, 36.0);
+                }
+                None => {
+                    p.text("–", cx, cols_top + 40.0, 12.0, REG, theme::DIM, Align::Center, 20.0);
+                }
+            }
+        }
+        // the chance of rain hour by hour
+        p.stagger(4);
+        let chart_top = cols_top + 66.0 + 14.0;
+        p.text("Chance of rain", 14.0 + 4.0, chart_top + 4.0, 10.0, REG, theme::DIM, Align::Left, 120.0);
+        let base = chart_top + 14.0 + 34.0;
+        let bw = (w - 28.0) / 24.0;
+        for i in 0..24i64 {
+            let x = 14.0 + i as f64 * bw;
+            let frac = hour_at(i).map_or(0.0, |h| (h.rain_prob as f64 / 100.0).max((h.mm as f64 / 2.0).min(1.0)));
+            p.rrect(rect(x + 1.5, base - 3.0, bw - 3.0, 3.0), 1.5, theme::TRACK);
+            if frac > 0.02 {
+                let bh = (frac * 34.0).max(3.0);
+                let col = if i < now_h { theme::with_alpha(theme::RAIN, 0.4) } else { theme::RAIN };
+                p.rrect(rect(x + 1.5, base - bh, bw - 3.0, bh), 1.5, col);
+            }
+            if i == now_h {
+                p.rrect(rect(x + 1.5, base + 3.0, bw - 3.0, 2.0), 1.0, theme::FG);
+            }
+        }
+        for hr in [0i64, 6, 12, 18] {
+            p.text(&format!("{hr:02}"), 14.0 + hr as f64 * bw + bw / 2.0, base + 14.0, 9.0, REG, theme::DIM, Align::Center, 24.0);
+        }
+    }
+
     fn face_device(&self, p: P, w: f64, h: f64) {
         let Some((d, low)) = &self.device_ev else { return };
         let tint = if *low { theme::RED } else { theme::FG };
@@ -637,7 +741,16 @@ impl Island {
             let x = w - 22.0;
             p.icon(weather::glyph(wx.code, wx.day), x - 72.0, 40.0, 28.0, theme::FG);
             p.text(&format!("{}°", wx.temp_c.round() as i32), x, 38.0, 22.0, SEMI, theme::FG, Align::Right, 80.0);
-            p.text(&format!("{}° / {}°", wx.high_c.round() as i32, wx.low_c.round() as i32), x, 62.0, 11.0, REG, theme::DIM, Align::Right, 100.0);
+            let rain = self.rain_outlook().filter(|o| weather::worth_showing_at_home(*o)).and_then(|o| self.rain_text(o, false));
+            match rain {
+                Some(t) => {
+                    p.text(&t, x, 62.0, 11.0, SEMI, theme::RAIN, Align::Right, 170.0);
+                }
+                None => {
+                    p.text(&format!("{}° / {}°", wx.high_c.round() as i32, wx.low_c.round() as i32), x, 62.0, 11.0, REG, theme::DIM, Align::Right, 100.0);
+                }
+            }
+            p.hit(rect(x - 170.0, 22.0, 170.0, 50.0), Action::Open(Page::Weather));
         }
         p.icon_button(w - 22.0, 18.0, 24.0, "settings", 14.0, Action::Open(Page::Settings));
         let mut y = 28.0 + 44.0 + 10.0 + 17.0;
@@ -1270,6 +1383,7 @@ fn page_icon(p: Page) -> &'static str {
         Page::Notifs => "bell",
         Page::Clip => "clipboard-text",
         Page::Settings => "settings",
+        Page::Weather => "cloud-sun",
     }
 }
 

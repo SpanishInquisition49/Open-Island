@@ -1,3 +1,4 @@
+#![allow(clippy::field_reassign_with_default)]
 //! Renders the island's faces to PNG files, headless (no window): `cargo run -p island-ui --example preview -- out_dir`.
 //! Needs a GPU (or a software Vulkan/GL adapter) that wgpu can use.
 
@@ -28,6 +29,26 @@ fn art() -> Image {
 }
 
 #[allow(clippy::field_reassign_with_default)]
+/// Two days of hours around NOW (local midnight of NOW's day + offset), a wet afternoon.
+fn day_hours() -> Vec<island_core::weather::Hour> {
+    let off = 3600;
+    let mid = (NOW / 1000 + off).div_euclid(86_400) * 86_400 - off;
+    (0..48)
+        .map(|i| {
+            let h = (i % 24) as f32;
+            let wet = (15..=19).contains(&(i % 24));
+            island_core::weather::Hour {
+                time_ms: (mid + i * 3600) * 1000,
+                temp_c: 9.0 + 8.0 * (1.0 - ((h - 15.0) / 9.0).powi(2)).max(0.0),
+                code: if wet { 61 } else if (8..=14).contains(&(i % 24)) { 2 } else { 3 },
+                is_day: (7..18).contains(&(i % 24)),
+                rain_prob: if wet { 60 + (i % 24 - 15) as u8 * 8 } else { 5 },
+                mm: if wet { 0.8 } else { 0.0 },
+            }
+        })
+        .collect()
+}
+
 fn data() -> Data {
     let mut d = Data::default();
     d.utc_offset_secs = 3600;
@@ -55,7 +76,7 @@ fn data() -> Data {
     });
     d.brightness = Some(0.8);
     d.battery = Some(Battery { percent: 79.0, charging: false, on_ac: false });
-    d.weather = Some(Weather { temp_c: 14.0, feels_c: 12.0, code: 2, day: true, high_c: 17.0, low_c: 9.0, rain_slots: vec![Slot { offset_min: 0, mm: 0.0 }, Slot { offset_min: 30, mm: 0.0 }] });
+    d.weather = Some(Weather { temp_c: 14.0, feels_c: 12.0, code: 2, day: true, high_c: 17.0, low_c: 9.0, rain_slots: vec![Slot { offset_min: 0, mm: 0.0 }, Slot { offset_min: 30, mm: 0.0 }], hours: day_hours() });
     d.events = vec![
         Event { id: "a".into(), title: "Reti di calcolatori — lezione".into(), start_ms: NOW + 3 * 3_600_000, end_ms: NOW + 4 * 3_600_000, url: Some("https://meet.example/x".into()), ..Default::default() },
         Event { id: "b".into(), title: "Ricevimento".into(), start_ms: NOW + 5 * 3_600_000, end_ms: NOW + 6 * 3_600_000, ..Default::default() },
@@ -198,6 +219,8 @@ fn main() {
         ("focus-full", Box::new(|i, d| { d.focus = Some(Focus { active: true, end_epoch: Some(NOW / 1000 + 23 * 60) }); i.push(NOW, Input::OpenPage(island_core::face::Page::Focus)); })),
         ("page-sys-opening", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Sys)))),
         ("page-settings", Box::new(|i, d| { d.config = ConfigView { font: "Inter".into(), font_missing: false, calendars: vec![CalendarView { name: "Università".into(), detail: "calendar.google.com".into(), color: (0xff, 0x9f, 0x0a) }, CalendarView { name: String::new(), detail: "p01-caldav.icloud.com".into(), color: (0x30, 0xd1, 0x58) }, CalendarView { name: "iCloud".into(), detail: "iCloud · me@icloud.com".into(), color: (0x0a, 0x84, 0xff) }], latitude: Some(43.7228), longitude: Some(10.4017), notification_sound: "/home/me/Music/UWU.ogg".into() }; i.push(NOW, Input::OpenPage(island_core::face::Page::Settings)); })),
+        ("page-weather", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Weather)))),
+        ("home-rain", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Home)))),
         ("page-qs", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Qs)))),
         ("page-sys", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Sys)))),
         ("page-notifs", Box::new(|i, _| {
@@ -213,7 +236,7 @@ fn main() {
         setup(&mut i, &mut d);
         i.data = d.clone();
         // pages need a page request; "home" and "meeting" go through the hover-less path
-        let hold = name == "lyrics-scroll" || name == "page-sys-opening" || name == "media-transition" || name.contains("full") || name.starts_with("focus-full") || name.contains("lyrics") || name == "home" || name == "qs-devices" || name.starts_with("page-");
+        let hold = name == "lyrics-scroll" || name == "page-sys-opening" || name == "media-transition" || name.contains("full") || name.starts_with("focus-full") || name.contains("lyrics") || name == "home" || name == "home-rain" || name == "qs-devices" || name.starts_with("page-");
         let frames = if name == "media-transition" { 26 } else if name == "page-sys-opening" { 38 } else if name == "lyrics-scroll" { 40 } else { 400 };
         let f = settle(&mut i, &d, frames, hold);
         let (sw, sh) = (f.surface.0.ceil().max(520.0) as u32, f.surface.1.ceil().max(90.0) as u32);

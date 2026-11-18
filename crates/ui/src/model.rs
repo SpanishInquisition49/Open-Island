@@ -72,6 +72,8 @@ pub struct Weather {
     pub high_c: f32,
     pub low_c: f32,
     pub rain_slots: Vec<Slot>,
+    /// The hours of today and tomorrow.
+    pub hours: Vec<island_core::weather::Hour>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]

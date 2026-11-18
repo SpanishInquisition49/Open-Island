@@ -16,6 +16,9 @@ pub const RED: Color = Color::from_rgba8(0xff, 0x45, 0x3a, 255);
 pub const ORANGE: Color = Color::from_rgba8(0xff, 0x9f, 0x0a, 255);
 pub const GREEN: Color = Color::from_rgba8(0x30, 0xd1, 0x58, 255);
 
+/// Rain.
+pub const RAIN: Color = Color::from_rgba8(0x64, 0xd2, 0xff, 255);
+
 pub fn with_alpha(c: Color, k: f32) -> Color {
     let [r, g, b, a] = c.components;
     Color::new([r, g, b, (a * k).clamp(0.0, 1.0)])

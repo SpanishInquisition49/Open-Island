@@ -197,3 +197,11 @@ icons are the ones bundled (Tabler names such as `git-branch`, `bolt`, `cloud`, 
 
 Through `bluetoothctl`: a card when headphones, earbuds, a mouse or a keyboard connect (with the battery when the
 device reports it), a warning once when it falls to 15%, and the connected ones with their battery on the Quick settings and System pages.
+
+## Weather
+
+A Weather page (after the calendar in the dock, or click the weather on the home page): the day in three-hour steps
+with a glyph and temperature each (hours already gone are dimmed, the current block is lit), the chance of rain hour by
+hour, and one line saying when it rains next ("Rain in 40 min", "Rain around 18:00 · in 3 h", "Raining · clears in 25
+min", or that none is expected in the next 24 hours). When rain is due within six hours, or it is raining, the home page
+shows that line in place of today's high and low. Needs the latitude and longitude (settings page). Data: Open-Meteo.

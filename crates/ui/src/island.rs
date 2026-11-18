@@ -1145,12 +1145,19 @@ impl Island {
             self.soon().is_some(),
             self.ops.op.is_some(),
             !self.history.is_empty(),
+            self.data.weather.is_some(),
         );
         if self.cfg.clipboard_history {
             v.push(Page::Clip);
         }
         v.push(Page::Settings);
         v
+    }
+
+    /// When it rains next, from the forecast.
+    pub(crate) fn rain_outlook(&self) -> Option<weather::Outlook> {
+        let w = self.data.weather.as_ref()?;
+        Some(weather::outlook(&w.rain_slots, &w.hours, self.now))
     }
 
     fn soon(&self) -> Option<&calendar::Event> {
@@ -1871,7 +1878,7 @@ fn side_page(s: Side) -> Page {
 
 /// Faces that are pages: they carry the dock at the bottom.
 pub(crate) fn has_dock(f: Face) -> bool {
-    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings)
+    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings)
 }
 
 pub(crate) fn page_of(f: Face) -> Option<Page> {
@@ -1887,6 +1894,7 @@ pub(crate) fn page_of(f: Face) -> Option<Page> {
         Face::Notifs => Page::Notifs,
         Face::Clip => Page::Clip,
         Face::Settings => Page::Settings,
+        Face::Weather => Page::Weather,
         Face::FocusFull => Page::Focus,
         _ => return None,
     })
@@ -2529,6 +2537,68 @@ mod tests {
         }
     }
 
+    fn forecast(now: i64, rain_at_h: Option<i64>) -> Weather {
+        let hours = (0..48)
+            .map(|k| {
+                let t = (now / 3_600_000 - 12 + k) * 3_600_000;
+                let wet = rain_at_h.is_some_and(|h| t >= now + h * 3_600_000 && t < now + (h + 2) * 3_600_000);
+                island_core::weather::Hour { time_ms: t, temp_c: 12.0, code: if wet { 61 } else { 2 }, is_day: true, rain_prob: if wet { 80 } else { 0 }, mm: if wet { 1.0 } else { 0.0 } }
+            })
+            .collect();
+        Weather { temp_c: 12.0, feels_c: 10.0, code: 2, day: true, high_c: 15.0, low_c: 7.0, rain_slots: (0..8).map(|k| island_core::weather::Slot { offset_min: k * 15, mm: 0.0 }).collect(), hours }
+    }
+
+    #[test]
+    fn the_weather_page_exists_once_there_is_a_forecast_and_the_home_weather_opens_it() {
+        let mut i = Island::new(Config::default());
+        assert!(!i.pages().contains(&Page::Weather), "no forecast, no page");
+        i.data.weather = Some(forecast(T0, None));
+        let pages = i.pages();
+        let at = pages.iter().position(|p| *p == Page::Weather).unwrap();
+        assert_eq!(pages[at - 1], Page::Cal, "after the calendar");
+        i.push(T0, Input::OpenPage(Page::Weather));
+        draw_frames(&mut i, 300);
+        assert_eq!(i.current_face(), Face::Weather);
+        i.push(i.now, Input::OpenPage(Page::Home));
+        draw_frames(&mut i, 300);
+        assert!(press(&mut i, Action::Open(Page::Weather)), "the weather block on the home page is a button");
+        draw_frames(&mut i, 300);
+        assert_eq!(i.current_face(), Face::Weather);
+    }
+
+    #[test]
+    fn rain_is_told_in_a_way_that_fits_the_distance() {
+        use island_core::weather::Outlook::*;
+        let mut i = Island::new(Config::default());
+        i.data.utc_offset_secs = 0;
+        i.now = 14 * 3_600_000; // 14:00
+        assert_eq!(i.rain_text(Rain { in_min: 25 }, false).as_deref(), Some("Rain in 25 min"));
+        assert_eq!(i.rain_text(Rain { in_min: 180 }, false).as_deref(), Some("Rain in 3 h"));
+        assert_eq!(i.rain_text(Rain { in_min: 180 }, true).as_deref(), Some("Rain around 17:00 · in 3 h"));
+        assert_eq!(i.rain_text(Rain { in_min: 25 }, true).as_deref(), Some("Rain in 25 min"), "near rain needs no clock time");
+        assert_eq!(i.rain_text(Raining { clears_in_min: Some(40) }, true).as_deref(), Some("Raining · clears in 40 min"));
+        assert_eq!(i.rain_text(Raining { clears_in_min: None }, false).as_deref(), Some("Raining now"));
+        assert_eq!(i.rain_text(Dry, true), None);
+        assert_eq!(Island::span_text(1), "1 min");
+        assert_eq!(Island::span_text(95), "1 h 40 min", "rounded to ten minutes");
+    }
+
+    #[test]
+    fn the_outlook_follows_the_forecast_and_home_only_cares_when_it_is_near() {
+        use island_core::weather::{worth_showing_at_home, Outlook};
+        let mut i = Island::new(Config::default());
+        i.now = T0;
+        assert_eq!(i.rain_outlook(), None, "no forecast");
+        i.data.weather = Some(forecast(T0, None));
+        assert_eq!(i.rain_outlook(), Some(Outlook::Dry));
+        i.data.weather = Some(forecast(T0, Some(3)));
+        let o = i.rain_outlook().unwrap();
+        assert!(matches!(o, Outlook::Rain { in_min } if (170..=190).contains(&in_min)), "{o:?}");
+        assert!(worth_showing_at_home(o));
+        i.data.weather = Some(forecast(T0, Some(9)));
+        assert!(!worth_showing_at_home(i.rain_outlook().unwrap()), "nine hours away is not a home page matter");
+    }
+
     #[test]
     fn focus_shows_its_minutes_and_a_bubble_beside_music() {
         let mut i = Island::new(Config::default());
@@ -2766,7 +2836,7 @@ mod tests {
         i.push(T0, Input::OpenPage(Page::Qs));
         draw_frames(&mut i, 200);
         let gotos: Vec<Page> = i.hits.iter().filter_map(|h| if let Action::Goto(p) = h.action { Some(p) } else { None }).collect();
-        assert_eq!(gotos, vec![Page::Home, Page::Cal, Page::Qs, Page::Sys, Page::Clip, Page::Settings], "no media, timer or notifications yet");
+        assert_eq!(gotos, vec![Page::Home, Page::Cal, Page::Qs, Page::Sys, Page::Clip, Page::Settings], "no media, timer, notifications or forecast yet");
         let home = i.hits.iter().find(|h| h.action == Action::Goto(Page::Sys)).unwrap().rect;
         i.pointer_down(i.now, home.center().x + i.pill_origin.0, home.center().y + i.pill_origin.1);
         assert_eq!(i.page, Some(Page::Sys));

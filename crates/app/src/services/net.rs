@@ -77,7 +77,7 @@ pub fn start(rep: Reporter) {
 
 fn fetch_weather(lat: f64, lon: f64) -> Result<Weather, String> {
     let url = format!(
-        "https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,apparent_temperature,weather_code,is_day&daily=temperature_2m_max,temperature_2m_min&minutely_15=precipitation&forecast_minutely_15=8&timezone=auto&forecast_days=1"
+        "https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,apparent_temperature,weather_code,is_day&daily=temperature_2m_max,temperature_2m_min&hourly=temperature_2m,precipitation_probability,precipitation,weather_code,is_day&minutely_15=precipitation&forecast_minutely_15=8&timezone=auto&forecast_days=2"
     );
     let v: serde_json::Value = agent().get(&url).call().map_err(|e| e.to_string())?.body_mut().read_json().map_err(|e| e.to_string())?;
     parse_weather(&v).ok_or_else(|| "unexpected response".to_string())
@@ -101,7 +101,38 @@ pub fn parse_weather(v: &serde_json::Value) -> Option<Weather> {
         high_c: day.and_then(|d| d.get("temperature_2m_max")?.get(0)?.as_f64()).unwrap_or(0.0) as f32,
         low_c: day.and_then(|d| d.get("temperature_2m_min")?.get(0)?.as_f64()).unwrap_or(0.0) as f32,
         rain_slots: slots,
+        hours: parse_hours(v),
     })
+}
+
+/// The hourly arrays of an Open-Meteo response; times are local (`2026-11-18T14:00`).
+fn parse_hours(v: &serde_json::Value) -> Vec<island_core::weather::Hour> {
+    let Some(h) = v.get("hourly") else { return vec![] };
+    let offset = v.get("utc_offset_seconds").and_then(|o| o.as_i64()).unwrap_or(0);
+    let arr = |k: &str| h.get(k).and_then(|a| a.as_array());
+    let Some(times) = arr("time") else { return vec![] };
+    let at = |k: &str, i: usize| arr(k).and_then(|a| a.get(i)).and_then(|x| x.as_f64());
+    times
+        .iter()
+        .enumerate()
+        .filter_map(|(i, t)| {
+            let t = t.as_str()?;
+            let (date, time) = t.split_once('T')?;
+            let mut d = date.split('-').filter_map(|x| x.parse::<i64>().ok());
+            let (y, mo, da) = (d.next()?, d.next()?, d.next()?);
+            let mut hm = time.split(':').filter_map(|x| x.parse::<i64>().ok());
+            let (hh, mm) = (hm.next()?, hm.next().unwrap_or(0));
+            let secs = island_core::calendar::days_from_civil(y, mo, da) * 86_400 + hh * 3600 + mm * 60 - offset;
+            Some(island_core::weather::Hour {
+                time_ms: secs * 1000,
+                temp_c: at("temperature_2m", i).unwrap_or(0.0) as f32,
+                code: at("weather_code", i).unwrap_or(0.0) as i32,
+                is_day: at("is_day", i).unwrap_or(1.0) >= 1.0,
+                rain_prob: at("precipitation_probability", i).unwrap_or(0.0).clamp(0.0, 100.0) as u8,
+                mm: at("precipitation", i).unwrap_or(0.0) as f32,
+            })
+        })
+        .collect()
 }
 
 /// Reads every calendar source; a source that fails keeps its last events (a dropped connection must not empty
@@ -256,13 +287,20 @@ mod tests {
         let v = serde_json::json!({
             "current": {"temperature_2m": 14.2, "apparent_temperature": 12.0, "weather_code": 2, "is_day": 1},
             "daily": {"temperature_2m_max": [17.0], "temperature_2m_min": [9.0]},
-            "minutely_15": {"precipitation": [0.0, 0.0, 0.4]}
+            "minutely_15": {"precipitation": [0.0, 0.0, 0.4]},
+            "utc_offset_seconds": 3600,
+            "hourly": {"time": ["2026-11-18T00:00", "2026-11-18T01:00"], "temperature_2m": [8.5, 8.0], "weather_code": [3, 61], "is_day": [0, 0], "precipitation_probability": [10, 80], "precipitation": [0.0, 0.6]}
         });
         let w = parse_weather(&v).unwrap();
         assert_eq!((w.code, w.day), (2, true));
         assert_eq!(w.high_c, 17.0);
         assert_eq!(w.rain_slots.len(), 3);
         assert_eq!(w.rain_slots[2].offset_min, 30);
+        assert_eq!(w.hours.len(), 2);
+        // 2026-11-18T00:00 at UTC+1 is 2026-11-17T23:00Z = 1_794_956_400 s
+        assert_eq!(w.hours[0].time_ms, 1_794_956_400_000);
+        assert_eq!((w.hours[1].code, w.hours[1].rain_prob, w.hours[1].mm, w.hours[1].is_day), (61, 80, 0.6, false));
+        assert_eq!(w.hours[1].time_ms - w.hours[0].time_ms, 3_600_000);
         assert!(parse_weather(&serde_json::json!({})).is_none());
     }
 }
