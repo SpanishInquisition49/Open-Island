@@ -20,6 +20,7 @@ struct Shell {
     window: Option<Arc<Window>>,
     surface_logical: (f64, f64),
     animating: bool,
+    next_ms: u32,
     last_redraw: Instant,
 }
 
@@ -80,6 +81,7 @@ impl Shell {
         }
         self.resize_to(&window, f.surface);
         self.animating = f.animating;
+        self.next_ms = f.next_ms;
         let scale = window.scale_factor();
         if let Err(e) = self.gpu.draw(&mut self.app.island, &self.app.fonts, self.surface_logical, scale) {
             log::error!("{e}");
@@ -97,7 +99,7 @@ impl Shell {
                 el.set_control_flow(ControlFlow::Wait);
             } else {
                 // at rest: wake once a second for the clock and the countdowns
-                el.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(1000)));
+                el.set_control_flow(ControlFlow::WaitUntil(self.last_redraw + Duration::from_millis(self.next_ms.max(16) as u64)));
             }
         }
     }
@@ -136,7 +138,7 @@ impl ApplicationHandler<Wake> for Shell {
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
-        if !self.animating && self.last_redraw.elapsed() >= Duration::from_millis(1000) {
+        if !self.animating && self.last_redraw.elapsed() >= Duration::from_millis(self.next_ms.max(16) as u64) {
             if let Some(w) = &self.window {
                 w.request_redraw();
             }
@@ -206,7 +208,7 @@ pub fn run() {
         let _ = proxy.send_event(Wake);
     });
     let app = App::new(waker);
-    let mut shell = Shell { app, gpu: Gpu::new(), window: None, surface_logical: (0.0, 0.0), animating: true, last_redraw: Instant::now() };
+    let mut shell = Shell { app, gpu: Gpu::new(), window: None, surface_logical: (0.0, 0.0), animating: true, next_ms: 0, last_redraw: Instant::now() };
     let _ = (TOP_MARGIN, LogicalPosition::new(0.0, 0.0));
     event_loop.set_control_flow(ControlFlow::Wait);
     if let Err(e) = event_loop.run_app(&mut shell) {

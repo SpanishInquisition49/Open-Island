@@ -91,7 +91,9 @@ fn read_num(p: &std::path::Path) -> Option<f64> {
 }
 
 fn battery(rep: Reporter) {
-    std::thread::spawn(move || loop {
+    std::thread::spawn(move || {
+        let mut last: Option<Option<Battery>> = None;
+        loop {
         let dir = std::path::Path::new("/sys/class/power_supply");
         let mut found = None;
         let mut ac = None;
@@ -110,8 +112,13 @@ fn battery(rep: Reporter) {
             }
         }
         let b = found.map(|(percent, charging)| Battery { percent, charging, on_ac: ac.unwrap_or(charging) });
-        rep.patch(move |d| d.battery = b);
+        // only a change is worth waking the island for
+        if last != Some(b) {
+            last = Some(b);
+            rep.patch(move |d| d.battery = b);
+        }
         std::thread::sleep(Duration::from_secs(5));
+        }
     });
 }
 
@@ -135,30 +142,71 @@ fn read_brightness() -> Option<f32> {
     None
 }
 
+/// Lines of `pactl subscribe` (what PulseAudio / PipeWire report as it happens), so volume and recording streams
+/// are read when they change instead of every few hundred milliseconds. None when pactl is missing.
+fn pactl_events() -> Option<std::sync::mpsc::Receiver<String>> {
+    use std::io::{BufRead, BufReader};
+    let mut child = Proc::new("pactl").arg("subscribe").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().ok()?;
+    let out = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    });
+    Some(rx)
+}
+
 fn audio_and_brightness(rep: Reporter, settings: Arc<Settings>) {
     std::thread::spawn(move || {
         let (mut last_vol, mut last_br): (Option<(f32, bool)>, Option<f32>) = (None, None);
         let mut last_bloop = std::time::Instant::now();
+        let events = pactl_events();
+        let mut first = true;
         loop {
-            let vol = read_volume();
+            // the volume is read when the audio server says something changed (and once a few seconds as a
+            // safety net); the backlight has no events, a sysfs read every second and a half costs nothing
+            let read_volume_now = first
+                || match &events {
+                    Some(rx) => match rx.recv_timeout(Duration::from_millis(1500)) {
+                        Ok(line) => {
+                            // a burst of events (dragging a slider) is one reading
+                            while rx.recv_timeout(Duration::from_millis(60)).is_ok() {}
+                            line.contains("sink") || line.contains("server")
+                        }
+                        Err(_) => true,
+                    },
+                    None => {
+                        std::thread::sleep(Duration::from_millis(1500));
+                        true
+                    }
+                };
+            first = false;
             let br = read_brightness();
-            if vol != last_vol {
-                if let (Some((v, m)), Some(_)) = (vol, last_vol) {
-                    rep.input(Input::Osd { kind: OsdKind::Volume, level: v, muted: m });
-                    if let Some(f) = &settings.volume_sound {
-                        if last_bloop.elapsed() > Duration::from_millis(250) {
-                            last_bloop = std::time::Instant::now();
-                            sound::play(f);
+            if read_volume_now {
+                let vol = read_volume();
+                if vol != last_vol {
+                    if let (Some((v, m)), Some(_)) = (vol, last_vol) {
+                        rep.input(Input::Osd { kind: OsdKind::Volume, level: v, muted: m });
+                        if let Some(f) = &settings.volume_sound {
+                            if last_bloop.elapsed() > Duration::from_millis(250) {
+                                last_bloop = std::time::Instant::now();
+                                sound::play(f);
+                            }
                         }
                     }
+                    if let Some((v, m)) = vol {
+                        rep.patch(move |d| {
+                            d.volume = Some(v);
+                            d.muted = m;
+                        });
+                    }
+                    last_vol = vol;
                 }
-                if let Some((v, m)) = vol {
-                    rep.patch(move |d| {
-                        d.volume = Some(v);
-                        d.muted = m;
-                    });
-                }
-                last_vol = vol;
             }
             if br != last_br {
                 if let (Some(b), Some(_)) = (br, last_br) {
@@ -169,7 +217,6 @@ fn audio_and_brightness(rep: Reporter, settings: Arc<Settings>) {
                 }
                 last_br = br;
             }
-            std::thread::sleep(Duration::from_millis(400));
         }
     });
 }
@@ -240,22 +287,41 @@ fn screen_sharing() -> bool {
     run("pw-dump", &[]).is_some_and(|j| screen_capture_active(&j))
 }
 
+fn video_devices_exist() -> bool {
+    std::fs::read_dir("/dev").is_ok_and(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("video")))
+}
+
 fn privacy(rep: Reporter) {
     std::thread::spawn(move || {
         let mut last = Privacy::default();
-        let (mut round, mut screen) = (0u32, false);
+        let events = pactl_events();
+        let has_camera = video_devices_exist();
+        let (mut camera, mut screen) = (false, false);
+        let (mut camera_at, mut screen_at) = (None::<std::time::Instant>, None::<std::time::Instant>);
+        let stale = |t: &Option<std::time::Instant>, secs: u64| t.is_none_or(|t| t.elapsed() > Duration::from_secs(secs));
         loop {
-            round += 1;
-            // pw-dump is a big document: every other round
-            if round % 2 == 1 {
+            // the microphone is re-read when a recording stream appears or goes; the camera (a scan of /proc) and the
+            // screen share (pw-dump) are slower and only looked at every few seconds
+            let mic_changed = match &events {
+                Some(rx) => rx.recv_timeout(Duration::from_secs(4)).map_or(true, |l| l.contains("source-output") || l.contains("source #")),
+                None => {
+                    std::thread::sleep(Duration::from_secs(3));
+                    true
+                }
+            };
+            if has_camera && stale(&camera_at, 5) {
+                camera_at = Some(std::time::Instant::now());
+                camera = camera_in_use();
+            }
+            if stale(&screen_at, 8) {
+                screen_at = Some(std::time::Instant::now());
                 screen = screen_sharing();
             }
-            let now = Privacy { mic: mic_in_use(), camera: camera_in_use(), screen };
+            let now = Privacy { mic: if mic_changed { mic_in_use() } else { last.mic }, camera, screen };
             if now != last {
                 last = now;
                 rep.patch(move |d| d.privacy = now);
             }
-            std::thread::sleep(Duration::from_secs(2));
         }
     });
 }
@@ -333,6 +399,8 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
         let mut last_track = String::new();
         let mut art_url = String::new();
         let mut cached_art: Option<Image> = None;
+        let mut last_sent: Option<Media> = None;
+        let (mut identity_for, mut identity_name): (Option<String>, String) = (None, String::new());
         loop {
             // commands first, so a click feels instant
             while let Ok(c) = cmd_rx.try_recv() {
@@ -363,12 +431,13 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
             let pick = choose_player(&conn, &names, &selected);
             let Some(name) = pick else {
                 if current.take().is_some() {
+                    last_sent = None;
                     rep.patch(|d| {
                         d.media = None;
                         d.lyrics_lrc = None;
                     });
                 }
-                std::thread::sleep(Duration::from_millis(700));
+                std::thread::sleep(Duration::from_millis(1500));
                 continue;
             };
             current = Some(name.clone());
@@ -402,6 +471,10 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
                 }
             }
             let now = chrono::Utc::now().timestamp_millis();
+            if identity_for.as_deref() != Some(name.as_str()) {
+                identity_for = Some(name.clone());
+                identity_name = identity(&conn, &name);
+            }
             let m = Media {
                 track_id,
                 title,
@@ -413,10 +486,32 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
                 art: cached_art.clone(),
                 can_seek,
                 players: names.len() as u32,
-                player: identity(&conn, &name),
+                player: identity_name.clone(),
             };
-            rep.patch(move |d| d.media = Some(m));
-            std::thread::sleep(Duration::from_millis(500));
+            // the island extrapolates the position while playing, so only a change (or a jump of the position,
+            // a seek) is worth waking it for
+            let worth = match &last_sent {
+                None => true,
+                Some(l) => {
+                    let expected = if l.playing { l.position_ms + (now - l.sampled_at_ms) as f64 } else { l.position_ms };
+                    l.track_id != m.track_id
+                        || l.title != m.title
+                        || l.artist != m.artist
+                        || l.playing != m.playing
+                        || l.length_ms != m.length_ms
+                        || l.can_seek != m.can_seek
+                        || l.players != m.players
+                        || l.player != m.player
+                        || l.art.as_ref().map(|a| a.id) != m.art.as_ref().map(|a| a.id)
+                        || (m.position_ms - expected).abs() > 1500.0
+                }
+            };
+            let playing = m.playing;
+            if worth {
+                last_sent = Some(m.clone());
+                rep.patch(move |d| d.media = Some(m));
+            }
+            std::thread::sleep(Duration::from_millis(if playing { 1000 } else { 2000 }));
         }
     });
 }

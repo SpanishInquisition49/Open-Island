@@ -65,6 +65,7 @@ struct Wl {
     configured: bool,
     dirty: bool,
     animating: bool,
+    next_ms: u32,
     exit: bool,
     last_render: Instant,
     input_rect: Option<(i32, i32, i32, i32)>,
@@ -116,6 +117,7 @@ impl Wl {
             log::error!("{e}");
         }
         self.animating = f.animating;
+        self.next_ms = f.next_ms;
         self.dirty = false;
         self.last_render = Instant::now();
         let _ = qh;
@@ -362,6 +364,7 @@ pub fn run() -> Result<(), String> {
         configured: false,
         dirty: true,
         animating: true,
+        next_ms: 0,
         exit: false,
         last_render: Instant::now(),
         input_rect: None,
@@ -370,12 +373,14 @@ pub fn run() -> Result<(), String> {
     };
     log::info!("layer-shell surface created");
     loop {
-        let timeout = if state.animating || state.dirty { Duration::ZERO } else { Duration::from_millis(1000) };
+        // frames only when something needs them: at vsync while the shape moves, otherwise when `next_ms` has passed
+        let due = Duration::from_millis(state.next_ms as u64);
+        let timeout = if state.animating || state.dirty { Duration::ZERO } else { due.saturating_sub(state.last_render.elapsed()) };
         event_loop.dispatch(timeout, &mut state).map_err(|e| e.to_string())?;
         if state.exit {
             return Ok(());
         }
-        if state.configured && (state.animating || state.dirty || state.last_render.elapsed() >= Duration::from_millis(1000)) {
+        if state.configured && (state.animating || state.dirty || state.last_render.elapsed() >= due) {
             state.render(&qh);
         }
     }

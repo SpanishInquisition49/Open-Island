@@ -47,7 +47,7 @@ pub struct Media {
     pub player: String,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub struct Battery {
     pub percent: f32,
     pub charging: bool,

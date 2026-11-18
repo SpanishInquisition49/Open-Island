@@ -230,7 +230,11 @@ pub struct Cal {
 #[derive(Clone, Copy, Debug)]
 pub struct Frame {
     pub surface: (f64, f64),
+    /// Another frame is needed at every vsync (the shape is moving).
     pub animating: bool,
+    /// How long the platform may wait before the next frame when nothing moves: 33 ms for the equalizer, 120 ms
+    /// for things that expire, 500 ms for a running timer, 1000 ms for the clock. 0 when `animating`.
+    pub next_ms: u32,
 }
 
 pub struct Island {
@@ -1411,13 +1415,24 @@ impl Island {
             self.bubble_k = 0.0;
         }
         self.settled = at_rest && self.alpha >= 1.0 && self.want == self.shown && self.want_side == self.shown_side;
-        let animating = !self.settled
-            || self.hovering
-            || self.shown == Face::Osd
-            || self.data.media.as_ref().is_some_and(|m| m.playing)
-            || self.timer.is_some()
-            || self.lyrics_scrolling()
-            || self.ops.op.is_some_and_running();
+        // what needs frames: motion at every vsync, an equalizer at 30 fps, things that expire a few times a second,
+        // a timer twice a second, otherwise the clock once a second
+        let waiting_for_hover = (self.hovering && now - self.hover_since < HOVER_INTENT_MS + 60) || now < self.hover_left + HOVER_GRACE_MS + 60;
+        let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover;
+        let equalizer = self.data.media.as_ref().is_some_and(|m| m.playing) && matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric);
+        let expiring = snap.osd || snap.notif.is_some() || snap.timer_done || snap.power || snap.meeting || snap.rain || snap.op_flash || self.edit.is_some() || self.reply.is_some() || self.kb.is_some();
+        let next_ms: u32 = if moving {
+            0
+        } else if equalizer {
+            33
+        } else if expiring {
+            120
+        } else if self.timer.is_some() || self.ops.op.is_some_and_running() {
+            500
+        } else {
+            1000
+        };
+        let animating = next_ms == 0;
         // the surface: holds both shapes plus room for the overshoot while animating
         let group_w = self.spring.w.pos + if self.shown_side.is_some() { BUBBLE_W + BUBBLE_GAP } else { 0.0 };
         let (sw, sh) = if self.settled {
@@ -1433,7 +1448,7 @@ impl Island {
             self.anim_box = Some((target_w, th, bx.0, bx.1));
             bx
         };
-        Frame { surface: (sw.max(40.0) + 8.0, sh.max(20.0) + TOP_MARGIN + 4.0), animating }
+        Frame { surface: (sw.max(40.0) + 8.0, sh.max(20.0) + TOP_MARGIN + 4.0), animating, next_ms }
     }
 
     /// Content opacity for the crossfade (eased).
