@@ -29,6 +29,10 @@ pub fn tools() -> Vec<(&'static str, &'static str)> {
             ("pw-play", "notification sounds (or paplay / ffplay)"),
             ("niri", "hiding under fullscreen windows (niri only)"),
         ]
+    } else if cfg!(windows) {
+        vec![("powershell", "the brightness slider (laptops and tablets only)")]
+    } else if cfg!(target_os = "macos") {
+        vec![("osascript", "volume, and the track of Spotify or Music"), ("caffeinate", "keep awake"), ("open", "going to the app behind a notification")]
     } else {
         vec![]
     }
