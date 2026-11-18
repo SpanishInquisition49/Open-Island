@@ -532,6 +532,10 @@ impl Island {
             Input::ProgressDone(l) => self.ops.finish(now, progress::State::Done, &l),
             Input::ProgressFail(l) => self.ops.finish(now, progress::State::Fail, &l),
             Input::ProgressClear => self.ops.clear(),
+            Input::Activity(state, a) => match state {
+                progress::State::Run => self.ops.run_activity(now, &a),
+                s => self.ops.finish_activity(now, s, &a),
+            },
             Input::CommandStart { id, label, after_secs } => {
                 self.cmds.retain(|c| c.id != id);
                 self.cmds.truncate(31);
@@ -2410,6 +2414,26 @@ mod tests {
         i.data.focus = Some(Focus { active: true, end_epoch: None });
         run(&mut i, 2000);
         assert_eq!(i.auto_quiet_reason(), Some("focus"));
+    }
+
+    #[test]
+    fn a_script_activity_shows_with_its_own_icon_colour_and_words() {
+        let mut i = Island::new(Config::default());
+        let a = island_core::progress::Activity { label: "CI main".into(), detail: "building".into(), icon: Some("git-branch".into()), tint: Some((255, 159, 10)), frac: None };
+        i.push(T0, Input::Activity(progress::State::Run, a.clone()));
+        run(&mut i, 600);
+        assert_eq!(i.current_face(), Face::Progress);
+        run(&mut i, 4000);
+        assert_eq!(i.shown_side, Some(Side::Op), "then a bubble");
+        i.push(i.now, Input::Activity(progress::State::Fail, island_core::progress::Activity { label: "CI main".into(), detail: "2 tests failed".into(), ..Default::default() }));
+        run(&mut i, 600);
+        let o = i.ops.op.clone().unwrap();
+        assert_eq!((o.state, o.detail.as_str(), o.icon.as_deref()), (progress::State::Fail, "2 tests failed", Some("git-branch")));
+        // it draws without trouble in every state
+        let f = fonts();
+        let mut scene = Scene::new();
+        let fr = i.tick(i.now + 8, 8.0);
+        i.draw(&mut scene, &f, fr.surface, 1.0);
     }
 
     #[test]

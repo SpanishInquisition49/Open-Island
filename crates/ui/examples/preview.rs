@@ -176,6 +176,8 @@ fn main() {
         ("progress-card", Box::new(|i, _| i.push(NOW, Input::Progress("64 rsync backup".into())))),
         ("progress-bubble", Box::new(|i, _| i.push(NOW - 5000, Input::Progress("64 rsync backup".into())))),
         ("progress-done", Box::new(|i, _| { i.push(NOW, Input::Progress("64 rsync backup".into())); i.push(NOW, Input::ProgressDone("rsync backup".into())) })),
+        ("activity-run", Box::new(|i, _| i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { label: "CI main".into(), detail: "building 3/5".into(), icon: Some("git-branch".into()), tint: Some((255, 159, 10)), frac: None })))),
+        ("activity-fail", Box::new(|i, _| { i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { label: "CI main".into(), icon: Some("git-branch".into()), ..Default::default() })); i.push(NOW, Input::Activity(island_core::progress::State::Fail, island_core::progress::Activity { label: "CI main".into(), detail: "2 tests failed".into(), ..Default::default() })) })),
         ("osd", Box::new(|i, _| i.push(NOW, Input::Osd { kind: OsdKind::Volume, level: 0.62, muted: false }))),
         ("power-low", Box::new(|i, _| i.push(NOW, Input::Power(PowerEvent::Low)))),
         ("notif", Box::new(|i, _| i.push(NOW, Input::Notification(Incoming { id: 1, app: "Telegram".into(), summary: "Marco".into(), body: "Ci vediamo alle 18 in aula?".into(), ..Default::default() })))),

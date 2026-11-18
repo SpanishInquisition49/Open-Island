@@ -11,3 +11,8 @@ pub mod text;
 pub mod theme;
 pub use island::{Action, Config, Frame, Island};
 pub use config_check::is_calendar_url;
+
+/// True when the bundled icon font has this icon (a script's `--icon` is only used when it does).
+pub fn is_known_icon(name: &str) -> bool {
+    icon_table::ICONS.iter().any(|(n, _)| *n == name)
+}

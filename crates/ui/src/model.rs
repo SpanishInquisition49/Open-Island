@@ -256,6 +256,8 @@ pub enum Input {
     ProgressDone(String),
     ProgressFail(String),
     ProgressClear,
+    /// A script's activity: running, done or failed (see `open-island activity`).
+    Activity(island_core::progress::State, island_core::progress::Activity),
     /// Open the command bar (from a shortcut).
     OpenBar,
     /// A shell started a command: it becomes a progress pill when it runs longer than `after_secs`.

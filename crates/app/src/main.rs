@@ -23,6 +23,7 @@ fn usage() {
   open-island --version\n\nEVENTS (for msg):\n  peek | open [page] | reply | dnd <on|off> | page <home|cal|qs|sys|notifs|media|timer|clip> | timer <25m> | pomodoro | stopwatch | timer-cancel\n  refresh (read the calendars now) | font <family|file> | calendar add <url> | calendar remove <n> | sound <file>   (settings, same as the menu)
   bar                                     open the command bar (bind it to a key): 10m tea, remind 20m ..., 12*7, 5 km in mi
   progress run [-l label] -- command...   (shows a command's progress)
+  activity run|done|fail|clear [label] [--detail t] [--icon i] [--color c] [--progress n]   a status for a script (CI, build)
   hook <zsh|bash|fish>                   a pill for every long shell command (eval $(open-island hook zsh))
   progress <percent|?> <label> | progress-done [label] | progress-fail [label] | progress-clear\n\nCONFIG: {}",
         env!("CARGO_PKG_VERSION"),
@@ -55,6 +56,7 @@ fn main() {
         Some("autostart") => std::process::exit(cli::autostart(args.get(1).map(String::as_str))),
         Some("-V") | Some("--version") | Some("version") => println!("open-island {}", env!("CARGO_PKG_VERSION")),
         Some("progress") => std::process::exit(cli::progress(&args[1..])),
+        Some("activity") => std::process::exit(cli::activity(&args[1..])),
         Some("hook") => std::process::exit(hook::run(&args[1..])),
         Some("-h") | Some("--help") | Some("help") => usage(),
         _ => {

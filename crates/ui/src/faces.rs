@@ -539,20 +539,30 @@ impl Island {
         let Some(op) = &self.ops.op else { return };
         let failed = op.state == OpState::Fail;
         let done = op.state == OpState::Done;
-        let tint = if failed { theme::RED } else if done { theme::GREEN } else { theme::ACCENT };
-        let title = if !op.label.is_empty() { op.label.as_str() } else if failed { "Failed" } else if done { "Done" } else { "Working" };
+        let tint = if failed { theme::RED } else if done { theme::GREEN } else { op.tint.map_or(theme::ACCENT, theme::rgb) };
+        let label = if !op.label.is_empty() { op.label.as_str() } else if failed { "Failed" } else if done { "Done" } else { "Working" };
+        // a script's own status line goes beside the title while there is a bar, in the bar's place while there is none
+        let bar = op.frac.is_some() || done || op.detail.is_empty();
+        let title = if bar && !op.detail.is_empty() { format!("{label} · {}", op.detail) } else { label.to_string() };
         // One 26 px margin on both sides; the icon, the title+bar block and the status share the vertical centre.
         let (pad, col) = (26.0, 52.0);
         let (tx, right) = (pad + 22.0 + 14.0, w - pad - col - 12.0);
         let cy = h / 2.0;
-        p.icon(if failed { "alert-triangle" } else if done { "circle-check" } else { "download" }, pad + 11.0, cy, 22.0, tint);
-        p.text(title, tx, cy - 10.0, 13.0, SEMI, theme::FG, Align::Left, (right - tx) as f32);
-        p.bar(rect(tx, cy + 5.0, right - tx, 6.0), if done { 1.0 } else { op.frac.unwrap_or(0.0) }, tint, theme::TRACK);
+        let icon = op.icon.as_deref().unwrap_or(if failed { "alert-triangle" } else if done { "circle-check" } else { "download" });
+        let icon = if failed && op.icon.is_none() { "alert-triangle" } else if done && op.icon.is_none() { "circle-check" } else { icon };
+        p.icon(icon, pad + 11.0, cy, 22.0, tint);
+        p.text(&title, tx, cy - 10.0, 13.0, SEMI, theme::FG, Align::Left, (w - pad - tx - if bar { col + 12.0 } else { 0.0 }) as f32);
+        if bar {
+            p.bar(rect(tx, cy + 5.0, right - tx, 6.0), if done { 1.0 } else { op.frac.unwrap_or(0.0) }, tint, theme::TRACK);
+        } else {
+            p.text(&op.detail, tx, cy + 8.0, 12.0, REG, theme::DIM, Align::Left, (w - pad - tx) as f32);
+        }
         let pct = match op.frac {
             _ if failed => "failed".to_string(),
             _ if done => "done".to_string(),
             Some(f) => format!("{}%", (f * 100.0).round() as i32),
-            None => "…".into(),
+            None if bar => "…".into(),
+            None => String::new(),
         };
         p.text(&pct, w - pad, cy, 13.0, SEMI, if failed { theme::RED } else if done { theme::GREEN } else { theme::FG }, Align::Right, col as f32);
     }
@@ -1152,26 +1162,32 @@ impl Island {
             Side::Media => ("music", String::new()),
             Side::Op => match &self.ops.op {
                 Some(o) => (
-                    match o.state {
-                        OpState::Fail => "alert-triangle",
-                        OpState::Done => "circle-check",
-                        OpState::Run => "download",
+                    match (o.state, o.icon.as_deref()) {
+                        (OpState::Fail, _) => "alert-triangle",
+                        (OpState::Done, _) => "circle-check",
+                        (OpState::Run, Some(i)) => i,
+                        (OpState::Run, None) => "download",
                     },
                     match o.state {
                         OpState::Done => "done".to_string(),
                         OpState::Fail => "failed".to_string(),
-                        OpState::Run => o.frac.map_or("…".to_string(), |f| format!("{}%", (f * 100.0).round() as i32)),
+                        OpState::Run => match (o.frac, o.detail.is_empty()) {
+                            (Some(f), _) => format!("{}%", (f * 100.0).round() as i32),
+                            (None, false) => o.detail.clone(),
+                            (None, true) => "…".to_string(),
+                        },
                     },
                 ),
                 None => ("download", String::new()),
             },
         };
-        let tint = match (&side, self.ops.op.as_ref().map(|o| o.state)) {
-            (Side::Op, Some(OpState::Done)) => theme::GREEN,
-            (Side::Op, Some(OpState::Fail)) => theme::RED,
+        let tint = match (&side, self.ops.op.as_ref().map(|o| (o.state, o.tint))) {
+            (Side::Op, Some((OpState::Done, _))) => theme::GREEN,
+            (Side::Op, Some((OpState::Fail, _))) => theme::RED,
+            (Side::Op, Some((OpState::Run, Some(t)))) => theme::rgb(t),
             _ => theme::ACCENT,
         };
-        let tw = p.fonts.measure(&text, 12.0, SEMI) as f64;
+        let tw = (p.fonts.measure(&text, 12.0, SEMI) as f64).min(50.0);
         let group = 13.0 + 4.0 + tw;
         let x0 = (w - group) / 2.0;
         p.icon(icon, x0 + 6.5, h / 2.0, 13.0, tint);

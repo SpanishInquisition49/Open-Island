@@ -28,6 +28,46 @@ pub struct Op {
     pub frac: Option<f64>,
     pub state: State,
     pub updated_ms: i64,
+    /// What a script said about its own activity (`open-island activity`): a status line, an icon, a colour.
+    pub detail: String,
+    pub icon: Option<String>,
+    pub tint: Option<(u8, u8, u8)>,
+}
+
+/// An activity reported by a script.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Activity {
+    pub label: String,
+    pub detail: String,
+    pub icon: Option<String>,
+    pub tint: Option<(u8, u8, u8)>,
+    /// 0..=1
+    pub frac: Option<f64>,
+}
+
+/// A colour by name (the system palette) or `#rrggbb`.
+pub fn parse_color(s: &str) -> Option<(u8, u8, u8)> {
+    let s = s.trim().to_ascii_lowercase();
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() == 6 {
+            let v = u32::from_str_radix(hex, 16).ok()?;
+            return Some(((v >> 16) as u8, (v >> 8) as u8, v as u8));
+        }
+        return None;
+    }
+    Some(match s.as_str() {
+        "red" => (0xff, 0x45, 0x3a),
+        "orange" => (0xff, 0x9f, 0x0a),
+        "yellow" => (0xff, 0xd6, 0x0a),
+        "green" => (0x30, 0xd1, 0x58),
+        "teal" | "cyan" => (0x64, 0xd2, 0xff),
+        "blue" => (0x0a, 0x84, 0xff),
+        "purple" => (0xbf, 0x5a, 0xf2),
+        "pink" => (0xff, 0x37, 0x5f),
+        "white" => (255, 255, 255),
+        "gray" | "grey" => (0x8e, 0x8e, 0x93),
+        _ => return None,
+    })
 }
 
 /// A run that stops reporting for this long is dropped.
@@ -46,7 +86,7 @@ impl Tracker {
         let first = !matches!(&self.op, Some(o) if o.state == State::Run);
         let mut op = match self.op.take() {
             Some(o) if o.state == State::Run => o,
-            _ => Op { label: String::new(), frac: None, state: State::Run, updated_ms: now },
+            _ => Op { label: String::new(), frac: None, state: State::Run, updated_ms: now, detail: String::new(), icon: None, tint: None },
         };
         if !label.is_empty() {
             op.label = label;
@@ -60,7 +100,7 @@ impl Tracker {
     }
 
     pub fn finish(&mut self, now: i64, state: State, label: &str) {
-        let mut op = self.op.take().unwrap_or(Op { label: String::new(), frac: None, state, updated_ms: now });
+        let mut op = self.op.take().unwrap_or(Op { label: String::new(), frac: None, state, updated_ms: now, detail: String::new(), icon: None, tint: None });
         if !label.is_empty() {
             op.label = label.to_string();
         }
@@ -71,6 +111,33 @@ impl Tracker {
         op.updated_ms = now;
         self.op = Some(op);
         self.flash_until = now + if state == State::Fail { 6000 } else { 3500 };
+    }
+
+    /// A script's activity starts or goes on (the card announces it once, updates stay quiet).
+    pub fn run_activity(&mut self, now: i64, a: &Activity) {
+        let first = !matches!(&self.op, Some(o) if o.state == State::Run);
+        if first {
+            self.op = None;
+        }
+        self.report(now, &format!("{} {}", a.frac.map_or("?".to_string(), |f| format!("{}", (f * 100.0).round())), a.label));
+        if let Some(o) = self.op.as_mut() {
+            o.detail = a.detail.clone();
+            o.icon = a.icon.clone();
+            o.tint = a.tint;
+            o.frac = a.frac.map(|f| f.clamp(0.0, 1.0));
+        }
+    }
+
+    /// A script's activity ends well or badly; what it says now replaces the status line.
+    pub fn finish_activity(&mut self, now: i64, state: State, a: &Activity) {
+        self.finish(now, state, &a.label);
+        if let Some(o) = self.op.as_mut() {
+            o.detail = a.detail.clone();
+            if a.icon.is_some() {
+                o.icon = a.icon.clone();
+            }
+            o.tint = a.tint;
+        }
     }
 
     pub fn clear(&mut self) {
@@ -97,6 +164,31 @@ impl Tracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colours_by_name_or_hex() {
+        assert_eq!(parse_color("Orange"), Some((0xff, 0x9f, 0x0a)));
+        assert_eq!(parse_color("#0a84ff"), Some((0x0a, 0x84, 0xff)));
+        assert_eq!(parse_color("#fff"), None);
+        assert_eq!(parse_color("mauve"), None);
+    }
+
+    #[test]
+    fn an_activity_carries_its_look_and_ends_with_a_word() {
+        let mut t = Tracker::default();
+        let a = Activity { label: "CI main".into(), detail: "building".into(), icon: Some("git-branch".into()), tint: Some((1, 2, 3)), frac: Some(0.4) };
+        t.run_activity(0, &a);
+        let o = t.op.clone().unwrap();
+        assert_eq!((o.label.as_str(), o.detail.as_str(), o.icon.as_deref(), o.tint, o.frac, o.state), ("CI main", "building", Some("git-branch"), Some((1, 2, 3)), Some(0.4), State::Run));
+        assert!(t.flashing(1000));
+        t.run_activity(5000, &Activity { detail: "testing".into(), ..a.clone() });
+        assert!(!t.flashing(5001), "an update does not flash again");
+        assert_eq!(t.op.as_ref().unwrap().detail, "testing");
+        t.finish_activity(9000, State::Fail, &Activity { label: "CI main".into(), detail: "2 tests failed".into(), ..Default::default() });
+        let o = t.op.clone().unwrap();
+        assert_eq!((o.state, o.detail.as_str()), (State::Fail, "2 tests failed"));
+        assert_eq!(o.icon.as_deref(), Some("git-branch"), "the icon stays");
+    }
 
     #[test]
     fn parses() {

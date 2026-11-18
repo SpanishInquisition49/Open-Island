@@ -165,6 +165,65 @@ pub fn progress(args: &[String]) -> i32 {
     }
 }
 
+/// `activity run|done|fail|clear [label] [--detail text] [--icon name] [--color name|#hex] [--progress N]`: the
+/// status of something a script watches (a build, a deploy, a CI run), with its own icon, colour and status line.
+pub fn activity(args: &[String]) -> i32 {
+    let Some(state) = args.first().map(String::as_str).filter(|s| matches!(*s, "run" | "done" | "fail" | "clear")) else {
+        eprintln!("usage: open-island activity run|done|fail|clear [label] [--detail text] [--icon name] [--color red|orange|green|blue|#rrggbb] [--progress 0-100]");
+        return 2;
+    };
+    match activity_line(state, &args[1..]) {
+        Ok(line) => {
+            if !ipc::send(&line) {
+                eprintln!("open-island is not running");
+                return 1;
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("open-island activity: {e}");
+            2
+        }
+    }
+}
+
+fn activity_line(state: &str, args: &[String]) -> Result<String, String> {
+    let mut v = serde_json::Map::new();
+    let mut label = vec![];
+    let mut i = 0;
+    while i < args.len() {
+        let key = match args[i].as_str() {
+            "--detail" | "--text" => Some("detail"),
+            "--icon" => Some("icon"),
+            "--color" | "--colour" => Some("color"),
+            "--progress" => Some("progress"),
+            "--label" => Some("label"),
+            f if f.starts_with("--") => return Err(format!("unknown option {f}")),
+            _ => None,
+        };
+        match key {
+            Some(k) => {
+                let val = args.get(i + 1).ok_or_else(|| format!("{} needs a value", args[i]))?;
+                if k == "progress" {
+                    let n: f64 = val.trim_end_matches('%').parse().map_err(|_| format!("progress is a number 0-100, not {val}"))?;
+                    v.insert(k.into(), serde_json::json!(n));
+                } else {
+                    v.insert(k.into(), serde_json::json!(val));
+                }
+                i += 2;
+            }
+            None => {
+                label.push(args[i].clone());
+                i += 1;
+            }
+        }
+    }
+    if !label.is_empty() {
+        v.insert("label".into(), serde_json::json!(label.join(" ")));
+    }
+    Ok(format!("activity {state} {}", serde_json::Value::Object(v)))
+}
+
 fn run(args: &[String]) -> i32 {
     let mut label = None;
     let mut i = 0;
@@ -249,6 +308,14 @@ mod tests {
         assert_eq!(last_percent(b"100% 250%"), Some(100.0), "250% is not a progress");
         assert_eq!(last_percent(b"% 50"), None);
         assert_eq!(last_percent(b""), None);
+    }
+
+    #[test]
+    fn builds_the_activity_message() {
+        let a = |s: &[&str]| activity_line("run", &s.iter().map(|x| x.to_string()).collect::<Vec<_>>());
+        assert_eq!(a(&["CI", "main", "--detail", "building", "--icon", "git-branch", "--progress", "40%"]).unwrap(), r#"activity run {"detail":"building","icon":"git-branch","label":"CI main","progress":40.0}"#);
+        assert_eq!(a(&[]).unwrap(), "activity run {}");
+        assert!(a(&["--bogus"]).is_err() && a(&["--icon"]).is_err() && a(&["--progress", "lots"]).is_err());
     }
 
     #[test]

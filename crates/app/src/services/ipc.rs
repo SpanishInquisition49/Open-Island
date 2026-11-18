@@ -87,6 +87,30 @@ fn parse(line: &str) -> Option<Input> {
         "progress-done" => Input::ProgressDone(payload.into()),
         "progress-fail" => Input::ProgressFail(payload.into()),
         "progress-clear" => Input::ProgressClear,
+        "activity" => {
+            // "<run|done|fail|clear> <json>"
+            use island_core::progress::{parse_color, Activity, State};
+            let (state, json) = payload.split_once(char::is_whitespace).map_or((payload, ""), |(a, b)| (a, b.trim()));
+            let state = match state {
+                "run" => State::Run,
+                "done" => State::Done,
+                "fail" => State::Fail,
+                "clear" => return Some(Input::ProgressClear),
+                _ => return None,
+            };
+            let v: serde_json::Value = if json.is_empty() { serde_json::json!({}) } else { serde_json::from_str(json).ok()? };
+            let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").trim().chars().take(80).collect::<String>();
+            Input::Activity(
+                state,
+                Activity {
+                    label: s("label"),
+                    detail: s("detail"),
+                    icon: Some(s("icon")).filter(|i| island_ui::is_known_icon(i)),
+                    tint: parse_color(&s("color")),
+                    frac: v.get("progress").and_then(|x| x.as_f64()).filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 100.0) / 100.0),
+                },
+            )
+        }
         "cmd-start" => {
             // "<id> <seconds> <label...>"
             let mut it = payload.splitn(3, ' ');
@@ -199,6 +223,11 @@ mod tests {
         assert!(parse("dnd maybe").is_none());
         assert!(matches!(parse("progress 42 Copying"), Some(Input::Progress(p)) if p == "42 Copying"));
         assert!(matches!(parse("cmd-start 99 10 cargo build -j8"), Some(Input::CommandStart { id, label, after_secs: 10 }) if id == "99" && label == "cargo build -j8"));
+        assert!(matches!(parse(r#"activity run {"label":"CI","detail":"building","icon":"git-branch","color":"orange","progress":40}"#),
+            Some(Input::Activity(island_core::progress::State::Run, a)) if a.label == "CI" && a.detail == "building" && a.icon.as_deref() == Some("git-branch") && a.tint == Some((0xff, 0x9f, 0x0a)) && a.frac == Some(0.4)));
+        assert!(matches!(parse(r#"activity fail {"label":"CI","detail":"2 failed"}"#), Some(Input::Activity(island_core::progress::State::Fail, a)) if a.detail == "2 failed" && a.icon.is_none() && a.tint.is_none()));
+        assert!(matches!(parse("activity clear"), Some(Input::ProgressClear)));
+        assert!(parse("activity wobble {}").is_none() && parse("activity run {broken").is_none());
         assert!(matches!(parse("cmd-end 99 130"), Some(Input::CommandEnd { id, code: 130 }) if id == "99"));
         assert!(parse("cmd-start 99 ten make").is_none() && parse("cmd-start 99 5").is_none() && parse("cmd-end 99").is_none());
         assert!(matches!(parse("timer 25m"), Some(Input::StartTimer(1500))));

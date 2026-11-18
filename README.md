@@ -178,3 +178,17 @@ Notifications are held (they stay in the history, and the sound stays off) while
 The bell with a z on a notification card hides it and brings it back after ten minutes. When the island stops being
 quiet (a meeting ends, a call, `dnd off`, the study focus) one card says how much was held back and from whom; a click
 opens the list. The focus mode of `~/.local/bin/focus` counts as quiet too.
+
+## Status of anything a script watches
+
+```sh
+open-island activity run  "CI main" --detail "building 3/5" --icon git-branch --color orange
+open-island activity run  "CI main" --progress 60 --detail "tests"       # a bar instead of the status line
+open-island activity done "CI main" --detail "all green"                  # green card
+open-island activity fail "CI main" --detail "2 tests failed"             # red card
+open-island activity clear
+```
+
+Like `progress`, one activity is on show at a time (the latest): a card for three seconds when it starts, then a bubble
+beside the pill with its icon and status. Colours: red orange yellow green teal blue purple pink white gray or `#rrggbb`;
+icons are the ones bundled (Tabler names such as `git-branch`, `bolt`, `cloud`, `download`, `music`, `mail-forward`...).
