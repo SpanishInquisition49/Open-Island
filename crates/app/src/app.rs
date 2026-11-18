@@ -2,6 +2,7 @@
 //! fonts and the channel the services report on, and turns window events into island events.
 
 use crate::services::{self, Msg};
+use crate::config::{CalendarKind, CalendarSource};
 use island_ui::model::{Command, Data};
 use island_ui::text::Fonts;
 use island_ui::{Config, Island};
@@ -12,20 +13,25 @@ use std::time::Instant;
 /// Wakes the event loop from another thread.
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
-/// Builds the first settings view before the app exists.
-struct ConfigViewInit;
-
-impl ConfigViewInit {
-    fn view(fonts: &Fonts) -> island_ui::model::ConfigView {
-        let s = crate::config::load();
-        island_ui::model::ConfigView {
-            font_missing: !s.font.is_empty() && !fonts.preferred_found(),
-            font: s.font,
-            calendars: s.calendar_urls,
-            latitude: s.latitude,
-            longitude: s.longitude,
-            notification_sound: s.notification_sound.unwrap_or_default(),
-        }
+/// The configuration as the settings menu shows it.
+pub fn config_view_of(fonts: &Fonts) -> island_ui::model::ConfigView {
+    let s = crate::config::load();
+    island_ui::model::ConfigView {
+        font_missing: !s.font.is_empty() && !fonts.preferred_found(),
+        font: s.font,
+        calendars: s
+            .calendars
+            .iter()
+            .enumerate()
+            .map(|(i, c)| island_ui::model::CalendarView {
+                name: c.name.clone(),
+                detail: c.detail(),
+                color: c.color.unwrap_or(crate::config::PALETTE[i % crate::config::PALETTE.len()]),
+            })
+            .collect(),
+        latitude: s.latitude,
+        longitude: s.longitude,
+        notification_sound: s.notification_sound.unwrap_or_default(),
     }
 }
 
@@ -63,7 +69,7 @@ impl App {
         if crate::config::load().persist_history {
             island.restore_history(services::load_history());
         }
-        island.data.config = ConfigViewInit::view(&fonts);
+        island.data.config = config_view_of(&fonts);
         Self { island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, quit: false, persist_history: crate::config::load().persist_history, fullscreen: false, last_pointer: (0.0, 0.0) }
     }
 
@@ -136,41 +142,37 @@ impl App {
         }
     }
 
-    /// The configuration as the settings menu shows it.
-    fn config_view(&self) -> island_ui::model::ConfigView {
-        let s = crate::config::load();
-        island_ui::model::ConfigView {
-            font_missing: !s.font.is_empty() && !self.fonts.preferred_found(),
-            font: s.font,
-            calendars: s.calendar_urls,
-            latitude: s.latitude,
-            longitude: s.longitude,
-            notification_sound: s.notification_sound.unwrap_or_default(),
-        }
-    }
-
     fn note(&mut self, text: &str) {
         let now = self.now();
         self.island.push(now, island_ui::model::Input::SettingsNote(text.to_string()));
+    }
+
+    /// Changes the list of calendars and writes it back (the old `calendar_urls` are migrated into it).
+    fn edit_calendars(&self, change: impl FnOnce(&mut Vec<CalendarSource>)) -> Result<(), String> {
+        let mut list = crate::config::load().calendars;
+        change(&mut list);
+        crate::config::update(|o| crate::config::set_calendars(o, &list))
     }
 
     /// Handles the commands of the settings menu: writes config.json, applies the change, tells the services.
     fn settings_command(&mut self, c: &Command) -> bool {
         use serde_json::{json, Value};
         let result = match c {
-            Command::AddCalendar(url) => crate::config::update(|o| {
-                let list = o.entry("calendar_urls").or_insert_with(|| json!([]));
-                if let Some(a) = list.as_array_mut() {
-                    if !a.iter().any(|u| u.as_str() == Some(url)) {
-                        a.push(Value::String(url.clone()));
-                    }
+            Command::AddCalendar(url) => self.edit_calendars(|list| crate::config::add_feed(list, url)),
+            Command::AddICloud { user, password } => self.edit_calendars(|list| crate::config::add_icloud(list, user, password)),
+            Command::RemoveCalendar(i) => self.edit_calendars(|list| {
+                if *i < list.len() {
+                    list.remove(*i);
                 }
             }),
-            Command::RemoveCalendar(i) => crate::config::update(|o| {
-                if let Some(a) = o.get_mut("calendar_urls").and_then(|v| v.as_array_mut()) {
-                    if *i < a.len() {
-                        a.remove(*i);
-                    }
+            Command::RenameCalendar { index, name } => self.edit_calendars(|list| {
+                if let Some(c) = list.get_mut(*index) {
+                    c.name = name.trim().to_string();
+                }
+            }),
+            Command::SetCalendarColor { index, color } => self.edit_calendars(|list| {
+                if let Some(c) = list.get_mut(*index) {
+                    c.color = Some(*color);
                 }
             }),
             Command::SetFont(f) => crate::config::update(|o| {
@@ -207,7 +209,7 @@ impl App {
                         self.note("Font not found: using the default");
                     }
                 }
-                self.island.data.config = self.config_view();
+                self.island.data.config = config_view_of(&self.fonts);
                 services::CONFIG_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             Err(e) => {

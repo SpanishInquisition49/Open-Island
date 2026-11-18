@@ -2,19 +2,140 @@
 //!
 //! ```json
 //! { "latitude": 43.72, "longitude": 10.40,
-//!   "calendar_urls": ["https://example.org/calendar.ics"],
+//!   "calendars": [
+//!     {"name": "University", "url": "https://example.org/calendar.ics", "color": "#ff9f0a"},
+//!     {"type": "icloud", "name": "iCloud", "user": "me@icloud.com", "password": "abcd-efgh-ijkl-mnop"} ],
 //!   "timer_presets": ["5m", "10m", "25m"], "meeting_lead_minutes": 10, "lyrics": true,
 //!   "font": "Inter" }
 //! ```
 //! Weather needs a location (the island never guesses one); calendars are read from iCal feed URLs.
 
+use island_core::color;
 use island_ui::Config as UiConfig;
+
+/// Where a calendar's events come from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CalendarKind {
+    /// An iCalendar feed (a public or secret .ics / webcal:// address).
+    Ics { url: String },
+    /// A CalDAV account (iCloud, Nextcloud, Fastmail...): every calendar of the account is read. iCloud needs an
+    /// app-specific password (appleid.apple.com), not the Apple ID password. `password_cmd` (a shell command that
+    /// prints it, for a password manager) wins over `password`.
+    CalDav { server: String, user: String, password: String, password_cmd: String },
+}
+
+pub const ICLOUD_SERVER: &str = "https://caldav.icloud.com/";
+
+/// The macOS system colours a new calendar gets in turn.
+pub const PALETTE: [(u8, u8, u8); 8] = [
+    (0xff, 0x45, 0x3a),
+    (0xff, 0x9f, 0x0a),
+    (0xff, 0xd6, 0x0a),
+    (0x30, 0xd1, 0x58),
+    (0x0a, 0x84, 0xff),
+    (0xbf, 0x5a, 0xf2),
+    (0xff, 0x37, 0x5f),
+    (0x98, 0x98, 0x9d),
+];
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CalendarSource {
+    pub name: String,
+    pub kind: CalendarKind,
+    /// None: the calendar's own colour (a CalDAV server's) or the first palette entry.
+    pub color: Option<(u8, u8, u8)>,
+}
+
+impl CalendarSource {
+    pub fn is_icloud(&self) -> bool {
+        matches!(&self.kind, CalendarKind::CalDav { server, .. } if server.contains("icloud.com"))
+    }
+
+    /// A short line for the settings page: the host of a feed, or the account of a CalDAV server.
+    pub fn detail(&self) -> String {
+        match &self.kind {
+            CalendarKind::Ics { url } => url.split("://").nth(1).unwrap_or(url).split('/').next().unwrap_or("").to_string(),
+            CalendarKind::CalDav { user, .. } if self.is_icloud() => format!("iCloud · {user}"),
+            CalendarKind::CalDav { server, user, .. } => format!("{} · {user}", server.split("://").nth(1).unwrap_or(server).split('/').next().unwrap_or("")),
+        }
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut o = serde_json::Map::new();
+        if !self.name.is_empty() {
+            o.insert("name".into(), self.name.clone().into());
+        }
+        if let Some(c) = self.color {
+            o.insert("color".into(), color::to_hex(c).into());
+        }
+        match &self.kind {
+            CalendarKind::Ics { url } => {
+                o.insert("url".into(), url.clone().into());
+            }
+            CalendarKind::CalDav { server, user, password, password_cmd } => {
+                o.insert("type".into(), if self.is_icloud() { "icloud" } else { "caldav" }.into());
+                if !self.is_icloud() {
+                    o.insert("server".into(), server.clone().into());
+                }
+                o.insert("user".into(), user.clone().into());
+                if !password.is_empty() {
+                    o.insert("password".into(), password.clone().into());
+                }
+                if !password_cmd.is_empty() {
+                    o.insert("password_cmd".into(), password_cmd.clone().into());
+                }
+            }
+        }
+        o.into()
+    }
+
+    pub fn from_json(v: &serde_json::Value) -> Option<Self> {
+        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+        if let Some(url) = v.as_str() {
+            return Some(Self { name: String::new(), kind: CalendarKind::Ics { url: url.trim().to_string() }, color: None });
+        }
+        let col = color::parse_hex(&s("color"));
+        let kind = if !s("url").is_empty() {
+            CalendarKind::Ics { url: s("url") }
+        } else if !s("user").is_empty() {
+            let server = if s("server").is_empty() || s("type") == "icloud" { ICLOUD_SERVER.to_string() } else { s("server") };
+            CalendarKind::CalDav { server, user: s("user"), password: s("password"), password_cmd: s("password_cmd") }
+        } else {
+            return None;
+        };
+        Some(Self { name: s("name"), kind, color: col })
+    }
+}
+
+/// Adds a feed unless it is already there; it gets the next system colour.
+pub fn add_feed(list: &mut Vec<CalendarSource>, url: &str) {
+    if !list.iter().any(|c| matches!(&c.kind, CalendarKind::Ics { url: u } if u == url)) {
+        let color = PALETTE[list.len() % PALETTE.len()];
+        list.push(CalendarSource { name: String::new(), kind: CalendarKind::Ics { url: url.to_string() }, color: Some(color) });
+    }
+}
+
+/// Adds an iCloud account (replacing one with the same Apple ID). It keeps its calendars' own colours.
+pub fn add_icloud(list: &mut Vec<CalendarSource>, user: &str, password: &str) {
+    list.retain(|c| !(c.is_icloud() && matches!(&c.kind, CalendarKind::CalDav { user: u, .. } if u == user)));
+    list.push(CalendarSource {
+        name: String::new(),
+        kind: CalendarKind::CalDav { server: ICLOUD_SERVER.into(), user: user.to_string(), password: password.to_string(), password_cmd: String::new() },
+        color: None,
+    });
+}
+
+/// Writes the calendars into `config.json`: the `calendars` list replaces the old `calendar_urls`.
+pub fn set_calendars(o: &mut serde_json::Map<String, serde_json::Value>, calendars: &[CalendarSource]) {
+    o.remove("calendar_urls");
+    o.insert("calendars".into(), calendars.iter().map(CalendarSource::to_json).collect::<Vec<_>>().into());
+}
 
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
-    pub calendar_urls: Vec<String>,
+    pub calendars: Vec<CalendarSource>,
     pub ui: UiConfig,
     /// Played for every notification unless a filter or an app sound says otherwise.
     pub notification_sound: Option<String>,
@@ -34,7 +155,7 @@ impl Default for Settings {
         Self {
             latitude: None,
             longitude: None,
-            calendar_urls: vec![],
+            calendars: vec![],
             ui: UiConfig::default(),
             notification_sound: None,
             app_sounds: vec![],
@@ -106,8 +227,11 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     s.persist_history = v.get("persist_history").and_then(|x| x.as_bool()).unwrap_or(true);
     s.latitude = v.get("latitude").and_then(|x| x.as_f64()).filter(|x| (-90.0..=90.0).contains(x));
     s.longitude = v.get("longitude").and_then(|x| x.as_f64()).filter(|x| (-180.0..=180.0).contains(x));
-    if let Some(a) = v.get("calendar_urls").and_then(|x| x.as_array()) {
-        s.calendar_urls = a.iter().filter_map(|u| u.as_str()).map(str::to_string).collect();
+    // the old `calendar_urls` (plain addresses) still work, then the `calendars` objects
+    for key in ["calendar_urls", "calendars"] {
+        if let Some(a) = v.get(key).and_then(|x| x.as_array()) {
+            s.calendars.extend(a.iter().filter_map(CalendarSource::from_json));
+        }
     }
     let u = &mut s.ui;
     if let Some(a) = v.get("timer_presets").and_then(|x| x.as_array()) {
@@ -156,6 +280,12 @@ pub fn update_at(path: &std::path::Path, change: impl FnOnce(&mut serde_json::Ma
     // write next to it and rename: a crash never leaves half a file
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, text + "\n").map_err(|e| e.to_string())?;
+    // the file can hold an account password: owner only
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
@@ -181,9 +311,15 @@ mod tests {
 
     #[test]
     fn reads_the_known_keys() {
-        let s = parse(r#"{"latitude":43.7,"longitude":10.4,"calendar_urls":["https://x/y.ics"],"timer_presets":["5m",10],"meeting_lead_minutes":15,"lyrics":false}"#).unwrap();
+        let s = parse(r##"{"latitude":43.7,"longitude":10.4,"calendar_urls":["https://x/y.ics"],"calendars":[{"name":"Uni","url":"https://x/u.ics","color":"#0a84ff"},{"type":"icloud","user":"me@icloud.com","password":"abcd"}],"timer_presets":["5m",10],"meeting_lead_minutes":15,"lyrics":false}"##).unwrap();
         assert_eq!(s.latitude, Some(43.7));
-        assert_eq!(s.calendar_urls, vec!["https://x/y.ics"]);
+        assert_eq!(s.calendars.len(), 3);
+        assert_eq!(s.calendars[0], CalendarSource { name: String::new(), kind: CalendarKind::Ics { url: "https://x/y.ics".into() }, color: None });
+        assert_eq!(s.calendars[1].name, "Uni");
+        assert_eq!(s.calendars[1].color, Some((0x0a, 0x84, 0xff)));
+        assert!(s.calendars[2].is_icloud());
+        assert_eq!(s.calendars[2].detail(), "iCloud · me@icloud.com");
+        assert!(matches!(&s.calendars[2].kind, CalendarKind::CalDav { server, .. } if server == ICLOUD_SERVER));
         assert_eq!(s.ui.timer_presets, vec![300, 600]);
         assert_eq!(s.ui.meeting_lead_ms, 15 * 60_000);
         assert!(!s.ui.lyrics);
@@ -199,16 +335,51 @@ mod tests {
         .unwrap();
         update_at(&file, |o| {
             o.insert("something_else".into(), 7.into());
-            o.insert("calendar_urls".into(), serde_json::json!(["https://x.org/a.ics"]));
+            o.insert("calendars".into(), serde_json::json!([{"url": "https://x.org/a.ics"}]));
         })
         .unwrap();
         let s = parse(&std::fs::read_to_string(&file).unwrap()).unwrap();
-        assert_eq!((s.font.as_str(), s.calendar_urls.len()), ("Inter", 1));
+        assert_eq!((s.font.as_str(), s.calendars.len()), ("Inter", 1));
         assert!(std::fs::read_to_string(&file).unwrap().contains("something_else"), "unknown keys survive");
         std::fs::write(&file, "{ not json").unwrap();
         assert!(update_at(&file, |_| {}).is_err());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{ not json", "a broken file is left alone");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn calendars_round_trip_and_replace_the_old_list() {
+        let list = vec![
+            CalendarSource { name: "Uni".into(), kind: CalendarKind::Ics { url: "https://x/u.ics".into() }, color: Some((255, 69, 58)) },
+            CalendarSource { name: "".into(), kind: CalendarKind::CalDav { server: ICLOUD_SERVER.into(), user: "me@icloud.com".into(), password: "abcd".into(), password_cmd: "pass show icloud".into() }, color: None },
+            CalendarSource { name: "Work".into(), kind: CalendarKind::CalDav { server: "https://cloud.example.org/dav/".into(), user: "me".into(), password: "".into(), password_cmd: "".into() }, color: None },
+        ];
+        let mut o = serde_json::Map::new();
+        o.insert("calendar_urls".into(), serde_json::json!(["https://old.org/a.ics"]));
+        set_calendars(&mut o, &list);
+        assert!(!o.contains_key("calendar_urls"), "the old list is migrated away");
+        let back = parse(&serde_json::Value::Object(o).to_string()).unwrap();
+        assert_eq!(back.calendars, list);
+        assert_eq!(back.calendars[1].detail(), "iCloud · me@icloud.com");
+        assert_eq!(back.calendars[2].detail(), "cloud.example.org · me");
+        assert_eq!(list[0].detail(), "x");
+    }
+
+    #[test]
+    fn adding_calendars_gives_colours_in_turn_and_never_duplicates() {
+        let mut l = vec![];
+        add_feed(&mut l, "https://a.org/1.ics");
+        add_feed(&mut l, "https://a.org/2.ics");
+        add_feed(&mut l, "https://a.org/1.ics");
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[0].color, Some(PALETTE[0]));
+        assert_eq!(l[1].color, Some(PALETTE[1]));
+        add_icloud(&mut l, "me@icloud.com", "one");
+        add_icloud(&mut l, "me@icloud.com", "two");
+        add_icloud(&mut l, "other@icloud.com", "x");
+        assert_eq!(l.iter().filter(|c| c.is_icloud()).count(), 2, "one per Apple ID");
+        assert!(matches!(&l.iter().find(|c| c.detail().contains("me@")).unwrap().kind, CalendarKind::CalDav { password, .. } if password == "two"), "the newer password replaced the old");
+        assert_eq!(l.iter().find(|c| c.is_icloud()).unwrap().color, None, "an account keeps its calendars' own colours");
     }
 
     #[test]
@@ -241,6 +412,6 @@ mod tests {
         assert_eq!(s.latitude, None);
         assert_eq!(s.ui.meeting_lead_ms, UiConfig::default().meeting_lead_ms);
         assert!(parse("{nope").is_err());
-        assert!(parse("{}").unwrap().calendar_urls.is_empty());
+        assert!(parse("{}").unwrap().calendars.is_empty());
     }
 }

@@ -62,13 +62,22 @@ notification sound. It writes the file below, keeping the keys it does not know,
 
 ```json
 { "latitude": 43.72, "longitude": 10.40,
-  "calendar_urls": ["https://example.org/calendar.ics"],
+  "calendars": [
+    {"name": "University", "url": "https://example.org/calendar.ics", "color": "#ff9f0a"},
+    {"type": "icloud", "user": "me@icloud.com", "password": "abcd-efgh-ijkl-mnop"},
+    {"type": "caldav", "server": "https://cloud.example.org/remote.php/dav/", "user": "me", "password_cmd": "pass show dav"} ],
   "timer_presets": ["5m", "10m", "25m"], "meeting_lead_minutes": 10,
   "notification_seconds": 5, "font": "Inter", "low_battery_percent": 15, "lyrics": true,
   "notification_sound": "~/Music/uwu.ogg", "app_sounds": {"telegram": "~/Music/t.ogg"},
   "volume_sound": "~/Music/bloop.mp3", "timer_sound": "~/Music/bloop.mp3",
   "notification_filters": [{"app": "zen browser", "content": "unseen", "show": false}] }
 ```
+
+Calendars: a feed (`.ics` / `webcal://`, public or secret address) or a CalDAV account. **iCloud** needs the Apple ID and an
+app-specific password (appleid.apple.com > Sign-In and Security > App-Specific Passwords), not the Apple ID password: every
+calendar of the account is read with its own name and colour. Each calendar can be renamed and recoloured from the menu (the
+old `calendar_urls` list still works and is migrated). `password_cmd` prints the password (a password manager) instead of
+keeping it in the file, which is owner-only anyway.
 
 Weather needs a location: the island never guesses one and calls out to nothing you did not configure.
 
