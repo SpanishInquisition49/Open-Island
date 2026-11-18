@@ -1,0 +1,8 @@
+[package]
+name = "island-core"
+description = "Platform-independent logic of open-island: faces, springs, timers, lyrics, weather, calendar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
