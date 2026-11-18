@@ -1,0 +1,206 @@
+//! What the platform layer feeds the island (data it samples) and what the island asks back (commands).
+
+use island_core::calendar::Event;
+use island_core::weather::Slot;
+use std::sync::Arc;
+
+/// A decoded image (album art, notification picture): straight RGBA8.
+#[derive(Clone)]
+pub struct Image {
+    pub id: u64,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Arc<Vec<u8>>,
+}
+
+impl Image {
+    /// Average colour of the opaque pixels, for the album-art tint.
+    pub fn average(&self) -> Option<(u8, u8, u8)> {
+        let (mut r, mut g, mut b, mut n) = (0u64, 0u64, 0u64, 0u64);
+        for px in self.rgba.chunks_exact(4).step_by(7) {
+            if px[3] > 200 {
+                r += px[0] as u64;
+                g += px[1] as u64;
+                b += px[2] as u64;
+                n += 1;
+            }
+        }
+        (n > 0).then(|| ((r / n) as u8, (g / n) as u8, (b / n) as u8))
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct Media {
+    pub track_id: String,
+    pub title: String,
+    pub artist: String,
+    pub playing: bool,
+    /// Position at `sampled_at_ms` (epoch ms); the island extrapolates while playing.
+    pub position_ms: f64,
+    pub sampled_at_ms: i64,
+    pub length_ms: f64,
+    pub art: Option<Image>,
+    pub can_seek: bool,
+    /// How many players are open (the switch button shows when there is more than one).
+    pub players: u32,
+    /// The player's name for display ("Spotify", "Firefox").
+    pub player: String,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct Battery {
+    pub percent: f32,
+    pub charging: bool,
+    pub on_ac: bool,
+}
+
+#[derive(Clone, Default)]
+pub struct Weather {
+    pub temp_c: f32,
+    pub feels_c: f32,
+    pub code: i32,
+    pub day: bool,
+    pub high_c: f32,
+    pub low_c: f32,
+    pub rain_slots: Vec<Slot>,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct Privacy {
+    pub mic: bool,
+    pub camera: bool,
+    pub screen: bool,
+}
+
+/// Everything sampled from the system, replaced as a whole whenever something changes.
+#[derive(Clone, Default)]
+pub struct Data {
+    pub media: Option<Media>,
+    pub battery: Option<Battery>,
+    pub weather: Option<Weather>,
+    pub events: Vec<Event>,
+    pub privacy: Privacy,
+    pub volume: Option<f32>,
+    pub muted: bool,
+    pub brightness: Option<f32>,
+    pub dnd: bool,
+    /// Lyrics of the current track, as LRC text (the platform layer fetches them).
+    pub lyrics_lrc: Option<String>,
+    pub utc_offset_secs: i32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NotifAction {
+    pub key: String,
+    pub label: String,
+}
+
+#[derive(Clone, Default)]
+pub struct Incoming {
+    pub id: u32,
+    pub app: String,
+    pub summary: String,
+    pub body: String,
+    pub critical: bool,
+    pub actions: Vec<NotifAction>,
+    /// The sender's picture or the notification's own image (a photo, a cover).
+    pub image: Option<Image>,
+    /// The application's icon, used when there is no picture.
+    pub app_icon: Option<Image>,
+    /// The sender's requested timeout in ms: None = default, Some(0) = until dismissed.
+    pub expire_ms: Option<i64>,
+    /// A progress value (0..=100) the notification carries (volume, downloads).
+    pub progress: Option<u8>,
+    /// Stays in the history even when dismissed from the screen (and is not removed by an action).
+    pub resident: bool,
+}
+
+impl Incoming {
+    /// The action key of an inline reply field, and its placeholder, when the sender offers one.
+    pub fn reply_action(&self) -> Option<&NotifAction> {
+        self.actions.iter().find(|a| a.key == "inline-reply")
+    }
+}
+
+/// Why a notification left the screen (the values of the freedesktop `NotificationClosed` signal).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseReason {
+    Expired = 1,
+    Dismissed = 2,
+    Closed = 3,
+}
+
+/// A key press for the inline reply field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyInput {
+    Text(String),
+    Backspace,
+    Delete,
+    Left,
+    Right,
+    Home,
+    End,
+    Enter,
+    Escape,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OsdKind {
+    Volume,
+    Brightness,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PowerEvent {
+    Plugged,
+    Unplugged,
+    Low,
+}
+
+/// One-off events from the platform layer.
+pub enum Input {
+    Notification(Incoming),
+    NotificationClosed(u32),
+    Osd { kind: OsdKind, level: f32, muted: bool },
+    Power(PowerEvent),
+    /// "<percent|?> [label]" (see island_core::progress)
+    Progress(String),
+    ProgressDone(String),
+    ProgressFail(String),
+    ProgressClear,
+    StartTimer(u64),
+    StartPomodoro,
+    StartStopwatch,
+    CancelTimer,
+    Key(KeyInput),
+    /// Reply to the notification on screen (from a shortcut).
+    StartReply,
+    /// Open the island for a few seconds ("peek").
+    Peek,
+    /// Open the island on a page (shortcut, IPC).
+    OpenPage(island_core::face::Page),
+}
+
+/// What the island asks the platform layer to do.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Command {
+    MediaPrevious,
+    MediaPlayPause,
+    MediaNext,
+    MediaSeek { position_ms: f64 },
+    /// Show the next open player.
+    MediaCyclePlayer,
+    SetVolume(f32),
+    SetBrightness(f32),
+    ToggleMute,
+    SetDnd(bool),
+    OpenUrl(String),
+    InvokeAction { id: u32, key: String },
+    CloseNotification(u32),
+    /// The island closed a notification (expired on screen, dismissed): tell the sender.
+    NotificationClosed { id: u32, reason: CloseReason },
+    /// The text typed in an inline reply.
+    NotificationReplied { id: u32, text: String },
+    /// The timer ended.
+    PlaySound,
+}

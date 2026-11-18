@@ -2,5 +2,7 @@
 
 mod icon_table;
 pub mod clock;
+pub mod model;
+pub mod paint;
 pub mod text;
 pub mod theme;
