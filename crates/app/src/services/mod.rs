@@ -18,6 +18,7 @@ pub mod linux;
 pub mod notif;
 #[cfg(target_os = "linux")]
 pub mod niri;
+#[cfg(not(target_os = "linux"))]
 pub mod other;
 
 #[allow(dead_code)] // Quit and Fullscreen are only sent by some platforms
@@ -71,6 +72,12 @@ pub fn start(tx: Sender<Msg>, waker: Arc<dyn Fn() + Send + Sync>) -> Sender<Comm
     clock::start(rep.clone());
     ipc::start(rep.clone());
     net::start(rep.clone());
+    #[cfg(target_os = "linux")]
+    {
+        niri::start(rep.clone());
+        linux::start(rep.clone(), cmd_rx, settings, dnd);
+    }
+    #[cfg(not(target_os = "linux"))]
     other::start(rep, cmd_rx, settings);
     cmd_tx
 }
