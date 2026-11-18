@@ -98,6 +98,9 @@ pub enum Action {
     Goto(Page),
     EditField(Field),
     RemoveCalendar(usize),
+    /// Open the colour choice of a calendar.
+    PickColor(usize),
+    SetColor(usize, (u8, u8, u8)),
     Back,
     CalToday,
     HistoryRemove(usize),
@@ -147,6 +150,10 @@ pub struct Reply {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
     Calendar,
+    /// Rename the calendar at this index.
+    CalendarName(usize),
+    ICloudUser,
+    ICloudPassword,
     Font,
     Latitude,
     Longitude,
@@ -159,6 +166,13 @@ pub struct Edit {
     pub text: String,
     pub cursor: usize,
     pub until: i64,
+}
+
+impl Edit {
+    /// The text is drawn as dots (a password).
+    pub fn secret(&self) -> bool {
+        self.field == Field::ICloudPassword
+    }
 }
 
 /// Edits `text` with a text-field key (insert, delete, move). Returns false for any other key.
@@ -253,6 +267,10 @@ pub struct Island {
     /// Which way the last page change went (1 = to the right, -1 = to the left, 0 = no page change).
     pub(crate) slide: f64,
     pub(crate) edit: Option<Edit>,
+    /// The calendar whose colours are shown (settings page).
+    pub(crate) picking: Option<usize>,
+    /// The Apple ID typed so far while the password is asked.
+    icloud_user: Option<String>,
     pub(crate) note: Option<(String, i64)>,
     pub(crate) queue: Vec<notify::Notification>,
     waiting: std::collections::VecDeque<Incoming>,
@@ -327,6 +345,8 @@ impl Island {
             page_stack: vec![],
             slide: 0.0,
             edit: None,
+            picking: None,
+            icloud_user: None,
             note: None,
             queue: vec![],
             waiting: Default::default(),
@@ -561,7 +581,8 @@ impl Island {
     fn start_edit(&mut self, field: Field) {
         let c = &self.data.config;
         let text = match field {
-            Field::Calendar => String::new(),
+            Field::Calendar | Field::ICloudUser | Field::ICloudPassword => String::new(),
+            Field::CalendarName(i) => c.calendars.get(i).map(|x| x.name.clone()).unwrap_or_default(),
             Field::Font => c.font.clone(),
             Field::Latitude => c.latitude.map(|v| v.to_string()).unwrap_or_default(),
             Field::Longitude => c.longitude.map(|v| v.to_string()).unwrap_or_default(),
@@ -581,7 +602,10 @@ impl Island {
             return;
         }
         match k {
-            KeyInput::Escape => self.edit = None,
+            KeyInput::Escape => {
+                self.edit = None;
+                self.icloud_user = None;
+            }
             KeyInput::Enter => {
                 let Some(e) = self.edit.take() else { return };
                 let t = e.text.trim().to_string();
@@ -591,6 +615,26 @@ impl Island {
                     Field::Calendar => {
                         self.note = note("Paste an https:// or webcal:// calendar address");
                         self.edit = Some(Edit { text: t.clone(), cursor: t.chars().count(), ..e });
+                    }
+                    Field::CalendarName(i) => self.pending.push(Command::RenameCalendar { index: i, name: t }),
+                    Field::ICloudUser if t.contains('@') && t.len() > 3 => {
+                        self.icloud_user = Some(t);
+                        self.note = Some(("Now the app-specific password (appleid.apple.com > Sign-In and Security)".into(), now + 8000));
+                        self.start_edit(Field::ICloudPassword);
+                    }
+                    Field::ICloudUser => {
+                        self.note = note("Type the Apple ID (an email address)");
+                        self.edit = Some(Edit { text: t.clone(), cursor: t.chars().count(), ..e });
+                    }
+                    Field::ICloudPassword if !t.is_empty() => {
+                        if let Some(user) = self.icloud_user.take() {
+                            self.pending.push(Command::AddICloud { user, password: t });
+                            self.note = note("Signing in to iCloud...");
+                        }
+                    }
+                    Field::ICloudPassword => {
+                        self.note = note("An app-specific password is needed (not the Apple ID password)");
+                        self.edit = Some(e);
                     }
                     Field::Font => self.pending.push(Command::SetFont(t)),
                     Field::Sound => self.pending.push(Command::SetNotificationSound(t)),
@@ -988,7 +1032,15 @@ impl Island {
                 return vec![Command::OpenUrl(url)];
             }
             Action::ClearHistory => self.history.clear(),
-            Action::EditField(f) => self.start_edit(f),
+            Action::EditField(f) => {
+                self.picking = None;
+                self.start_edit(f)
+            }
+            Action::PickColor(i) => self.picking = if self.picking == Some(i) { None } else { Some(i) },
+            Action::SetColor(i, color) => {
+                self.picking = None;
+                return vec![Command::SetCalendarColor { index: i, color }];
+            }
             Action::RemoveCalendar(i) => return vec![Command::RemoveCalendar(i)],
             Action::CalToday => {
                 let c = crate::clock::civil(now, self.data.utc_offset_secs);
@@ -1061,8 +1113,8 @@ impl Island {
     /// Height of the settings page below its header: four sections and their rows.
     pub(crate) fn settings_content_height(&self) -> f64 {
         let cals = self.data.config.calendars.len().min(4) as f64;
-        // section titles (4 x 22), calendar rows, the add row, latitude, longitude, font, sound, the note line
-        4.0 * 22.0 + (cals + 1.0 + 2.0 + 1.0 + 1.0) * 34.0 + 20.0
+        // section titles (4 x 22), calendar rows, the two add rows, latitude, longitude, font, sound, the note line
+        4.0 * 22.0 + (cals + 2.0 + 2.0 + 1.0 + 1.0) * 34.0 + 20.0
     }
 
     pub(crate) fn day_events(&self) -> Vec<&calendar::Event> {
@@ -1213,6 +1265,10 @@ impl Island {
         // notifications: expiry and the next waiting one
         if self.edit.as_ref().is_some_and(|e| now > e.until) || (self.edit.is_some() && self.page != Some(Page::Settings)) {
             self.edit = None;
+            self.icloud_user = None;
+        }
+        if self.page != Some(Page::Settings) {
+            self.picking = None;
         }
         if self.note.as_ref().is_some_and(|(_, until)| now > *until) {
             self.note = None;
@@ -1911,7 +1967,7 @@ mod tests {
     fn leaving_the_settings_page_drops_an_open_edit_and_the_page_draws_with_an_edit() {
         let f = fonts();
         let mut i = Island::new(Config::default());
-        i.data.config.calendars = vec!["https://a.org/x.ics".into(); 6];
+        i.data.config.calendars = vec![CalendarView { name: "A".into(), detail: "a.org".into(), color: (10, 132, 255) }; 6];
         i.push(T0, Input::OpenPage(Page::Settings));
         i.activate(Action::EditField(Field::Font));
         type_text(&mut i, &"long ".repeat(30));
@@ -2129,5 +2185,84 @@ mod tests {
         for h in &i.hits {
             assert!(h.rect.x1 <= i.spring.w.pos + BUBBLE_GAP + BUBBLE_W + 1.0, "no hit outside the group");
         }
+    }
+
+    #[test]
+    fn adding_an_icloud_account_asks_for_the_apple_id_then_the_app_password() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenPage(Page::Settings));
+        i.activate(Action::EditField(Field::ICloudUser));
+        type_text(&mut i, "not an email");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert!(i.take_commands().is_empty() && i.edit.as_ref().unwrap().field == Field::ICloudUser, "an Apple ID is an email address");
+        i.push(i.now, Input::Key(KeyInput::Home));
+        for _ in 0..12 {
+            i.push(i.now, Input::Key(KeyInput::Delete));
+        }
+        type_text(&mut i, "me@icloud.com");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        let e = i.edit.as_ref().expect("the password field opens");
+        assert_eq!(e.field, Field::ICloudPassword);
+        assert!(e.secret(), "the password is drawn as dots");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert!(i.take_commands().is_empty() && i.edit.is_some(), "an empty password is refused");
+        type_text(&mut i, "abcd-efgh-ijkl-mnop");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert_eq!(i.take_commands(), vec![Command::AddICloud { user: "me@icloud.com".into(), password: "abcd-efgh-ijkl-mnop".into() }]);
+        assert!(i.edit.is_none());
+        // escape in the middle forgets the Apple ID
+        i.activate(Action::EditField(Field::ICloudUser));
+        type_text(&mut i, "a@b.co");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        i.push(i.now, Input::Key(KeyInput::Escape));
+        i.activate(Action::EditField(Field::ICloudPassword));
+        type_text(&mut i, "x");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert!(i.take_commands().is_empty(), "no Apple ID left: nothing is sent");
+    }
+
+    #[test]
+    fn calendars_can_be_renamed_and_recoloured() {
+        let mut i = Island::new(Config::default());
+        i.data.config.calendars = vec![CalendarView { name: "Uni".into(), detail: "x.org".into(), color: (255, 69, 58) }];
+        i.push(T0, Input::OpenPage(Page::Settings));
+        i.activate(Action::EditField(Field::CalendarName(0)));
+        assert_eq!(i.edit.as_ref().unwrap().text, "Uni", "starts from the current name");
+        for _ in 0..3 {
+            i.push(i.now, Input::Key(KeyInput::Backspace));
+        }
+        type_text(&mut i, "Lezioni");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert_eq!(i.take_commands(), vec![Command::RenameCalendar { index: 0, name: "Lezioni".into() }]);
+        i.activate(Action::PickColor(0));
+        assert_eq!(i.picking, Some(0));
+        i.activate(Action::PickColor(0));
+        assert_eq!(i.picking, None, "a second click closes the choice");
+        i.activate(Action::PickColor(0));
+        assert_eq!(i.activate(Action::SetColor(0, (48, 209, 88))), vec![Command::SetCalendarColor { index: 0, color: (48, 209, 88) }]);
+        assert_eq!(i.picking, None);
+    }
+
+    #[test]
+    fn the_settings_page_draws_calendars_pickers_and_secret_fields() {
+        let f = fonts();
+        let mut i = Island::new(Config::default());
+        i.data.config.calendars = (0..3).map(|k| CalendarView { name: if k == 1 { String::new() } else { format!("Cal {k}") }, detail: "iCloud · me@icloud.com".into(), color: (10, 132, 255) }).collect();
+        i.push(T0, Input::OpenPage(Page::Settings));
+        i.activate(Action::PickColor(1));
+        for _ in 0..200 {
+            let fr = i.tick(i.now + 8, 8.0);
+            i.push(i.now, Input::OpenPage(Page::Settings));
+            let mut scene = Scene::new();
+            i.draw(&mut scene, &f, fr.surface, 1.0);
+            assert!(fr.surface.1 < 1000.0);
+        }
+        assert!(i.hits.iter().filter(|h| matches!(h.action, Action::SetColor(1, _))).count() == 8, "eight swatches");
+        i.picking = None;
+        i.activate(Action::EditField(Field::ICloudUser));
+        type_text(&mut i, "me@icloud.com");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        type_text(&mut i, "secret");
+        draw_frames(&mut i, 5);
     }
 }

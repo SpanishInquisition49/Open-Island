@@ -13,6 +13,8 @@ use island_core::duration;
 use island_core::face::{Face, Page, Side};
 use island_core::progress::State as OpState;
 use island_core::weather;
+
+const PALETTE: [(u8, u8, u8); 8] = [(0xff, 0x45, 0x3a), (0xff, 0x9f, 0x0a), (0xff, 0xd6, 0x0a), (0x30, 0xd1, 0x58), (0x0a, 0x84, 0xff), (0xbf, 0x5a, 0xf2), (0xff, 0x37, 0x5f), (0x98, 0x98, 0x9d)];
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 use vello::Scene;
@@ -648,7 +650,11 @@ impl Island {
             }
             p.rrect(rect(16.0, y - 8.0, 3.0, 16.0), 1.5, e.color.map(|c| theme::rgb(color::readable_tint(c, true))).unwrap_or(theme::ACCENT));
             p.text(&when, 28.0, y, 11.0, REG, theme::DIM, Align::Left, 44.0);
-            p.text(&e.title, 76.0, y, 12.0, SEMI, theme::FG, Align::Left, (w - 76.0 - 40.0) as f32);
+            let cal_w = if e.calendar.is_empty() { 0.0 } else { p.fonts.measure(&e.calendar, 10.0, REG).min(110.0) as f64 + 10.0 };
+            p.text(&e.title, 76.0, y, 12.0, SEMI, theme::FG, Align::Left, (w - 76.0 - 40.0 - cal_w) as f32);
+            if cal_w > 0.0 {
+                p.text(&e.calendar, w - 40.0, y, 10.0, REG, theme::DIM, Align::Right, 110.0);
+            }
             if has_url {
                 p.icon("external-link", w - 26.0, y, 13.0, theme::DIM);
                 p.hit(row, Action::Join(e.url.clone().unwrap_or_default()));
@@ -834,6 +840,13 @@ impl Island {
 
     /// A text field in place of a row while a setting is edited.
     fn edit_row(&self, p: P, r: Rect, e: &Edit, placeholder: &str) {
+        let masked;
+        let e = if e.secret() {
+            masked = Edit { text: "•".repeat(e.text.chars().count()), ..e.clone() };
+            &masked
+        } else {
+            e
+        };
         p.rrect(r, 10.0, theme::CHIP);
         p.rrect_stroke(r, 10.0, 1.5, theme::FG);
         let inner = (r.width() - 24.0) as f32;
@@ -869,15 +882,45 @@ impl Island {
         // calendars
         section(p, y, "Calendars", n);
         y += 22.0;
-        for (i, url) in c.calendars.iter().take(4).enumerate() {
+        for (i, cal) in c.calendars.iter().take(4).enumerate() {
             n += 1;
             p.stagger(n);
             let r = rect(14.0, y, w - 28.0, 30.0);
+            if self.picking == Some(i) {
+                // the colour choice: the eight system colours, the current one ringed
+                p.rrect(r, 10.0, theme::CHIP);
+                let step = (r.width() - 24.0) / 8.0;
+                for (k, col) in PALETTE.iter().enumerate() {
+                    let cx = r.x0 + 12.0 + step * (k as f64 + 0.5);
+                    let swatch = rect(cx - 12.0, y + 3.0, 24.0, 24.0);
+                    if *col == cal.color {
+                        p.circle(cx, y + 15.0, 12.0, with_alpha(theme::FG, 0.9));
+                        p.circle(cx, y + 15.0, 10.0, theme::BG);
+                    }
+                    p.circle(cx, y + 15.0, if p.hovered(swatch) { 9.0 } else { 8.0 }, theme::rgb(*col));
+                    p.hit(swatch, Action::SetColor(i, *col));
+                }
+                y += 34.0;
+                continue;
+            }
+            if let Some(e) = editing(Field::CalendarName(i)) {
+                self.edit_row(p, r, e, &cal.detail);
+                y += 34.0;
+                continue;
+            }
             p.rrect(r, 10.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
-            p.icon("calendar-event", r.x0 + 18.0, y + 15.0, 14.0, theme::ACCENT);
-            let shown = url.split("://").nth(1).unwrap_or(url);
-            p.text(shown, r.x0 + 34.0, y + 15.0, 12.0, REG, theme::FG, Align::Left, (r.width() - 80.0) as f32);
+            let dot = rect(r.x0 + 6.0, y + 3.0, 24.0, 24.0);
+            p.circle(r.x0 + 18.0, y + 15.0, if p.hovered(dot) { 7.5 } else { 6.5 }, theme::rgb(cal.color));
+            let name = if cal.name.is_empty() { cal.detail.as_str() } else { cal.name.as_str() };
+            let dw = p.fonts.measure(&cal.detail, 10.0, REG) as f64;
+            let name_max = (r.width() - 34.0 - 40.0 - if cal.name.is_empty() { 0.0 } else { dw.min(150.0) + 12.0 }) as f32;
+            p.text(name, r.x0 + 34.0, y + 15.0, 12.0, if cal.name.is_empty() { REG } else { SEMI }, theme::FG, Align::Left, name_max);
+            if !cal.name.is_empty() {
+                p.text(&cal.detail, r.x1 - 38.0, y + 15.0, 10.0, REG, theme::DIM, Align::Right, 150.0);
+            }
             p.icon_button(r.x1 - 18.0, y + 15.0, 26.0, "x", 13.0, Action::RemoveCalendar(i));
+            p.hit(rect(r.x0 + 30.0, y, r.width() - 30.0 - 38.0, 30.0), Action::EditField(Field::CalendarName(i)));
+            p.hit(dot, Action::PickColor(i));
             y += 34.0;
         }
         p.stagger(n + 1);
@@ -887,8 +930,19 @@ impl Island {
             None => {
                 p.rrect(r, 10.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
                 p.icon("plus", r.x0 + 18.0, y + 15.0, 14.0, theme::DIM);
-                p.text("Add a calendar", r.x0 + 34.0, y + 15.0, 12.0, REG, theme::DIM, Align::Left, 300.0);
+                p.text("Add a calendar (feed address)", r.x0 + 34.0, y + 15.0, 12.0, REG, theme::DIM, Align::Left, 300.0);
                 p.hit(r, Action::EditField(Field::Calendar));
+            }
+        }
+        y += 34.0;
+        let r = rect(14.0, y, w - 28.0, 30.0);
+        match editing(Field::ICloudUser).or_else(|| editing(Field::ICloudPassword)) {
+            Some(e) => self.edit_row(p, r, e, if e.field == Field::ICloudUser { "Apple ID (email)" } else { "App-specific password" }),
+            None => {
+                p.rrect(r, 10.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
+                p.icon("brand-apple", r.x0 + 18.0, y + 15.0, 14.0, theme::DIM);
+                p.text("Add an iCloud account", r.x0 + 34.0, y + 15.0, 12.0, REG, theme::DIM, Align::Left, 300.0);
+                p.hit(r, Action::EditField(Field::ICloudUser));
             }
         }
         y += 34.0;

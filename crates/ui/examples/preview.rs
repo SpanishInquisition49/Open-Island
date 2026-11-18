@@ -185,7 +185,7 @@ fn main() {
         ("focus-mini", Box::new(|_, d| d.focus = Some(Focus { active: true, end_epoch: Some(NOW / 1000 + 23 * 60) }))),
         ("focus-full", Box::new(|i, d| { d.focus = Some(Focus { active: true, end_epoch: Some(NOW / 1000 + 23 * 60) }); i.push(NOW, Input::OpenPage(island_core::face::Page::Focus)); })),
         ("page-sys-opening", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Sys)))),
-        ("page-settings", Box::new(|i, d| { d.config = ConfigView { font: "Inter".into(), font_missing: false, calendars: vec!["https://calendar.google.com/calendar/ical/me%40unipi.it/private-abc/basic.ics".into(), "webcal://p01-caldav.icloud.com/published/2/MTIz".into()], latitude: Some(43.7228), longitude: Some(10.4017), notification_sound: "/home/me/Music/UWU.ogg".into() }; i.push(NOW, Input::OpenPage(island_core::face::Page::Settings)); })),
+        ("page-settings", Box::new(|i, d| { d.config = ConfigView { font: "Inter".into(), font_missing: false, calendars: vec![CalendarView { name: "Università".into(), detail: "calendar.google.com".into(), color: (0xff, 0x9f, 0x0a) }, CalendarView { name: String::new(), detail: "p01-caldav.icloud.com".into(), color: (0x30, 0xd1, 0x58) }, CalendarView { name: "iCloud".into(), detail: "iCloud · me@icloud.com".into(), color: (0x0a, 0x84, 0xff) }], latitude: Some(43.7228), longitude: Some(10.4017), notification_sound: "/home/me/Music/UWU.ogg".into() }; i.push(NOW, Input::OpenPage(island_core::face::Page::Settings)); })),
         ("page-qs", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Qs)))),
         ("page-sys", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Sys)))),
         ("page-notifs", Box::new(|i, _| {

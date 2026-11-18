@@ -13,6 +13,7 @@ pub const ICONS: &[(&str, u32)] = &[
     ("bluetooth", 0xEA37),
     ("bluetooth-off", 0xECEB),
     ("bolt", 0xEA38),
+    ("brand-apple", 0xEC17),
     ("brightness-half", 0xEE1A),
     ("brightness-up", 0xEB7E),
     ("calendar", 0xEA53),

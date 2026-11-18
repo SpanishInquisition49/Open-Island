@@ -106,13 +106,22 @@ pub struct SystemStats {
     pub load: Option<[f32; 3]>,
 }
 
+/// A calendar source as the settings menu lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CalendarView {
+    pub name: String,
+    /// The feed's host, or the account ("iCloud · me@icloud.com").
+    pub detail: String,
+    pub color: (u8, u8, u8),
+}
+
 /// The settings the menu shows and changes (the platform layer owns the file).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ConfigView {
     pub font: String,
     /// The configured font was not found.
     pub font_missing: bool,
-    pub calendars: Vec<String>,
+    pub calendars: Vec<CalendarView>,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     pub notification_sound: String,
@@ -286,6 +295,10 @@ pub enum Command {
     RefreshQuick,
     /// A calendar feed address (https://, http:// or webcal://).
     AddCalendar(String),
+    /// Add an iCloud account: the Apple ID and an app-specific password.
+    AddICloud { user: String, password: String },
+    RenameCalendar { index: usize, name: String },
+    SetCalendarColor { index: usize, color: (u8, u8, u8) },
     RemoveCalendar(usize),
     SetFont(String),
     SetLatitude(f64),
