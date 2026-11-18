@@ -75,6 +75,14 @@ fn meeting_url(url: &Option<String>, location: &str, description: &str) -> Optio
     url.clone().or_else(|| first_url(location))
 }
 
+/// The calendar's own name (X-WR-CALNAME), when the feed has one.
+pub fn calendar_name(text: &str) -> Option<String> {
+    unfold(text).into_iter().find_map(|l| {
+        let (head, value) = l.split_once(':')?;
+        (head.split(';').next()?.eq_ignore_ascii_case("X-WR-CALNAME")).then(|| unescape(value).trim().to_string()).filter(|n| !n.is_empty())
+    })
+}
+
 struct Raw {
     uid: String,
     summary: String,
@@ -151,7 +159,7 @@ fn expand(r: &Raw, from_ms: i64, to_ms: i64, out: &mut Vec<Event>) {
     let url = meeting_url(&r.url, &r.location, &r.description);
     for s in starts {
         if s < to_ms && s + len.max(1) > from_ms {
-            out.push(Event { id: format!("{}@{}", r.uid, s), title: r.summary.clone(), start_ms: s, end_ms: s + len, all_day, url: url.clone(), color: None });
+            out.push(Event { id: format!("{}@{}", r.uid, s), title: r.summary.clone(), start_ms: s, end_ms: s + len, all_day, url: url.clone(), color: None, calendar: String::new() });
         }
     }
 }
@@ -189,6 +197,14 @@ mod tests {
         assert_eq!(w[0].title, "Weeklysync");
         assert_eq!(w[0].start_ms, ms(2026, 11, 16, 8, 0));
         assert_eq!(w[1].start_ms - w[0].start_ms, 7 * 86_400_000);
+    }
+
+    #[test]
+    fn reads_the_calendar_name() {
+        assert_eq!(calendar_name("BEGIN:VCALENDAR\r\nX-WR-CALNAME:Corsi\\, 2026\r\nEND:VCALENDAR").as_deref(), Some("Corsi, 2026"));
+        assert_eq!(calendar_name("BEGIN:VCALENDAR\r\nX-WR-CALNAME;VALUE=TEXT:Lavoro\r\n").as_deref(), Some("Lavoro"));
+        assert_eq!(calendar_name(ICS), None);
+        assert_eq!(calendar_name("X-WR-CALNAME:  "), None);
     }
 
     #[test]

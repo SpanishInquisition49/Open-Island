@@ -59,6 +59,8 @@ pub struct Event {
     pub all_day: bool,
     pub url: Option<String>,
     pub color: Option<(u8, u8, u8)>,
+    /// The name of the calendar the event belongs to.
+    pub calendar: String,
 }
 
 /// Events overlapping [start, end), all-day ones first, then by start time.
