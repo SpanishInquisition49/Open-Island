@@ -271,6 +271,10 @@ pub enum Input {
     Peek,
     /// Do not disturb on/off, from a script (focus mode).
     SetDnd(bool),
+    /// A click at this point of the surface (logical pixels), as if made with the pointer: for scripts and tests.
+    Click(f64, f64),
+    /// Write every control currently drawn, with its position, to the log.
+    DumpHits,
     /// The next (1) or previous (-1) page of the open island (shortcut, IPC).
     CyclePage(i32),
     /// Open the island on a page (shortcut, IPC).

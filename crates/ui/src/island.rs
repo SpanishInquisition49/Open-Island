@@ -421,6 +421,18 @@ impl Island {
             }
             Input::Key(k) => self.on_key(k),
             Input::StartReply => self.start_reply(),
+            Input::Click(x, y) => {
+                let cmds = self.pointer_down(now, x, y);
+                self.pending.extend(cmds);
+                self.pointer_up(now);
+            }
+            Input::DumpHits => {
+                let (ox, oy) = self.pill_origin;
+                log::info!("pill at ({ox:.0}, {oy:.0}), {:.0} x {:.0}; face {:?}", self.spring.w.pos, self.spring.h.pos, self.shown);
+                for h in &self.hits {
+                    log::info!("  hit {:?} at surface ({:.0}, {:.0}) size {:.0} x {:.0}", h.action, h.rect.center().x + ox, h.rect.center().y + oy, h.rect.width(), h.rect.height());
+                }
+            }
             Input::CyclePage(dir) => {
                 self.cycle_page(dir);
                 self.expand_until = now + 5000;
@@ -2477,7 +2489,7 @@ mod tests {
         i.push(T0, n(2, "b"));
         draw_frames(&mut i, 200);
         assert_eq!(i.notif.as_ref().map(|n| n.id), Some(1));
-        assert!(press(&mut i, Action::NextNotif), "the x is drawn while another one waits");
+        assert!(press(&mut i, Action::Dismiss), "the x is drawn on the card");
         assert!(i.take_commands().iter().any(|c| matches!(c, Command::NotificationClosed { id: 1, reason: CloseReason::Dismissed })));
         draw_frames(&mut i, 400);
         assert_eq!(i.notif.as_ref().map(|n| n.id), Some(2), "the next one is shown");
@@ -2492,5 +2504,21 @@ mod tests {
         assert!(press(&mut i, Action::RemoveCalendar(0)), "the calendar's x");
         assert!(i.take_commands().contains(&Command::RemoveCalendar(0)));
         assert!(i.edit.is_none(), "and not the rename field under it");
+    }
+
+    #[test]
+    fn a_single_notification_card_has_an_x_that_dismisses_it() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::Notification(Incoming { id: 9, app: "a".into(), summary: "alone".into(), ..Default::default() }));
+        draw_frames(&mut i, 200);
+        assert!(i.queue.is_empty() && i.notif.is_some(), "nothing else waits");
+        assert!(press(&mut i, Action::Dismiss), "the x is there even for a lone notification");
+        assert!(i.take_commands().iter().any(|c| matches!(c, Command::NotificationClosed { id: 9, reason: CloseReason::Dismissed })));
+        assert!(i.notif.is_none());
+        // and one with buttons (an actions card) has it too
+        i.push(i.now, Input::Notification(Incoming { id: 10, actions: vec![NotifAction { key: "open".into(), label: "Open".into() }], ..Default::default() }));
+        draw_frames(&mut i, 300);
+        assert!(press(&mut i, Action::Dismiss));
+        assert!(i.notif.is_none());
     }
 }

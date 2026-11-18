@@ -66,6 +66,11 @@ fn parse(line: &str) -> Option<Input> {
                 ..Default::default()
             })
         }
+        "hits" => Input::DumpHits,
+        "click" => {
+            let mut it = payload.split_whitespace().filter_map(|v| v.parse::<f64>().ok());
+            Input::Click(it.next()?, it.next()?)
+        }
         "peek" => Input::Peek,
         "reply" => Input::StartReply,
         "open" => Input::OpenKeyboard(match payload {

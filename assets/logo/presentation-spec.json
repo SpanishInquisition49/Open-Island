@@ -1,0 +1,28 @@
+{
+  "brand": "open-island",
+  "tagline": "A dynamic island for any desktop",
+  "brief": "An open-source, Rust-built dynamic island for any desktop: a black pill at the top of the screen that morphs between the clock, music, notifications and timers. The identity should feel elegant and premium, in black and white only.",
+  "adjectives": ["elegant", "premium", "fluid", "open"],
+  "criteria": "Success: ownable serif monogram, legible at 16 px, strong in one colour, with a detail that links to the island.",
+  "industry": "software",
+  "nav": ["Features", "Install", "GitHub"],
+  "brand_color": "#000000",
+  "greyscale": true,
+  "designer": "Claude (logo-design skill)",
+  "round": 5, "final": true,
+  "concepts": [
+    {
+      "name": "OI",
+      "symbol": "open-island-symbol.svg",
+      "lockup": "open-island-horizontal.svg", "stacked": "open-island-stacked.svg", "avatar": "variants/symbol/open-island-symbol-square.svg",
+      "idea": "A high-contrast serif O and I, whose I carries a pill-shaped top serif: the island hanging from the screen edge.",
+      "rationale": [
+        "OI reads as the monogram of open-island and as a letter pair at once",
+        "The pill serif is the one ownable detail and doubles as the hyphen in the wordmark",
+        "A heavier small-size cut and a thinned reversed cut keep it crisp at 16 px and on black"
+      ]
+    }
+  ],
+  "recommendation": "OI with the pill serif: the only mark in the exploration that is elegant, literally about the product, and legible at 16 px.",
+  "next_steps": ["Approve the symbol and lockups", "Replace the Noto Serif Display wordmark with custom letters if the project grows", "Run a trademark search before wide use"]
+}
