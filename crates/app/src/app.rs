@@ -79,6 +79,19 @@ impl App {
         let frame = self.island.tick(now, dt);
         let cmds = self.island.take_commands();
         self.exec(cmds);
+        {
+            use island_core::face::Face;
+            use std::sync::atomic::Ordering;
+            let f = self.island.current_face();
+            services::SYSTEM_WANTED.store(f == Face::Sys, Ordering::Relaxed);
+            let qs = f == Face::Qs;
+            if qs && !services::QUICK_WANTED.swap(true, Ordering::Relaxed) {
+                let _ = self.cmd_tx.send(island_ui::model::Command::RefreshQuick);
+            }
+            if !qs {
+                services::QUICK_WANTED.store(false, Ordering::Relaxed);
+            }
+        }
         let keys = self.island.announced_keys();
         services::save_announced_if_changed(&keys);
         if self.persist_history {

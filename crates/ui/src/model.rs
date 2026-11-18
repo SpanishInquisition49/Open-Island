@@ -242,6 +242,8 @@ pub enum Command {
     ToggleKeepAwake,
     NextProfile,
     NextSink,
+    /// Re-read the quick-settings state (the page was just opened).
+    RefreshQuick,
     OpenUrl(String),
     InvokeAction { id: u32, key: String },
     CloseNotification(u32),

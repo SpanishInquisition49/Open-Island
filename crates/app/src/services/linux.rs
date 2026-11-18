@@ -2,7 +2,7 @@
 //! notifications (the island becomes the notification daemon when the name is free, otherwise it watches
 //! the bus), and the camera / microphone indicators.
 
-use super::{art, net, notif, sound, Reporter};
+use super::{art, net, notif, quick, sound, sysmon, Reporter};
 use island_ui::model::*;
 use std::collections::HashMap;
 use std::process::Command as Proc;
@@ -20,6 +20,9 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
     let (media_cmd_tx, media_cmd_rx) = std::sync::mpsc::channel::<Command>();
     let (notif_cmd_tx, notif_cmd_rx) = std::sync::mpsc::channel::<Command>();
     media(rep.clone(), media_cmd_rx);
+    sysmon::start(rep.clone());
+    let (quick_tx, quick_rx) = std::sync::mpsc::channel::<Command>();
+    quick::start(rep.clone(), quick_rx);
     notif::start(rep.clone(), notif_cmd_rx, settings.clone(), initial_dnd);
     // route the island's commands to the thread that handles them
     std::thread::spawn(move || {
@@ -30,6 +33,9 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                 }
                 Command::InvokeAction { .. } | Command::CloseNotification(_) | Command::SetDnd(_) | Command::NotificationClosed { .. } | Command::NotificationReplied { .. } => {
                     let _ = notif_cmd_tx.send(c);
+                }
+                Command::ToggleWifi | Command::ToggleBluetooth | Command::ToggleKeepAwake | Command::NextProfile | Command::NextSink | Command::RefreshQuick => {
+                    let _ = quick_tx.send(c);
                 }
                 Command::SetVolume(v) => {
                     run("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{:.2}", v)]);
