@@ -101,7 +101,8 @@ the island is not running: `systemctl --user mask mako` stops that. A shell that
 
 `open-island msg <event> [payload]`: `peek`, `open [page]` (keyboard navigation: arrows move a focus ring, Enter
 activates, Tab / Shift+Tab change page, Escape closes), `page next|prev`, `page <home|cal|qs|sys|notifs|media|timer|clip|focus>`, `dnd on|off`, `timer 25m`,
-`pomodoro`, `stopwatch`, `timer-cancel`, `reply` (reply to the notification on screen: bind it to a key), and for long operations `progress <percent|?> <label>`,
+`pomodoro`, `stopwatch`, `timer-cancel`, `reply` (reply to the notification on screen: bind it to a key), and for long operations `open-island progress run [-l label] -- command...` (runs the command on a pseudo-terminal, so rsync, curl, pacman... still draw
+their own progress, and shows the last `NN%` they print; not for commands that ask questions: `sudo -v` first), or by hand `progress <percent|?> <label>`,
 `progress-done [label]`, `progress-fail [label]`, `progress-clear`: a card for 3 s, then a `64%` bubble
 beside the pill, then a card again when it ends (red when it failed).
 

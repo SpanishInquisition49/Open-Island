@@ -1,6 +1,7 @@
 //! open-island: a macOS-style dynamic island for any desktop.
 
 mod app;
+mod cli;
 mod backend_winit;
 #[cfg(target_os = "linux")]
 mod backend_wayland;
@@ -11,6 +12,7 @@ mod services;
 fn usage() {
     eprintln!(
         "open-island {}\n\nUSAGE:\n  open-island [--backend winit|wayland]   run the island\n  open-island msg <event> [payload]       talk to a running island\n\nEVENTS (for msg):\n  peek | open [page] | reply | dnd <on|off> | page <home|cal|qs|sys|notifs|media|timer|clip> | timer <25m> | pomodoro | stopwatch | timer-cancel\n  refresh (read the calendars now) | font <family|file> | calendar add <url> | calendar remove <n> | sound <file>   (settings, same as the menu)
+  progress run [-l label] -- command...   (shows a command's progress)
   progress <percent|?> <label> | progress-done [label] | progress-fail [label] | progress-clear\n\nCONFIG: {}",
         env!("CARGO_PKG_VERSION"),
         config::path().map(|p| p.display().to_string()).unwrap_or_else(|| "(no config directory)".into())
@@ -31,6 +33,7 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Some("progress") => std::process::exit(cli::progress(&args[1..])),
         Some("-h") | Some("--help") | Some("help") => usage(),
         _ => {
             let backend = args.iter().position(|a| a == "--backend").and_then(|i| args.get(i + 1)).map(String::as_str);
