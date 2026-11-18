@@ -137,8 +137,13 @@ impl Island {
 
     fn equalizer(&self, p: P, x: f64, cy: f64, n: usize, max_h: f64, bar_w: f64, playing: bool, tint: Color) {
         let t = self.now as f64 / 1000.0;
+        // real audio levels when fresh (lows on the left, a little gain), else a cheap animation
+        let live = playing && !self.spectrum.is_empty() && self.now - self.spectrum_at < 300;
         for i in 0..n {
-            let hh = if playing {
+            let hh = if live {
+                let band = self.spectrum[(i * self.spectrum.len() / n).min(self.spectrum.len() - 1)] as f64;
+                3.0 + (max_h - 3.0) * (band * 1.2).min(1.0)
+            } else if playing {
                 let ph = i as f64 * 1.7;
                 3.0 + (max_h - 3.0) * (0.5 + 0.5 * (t * (5.0 + i as f64 * 1.3) + ph).sin()) * (0.55 + 0.45 * (t * 2.1 + ph).cos().abs())
             } else {

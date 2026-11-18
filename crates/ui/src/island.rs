@@ -200,6 +200,8 @@ pub struct Island {
     lyric_src: Option<String>,
     pub(crate) cal: Cal,
     /// The clipboard entry just restored, and until when it shows a check mark.
+    pub(crate) spectrum: Vec<f32>,
+    pub(crate) spectrum_at: i64,
     pub(crate) copied: Option<(usize, i64)>,
     pub(crate) pending: Vec<Command>,
     dnd_seen: bool,
@@ -260,6 +262,8 @@ impl Island {
             lyric_lines: None,
             lyric_src: None,
             cal: Cal { year: 1970, month: 1, day: 1 },
+            spectrum: vec![],
+            spectrum_at: -100_000,
             copied: None,
             pending: vec![],
             dnd_seen: false,
@@ -294,6 +298,10 @@ impl Island {
             }
             Input::Key(k) => self.on_key(k),
             Input::StartReply => self.start_reply(),
+            Input::Spectrum(v) => {
+                self.spectrum = v;
+                self.spectrum_at = now;
+            }
             Input::Osd { kind, level, muted } => {
                 self.osd = Some(Osd { kind, level, muted });
                 self.osd_until = now + self.cfg.osd_ms;
@@ -449,6 +457,13 @@ impl Island {
     }
 
     /// True while the island needs the keyboard (an inline reply is being typed).
+    /// True when the equalizer is on screen with music playing: the audio analysis is worth running.
+    pub fn wants_spectrum(&self) -> bool {
+        let playing = self.data.media.as_ref().is_some_and(|m| m.playing);
+        let on_ac = self.data.battery.is_none_or(|b| b.on_ac);
+        playing && on_ac && matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric)
+    }
+
     pub fn wants_keyboard(&self) -> bool {
         self.reply.is_some()
     }

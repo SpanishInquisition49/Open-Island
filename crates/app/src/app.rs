@@ -84,6 +84,7 @@ impl App {
             use std::sync::atomic::Ordering;
             let f = self.island.current_face();
             services::SYSTEM_WANTED.store(f == Face::Sys, Ordering::Relaxed);
+            services::SPECTRUM_WANTED.store(self.island.wants_spectrum(), Ordering::Relaxed);
             let qs = f == Face::Qs;
             if qs && !services::QUICK_WANTED.swap(true, Ordering::Relaxed) {
                 let _ = self.cmd_tx.send(island_ui::model::Command::RefreshQuick);

@@ -23,12 +23,15 @@ pub mod niri;
 #[cfg(target_os = "linux")]
 pub mod quick;
 #[cfg(target_os = "linux")]
+pub mod spectrum;
+#[cfg(target_os = "linux")]
 pub mod sysmon;
 #[cfg(not(target_os = "linux"))]
 pub mod other;
 
 /// Set by the app while the system page / the quick settings page is open: the sampling threads idle otherwise.
 pub static SYSTEM_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static SPECTRUM_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static QUICK_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[allow(dead_code)] // Quit and Fullscreen are only sent by some platforms

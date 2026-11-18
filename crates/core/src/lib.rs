@@ -10,6 +10,7 @@ pub mod lyrics;
 pub mod notify;
 pub mod pomodoro;
 pub mod progress;
+pub mod spectrum;
 pub mod spring;
 pub mod system;
 pub mod sysmon;

@@ -2,7 +2,7 @@
 //! notifications (the island becomes the notification daemon when the name is free, otherwise it watches
 //! the bus), and the camera / microphone indicators.
 
-use super::{art, clipboard, net, notif, quick, sound, sysmon, Reporter};
+use super::{art, clipboard, net, notif, quick, sound, spectrum, sysmon, Reporter};
 use island_ui::model::*;
 use std::collections::HashMap;
 use std::process::Command as Proc;
@@ -22,6 +22,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
     media(rep.clone(), media_cmd_rx);
     sysmon::start(rep.clone());
     clipboard::start(rep.clone());
+    spectrum::start(rep.clone());
     let (quick_tx, quick_rx) = std::sync::mpsc::channel::<Command>();
     quick::start(rep.clone(), quick_rx);
     notif::start(rep.clone(), notif_cmd_rx, settings.clone(), initial_dnd);
