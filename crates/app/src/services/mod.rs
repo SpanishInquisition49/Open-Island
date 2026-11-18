@@ -12,6 +12,8 @@ pub mod caldav;
 pub mod clock;
 pub mod icons;
 pub mod parse;
+#[cfg(target_os = "linux")]
+pub mod devices;
 pub mod windows_focus;
 pub mod sound;
 pub mod tz;
@@ -128,6 +130,7 @@ pub fn start(tx: Sender<Msg>, waker: Arc<dyn Fn() + Send + Sync>) -> Sender<Comm
     #[cfg(target_os = "linux")]
     {
         niri::start(rep.clone());
+        devices::start(rep.clone());
         linux::start(rep.clone(), cmd_rx, settings, dnd);
     }
     #[cfg(not(target_os = "linux"))]

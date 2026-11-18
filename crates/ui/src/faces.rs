@@ -149,6 +149,7 @@ impl Island {
             Face::TimerDone => self.face_simple(p, w, h, "bell-ringing", theme::ACCENT, &self.timer_done_text.0, &self.timer_done_text.1),
             Face::Notif | Face::NotifAct => self.face_notif(p, w, h, face == Face::NotifAct),
             Face::Reply => self.face_reply(p, w, h),
+            Face::Device => self.face_device(p, w, h),
             Face::Bar => self.face_bar(p, w, h),
             Face::Osd => self.face_osd(p, w, h),
             Face::Power => self.face_power(p, w, h),
@@ -533,6 +534,24 @@ impl Island {
         p.text(label, 50.0, h / 2.0, 13.0, SEMI, if ev == PowerEvent::Low { theme::RED } else { theme::FG }, Align::Left, 110.0);
         p.bar(rect(170.0, h / 2.0 - 3.0, w - 170.0 - 56.0, 6.0), cap / 100.0, tint, theme::TRACK);
         p.text(&format!("{}%", cap.round() as i32), w - 16.0, h / 2.0, 13.0, SEMI, theme::FG, Align::Right, 44.0);
+    }
+
+    fn face_device(&self, p: P, w: f64, h: f64) {
+        let Some((d, low)) = &self.device_ev else { return };
+        let tint = if *low { theme::RED } else { theme::FG };
+        p.icon(d.kind.icon(), 30.0, h / 2.0, 20.0, tint);
+        let label = if *low { format!("{} · low battery", d.name) } else { d.name.clone() };
+        match d.battery {
+            Some(b) => {
+                p.text(&label, 50.0, h / 2.0, 13.0, SEMI, if *low { theme::RED } else { theme::FG }, Align::Left, (w - 50.0 - 150.0) as f32);
+                p.bar(rect(w - 150.0, h / 2.0 - 3.0, 90.0, 6.0), b as f64 / 100.0, if b <= 20 { theme::RED } else { theme::GREEN }, theme::TRACK);
+                p.text(&format!("{b}%"), w - 16.0, h / 2.0, 13.0, SEMI, theme::FG, Align::Right, 44.0);
+            }
+            None => {
+                p.text(&label, 50.0, h / 2.0, 13.0, SEMI, theme::FG, Align::Left, (w - 130.0) as f32);
+                p.text("Connected", w - 16.0, h / 2.0, 12.0, REG, theme::DIM, Align::Right, 80.0);
+            }
+        }
     }
 
     fn face_progress(&self, p: P, w: f64, h: f64) {
@@ -920,6 +939,15 @@ impl Island {
             }
             let col = if b.percent < 15.0 { theme::RED } else if b.percent < 30.0 { theme::ORANGE } else { theme::FG };
             self.metric_row(p, w, y, "Battery", Some(b.percent as f64 / 100.0), &t, col);
+            y += 28.0;
+        }
+        for d in self.data.devices.iter().take(4) {
+            let (frac, t) = match d.battery {
+                Some(b) => (Some(b as f64 / 100.0), format!("{b}%")),
+                None => (None, "connected".to_string()),
+            };
+            let col = if d.battery.is_some_and(|b| b <= 20) { theme::RED } else { theme::FG };
+            self.metric_row(p, w, y, &d.name, frac, &t, col);
             y += 28.0;
         }
         let net = format!("↓ {}   ↑ {}", island_core::system::fmt_rate(st.net_rx), island_core::system::fmt_rate(st.net_tx));

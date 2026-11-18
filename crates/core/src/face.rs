@@ -22,6 +22,7 @@ pub enum Face {
     MediaLyric,
     Osd,
     Power,
+    Device,
     TimerMini,
     TimerFull,
     TimerDone,
@@ -56,6 +57,7 @@ impl Face {
             MediaLyric => (420.0, 234.0),
             Osd => (270.0, 46.0),
             Power => (300.0, 46.0),
+            Device => (330.0, 46.0),
             TimerMini => (210.0, 28.0),
             TimerFull => (320.0, 112.0),
             TimerDone => (330.0, 64.0),
@@ -113,6 +115,7 @@ pub struct Snapshot {
     pub notif: Option<NotifFaceOpt>,
     pub timer_done: bool,
     pub power: bool,
+    pub device: bool,
     pub op: bool,
     pub op_flash: bool,
     pub meeting: bool,
@@ -154,6 +157,9 @@ pub fn choose(s: &Snapshot) -> (Face, Option<Side>) {
     }
     if s.power {
         return (Power, None);
+    }
+    if s.device {
+        return (Device, None);
     }
     if s.op_flash && s.op {
         return (Progress, None);
@@ -305,6 +311,8 @@ mod tests {
         assert_eq!(face(Snapshot { notif: Some(NotifFace::Actions), power: true, ..snap() }), Face::NotifAct);
         assert_eq!(face(Snapshot { big: true, page: Some(Page::Qs), osd: true, ..snap() }), Face::Qs);
         assert_eq!(face(Snapshot { power: true, meeting: true, ..snap() }), Face::Power);
+        assert_eq!(face(Snapshot { device: true, meeting: true, ..snap() }), Face::Device);
+        assert_eq!(face(Snapshot { notif: Some(NotifFace::Plain), device: true, ..snap() }), Face::Notif, "a notification wins");
         assert_eq!(face(Snapshot { meeting: true, rain: true, ..snap() }), Face::Meeting);
     }
 

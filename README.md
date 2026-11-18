@@ -192,3 +192,8 @@ open-island activity clear
 Like `progress`, one activity is on show at a time (the latest): a card for three seconds when it starts, then a bubble
 beside the pill with its icon and status. Colours: red orange yellow green teal blue purple pink white gray or `#rrggbb`;
 icons are the ones bundled (Tabler names such as `git-branch`, `bolt`, `cloud`, `download`, `music`, `mail-forward`...).
+
+## Bluetooth devices (Linux)
+
+Through `bluetoothctl`: a card when headphones, earbuds, a mouse or a keyboard connect (with the battery when the
+device reports it), a warning once when it falls to 15%, and the connected ones with their battery on the System page.

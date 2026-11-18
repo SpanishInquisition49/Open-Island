@@ -338,6 +338,10 @@ pub struct Island {
     osd_until: i64,
     pub(crate) power: Option<PowerEvent>,
     power_until: i64,
+    pub(crate) device_ev: Option<(Device, bool)>,
+    device_until: i64,
+    /// Devices whose low battery was already announced.
+    device_low_told: Vec<String>,
     low_battery_sent: bool,
     last_plugged: Option<bool>,
     pub(crate) meeting: Option<calendar::Event>,
@@ -427,6 +431,9 @@ impl Island {
             osd_until: 0,
             power: None,
             power_until: 0,
+            device_ev: None,
+            device_until: 0,
+            device_low_told: vec![],
             low_battery_sent: false,
             last_plugged: None,
             meeting: None,
@@ -532,6 +539,17 @@ impl Island {
             Input::ProgressDone(l) => self.ops.finish(now, progress::State::Done, &l),
             Input::ProgressFail(l) => self.ops.finish(now, progress::State::Fail, &l),
             Input::ProgressClear => self.ops.clear(),
+            Input::DeviceConnected(d) => {
+                self.device_ev = Some((d, false));
+                self.device_until = now + 3500;
+            }
+            Input::DeviceLow(d) => {
+                if !self.device_low_told.contains(&d.id) {
+                    self.device_low_told.push(d.id.clone());
+                    self.device_ev = Some((d, true));
+                    self.device_until = now + 6000;
+                }
+            }
             Input::Activity(state, a) => match state {
                 progress::State::Run => self.ops.run_activity(now, &a),
                 s => self.ops.finish_activity(now, s, &a),
@@ -1063,6 +1081,7 @@ impl Island {
         match self.shown {
             Face::TimerDone => self.timer_done_until = 0,
             Face::Power => self.power_until = 0,
+            Face::Device => self.device_until = 0,
             Face::Notif | Face::NotifAct => self.close_notif(CloseReason::Dismissed),
             Face::Meeting => self.meeting_until = 0,
             Face::Rain => self.rain_until = 0,
@@ -1357,7 +1376,7 @@ impl Island {
         let Some(st) = &self.data.system else { return 1 };
         let mut n = 2; // cpu, cores
         n += st.memory.is_some() as usize + st.gpu.is_some() as usize + self.data.battery.is_some() as usize + st.disk.is_some() as usize;
-        n + 1 // network
+        n + self.data.devices.len().min(4) + 1 // devices, network
     }
 
     /// Height of the settings page below its header: four sections and their rows.
@@ -1456,6 +1475,7 @@ impl Island {
             notif,
             timer_done: now < self.timer_done_until,
             power: self.power.is_some() && now < self.power_until,
+            device: self.device_ev.is_some() && now < self.device_until,
             op: self.ops.op.is_some(),
             op_flash: self.ops.flashing(now),
             meeting: self.meeting.is_some() && now < self.meeting_until,
@@ -1538,6 +1558,9 @@ impl Island {
     fn slow_checks(&mut self) {
         let now = self.now;
         self.update_quiet(now);
+        // a device whose battery went back up may warn again next time
+        let devs = &self.data.devices;
+        self.device_low_told.retain(|id| devs.iter().any(|d| d.id == *id && d.battery.is_some_and(|b| b <= 20)));
         // meeting heads-up: once per event
         if self.cfg.meeting_alerts {
             if let Some(e) = self.announcer.new_heads_up(&self.data.events, now, self.cfg.meeting_lead_ms).cloned() {
@@ -2434,6 +2457,54 @@ mod tests {
         let mut scene = Scene::new();
         let fr = i.tick(i.now + 8, 8.0);
         i.draw(&mut scene, &f, fr.surface, 1.0);
+    }
+
+    fn headphones(battery: Option<u8>) -> Device {
+        Device { id: "88:C9".into(), name: "Sony XM5".into(), kind: island_core::bluetooth::Kind::Headphones, battery }
+    }
+
+    #[test]
+    fn a_connecting_device_gets_a_card_and_a_low_battery_warns_once_until_it_recovers() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::DeviceConnected(headphones(Some(80))));
+        run(&mut i, 600);
+        assert_eq!(i.current_face(), Face::Device);
+        run(&mut i, 4000);
+        assert_ne!(i.current_face(), Face::Device, "it goes away by itself");
+        i.data.devices = vec![headphones(Some(12))];
+        i.push(i.now, Input::DeviceLow(headphones(Some(12))));
+        run(&mut i, 600);
+        assert_eq!(i.current_face(), Face::Device);
+        assert!(i.device_ev.as_ref().is_some_and(|(_, low)| *low));
+        run(&mut i, 7000);
+        i.push(i.now, Input::DeviceLow(headphones(Some(11))));
+        run(&mut i, 600);
+        assert_ne!(i.current_face(), Face::Device, "told once");
+        // charged again, then low again: a new warning
+        i.data.devices = vec![headphones(Some(90))];
+        run(&mut i, 1000);
+        i.push(i.now, Input::DeviceLow(headphones(Some(10))));
+        run(&mut i, 600);
+        assert_eq!(i.current_face(), Face::Device);
+    }
+
+    #[test]
+    fn the_system_page_lists_connected_devices_and_grows_for_them() {
+        let mut i = Island::new(Config::default());
+        i.data.system = Some(Default::default());
+        let before = i.sys_rows();
+        i.data.devices = vec![headphones(Some(50)), Device { id: "m".into(), name: "MX".into(), kind: island_core::bluetooth::Kind::Mouse, battery: None }];
+        assert_eq!(i.sys_rows(), before + 2);
+        i.push(T0, Input::OpenPage(Page::Sys));
+        draw_frames(&mut i, 300);
+    }
+
+    #[test]
+    fn device_icons_exist_in_the_bundled_font() {
+        use island_core::bluetooth::Kind::*;
+        for k in [Earbuds, Headphones, Headset, Keyboard, Mouse, Gamepad, Other] {
+            assert!(crate::is_known_icon(k.icon()), "{}", k.icon());
+        }
     }
 
     #[test]

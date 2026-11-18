@@ -54,6 +54,15 @@ pub struct Battery {
     pub on_ac: bool,
 }
 
+/// A connected Bluetooth device (headphones, a mouse...).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Device {
+    pub id: String,
+    pub name: String,
+    pub kind: island_core::bluetooth::Kind,
+    pub battery: Option<u8>,
+}
+
 #[derive(Clone, Default)]
 pub struct Weather {
     pub temp_c: f32,
@@ -145,6 +154,8 @@ pub struct Data {
     /// When the calendars were last read successfully (epoch ms; 0 = not yet).
     pub events_synced_at: i64,
     pub privacy: Privacy,
+    /// Connected Bluetooth devices.
+    pub devices: Vec<Device>,
     pub volume: Option<f32>,
     pub muted: bool,
     pub brightness: Option<f32>,
@@ -256,6 +267,10 @@ pub enum Input {
     ProgressDone(String),
     ProgressFail(String),
     ProgressClear,
+    /// A Bluetooth device just connected.
+    DeviceConnected(Device),
+    /// A connected device's battery is low.
+    DeviceLow(Device),
     /// A script's activity: running, done or failed (see `open-island activity`).
     Activity(island_core::progress::State, island_core::progress::Activity),
     /// Open the command bar (from a shortcut).
