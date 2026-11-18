@@ -23,6 +23,9 @@ pub const BUBBLE_GAP: f64 = 6.0;
 pub const ICON_W: f64 = 19.0;
 const REPLY_IDLE_MS: i64 = 20_000;
 const BAR_IDLE_MS: i64 = 30_000;
+const SNOOZE_MS: i64 = 10 * 60_000;
+/// Notifications the island makes itself (confirmations, reminders, the recap) have ids from here.
+const OWN_ID_BASE: u32 = 3_000_000;
 const KB_IDLE_MS: i64 = 9_000;
 const EDIT_IDLE_MS: i64 = 40_000;
 const LYRIC_LEAD_MS: f64 = 250.0;
@@ -96,6 +99,8 @@ pub enum Action {
     PomodoroSkip,
     Dismiss,
     NextNotif,
+    /// Hide the notification on screen and bring it back in ten minutes.
+    Snooze,
     NotifAction(String),
     Open(Page),
     CalPrev,
@@ -159,6 +164,14 @@ pub struct Reply {
     /// Caret position in characters.
     pub cursor: usize,
     pub until: i64,
+}
+
+pub fn is_own_notification(n: &Incoming) -> bool {
+    is_own(n)
+}
+
+fn is_own(n: &Incoming) -> bool {
+    (OWN_ID_BASE..OWN_ID_BASE + 1_000_000).contains(&n.id)
 }
 
 /// The command bar being typed in.
@@ -357,6 +370,9 @@ pub struct Island {
     dnd_seen: bool,
     /// Why notifications are held without the user having asked (a meeting, the microphone, a screen share).
     pub(crate) auto_quiet: Option<&'static str>,
+    /// When the notifications were first held, for the recap that comes when they are let through again.
+    quiet_since: Option<i64>,
+    recap_id: u32,
     dnd_sent: bool,
 }
 
@@ -396,7 +412,7 @@ impl Island {
             reply: None,
             bar: None,
             reminders: vec![],
-            next_own_id: 3_000_000,
+            next_own_id: OWN_ID_BASE,
             kb: None,
             page_stack: vec![],
             slide: 0.0,
@@ -437,6 +453,8 @@ impl Island {
             pending: vec![],
             dnd_seen: false,
             auto_quiet: None,
+            quiet_since: None,
+            recap_id: 0,
             dnd_sent: false,
         }
     }
@@ -549,9 +567,11 @@ impl Island {
 
     fn on_notification(&mut self, n: Incoming) {
         log::debug!("notification {} from {:?}: dnd={} showing={}", n.id, n.app, self.data.dnd, self.notif.is_some());
-        self.history.insert(0, (n.clone(), self.now));
-        self.history.truncate(30);
-        if self.quiet() && !n.critical {
+        if !(is_own(&n) && n.app == "open-island") {
+            self.history.insert(0, (n.clone(), self.now));
+            self.history.truncate(30);
+        }
+        if self.quiet() && !n.critical && !is_own(&n) {
             return;
         }
         if self.notif.as_ref().is_some_and(|c| c.id == n.id) {
@@ -586,7 +606,6 @@ impl Island {
         self.notif = Some(n);
     }
 
-    /// Takes the notification off the screen and tells its sender why.
     /// What a click on a notification does: the sender's default action (while the notification is live), and
     /// the app's window to the front.
     fn open_commands(n: &Incoming, live: bool) -> Vec<Command> {
@@ -598,6 +617,7 @@ impl Island {
         c
     }
 
+    /// Takes the notification off the screen and tells its sender why.
     fn close_notif(&mut self, reason: CloseReason) {
         if let Some(n) = self.notif.take() {
             self.pending.push(Command::NotificationClosed { id: n.id, reason });
@@ -1184,6 +1204,18 @@ impl Island {
                 }
             }
             Action::Dismiss | Action::NextNotif => self.close_notif(CloseReason::Dismissed),
+            Action::Snooze => {
+                if let Some(n) = self.notif.clone() {
+                    let text = match (n.summary.is_empty(), n.app.is_empty()) {
+                        (false, false) => format!("{}: {}", n.app, n.summary),
+                        (false, true) => n.summary.clone(),
+                        _ => n.app.clone(),
+                    };
+                    self.reminders.push(Reminder { due_ms: now + SNOOZE_MS, text });
+                    self.reminders.sort_by_key(|r| r.due_ms);
+                    self.close_notif(CloseReason::Dismissed);
+                }
+            }
             Action::NotifAction(key) => {
                 if key == "inline-reply" {
                     self.start_reply();
@@ -1248,6 +1280,11 @@ impl Island {
                     let (n, _) = self.history.remove(i);
                     self.pending.extend(Self::open_commands(&n, false));
                 }
+            }
+            Action::NotifOpen if self.notif.as_ref().is_some_and(|n| n.id == self.recap_id && self.recap_id != 0) => {
+                self.notif = None;
+                self.notif_until = 0;
+                return self.activate(Action::Open(Page::Notifs));
             }
             Action::NotifOpen => {
                 if let Some(n) = self.notif.clone() {
@@ -1442,6 +1479,28 @@ impl Island {
         self.auto_quiet
     }
 
+    /// One card for what was held while the island was quiet.
+    fn recap(&mut self, since: i64) {
+        let mut apps: Vec<(String, usize)> = vec![];
+        for (n, at) in self.history.iter().filter(|(n, at)| *at >= since && !is_own(n)) {
+            let _ = at;
+            match apps.iter_mut().find(|(a, _)| *a == n.app) {
+                Some((_, c)) => *c += 1,
+                None => apps.push((n.app.clone(), 1)),
+            }
+        }
+        let total: usize = apps.iter().map(|(_, c)| c).sum();
+        if total == 0 {
+            return;
+        }
+        apps.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+        let body = apps.iter().take(4).map(|(a, c)| if *c > 1 { format!("{a} {c}") } else { a.clone() }).collect::<Vec<_>>().join(" · ");
+        self.next_own_id += 1;
+        self.recap_id = self.next_own_id;
+        let n = Incoming { id: self.recap_id, app: "open-island".into(), summary: format!("{total} held back"), body, expire_ms: Some(8000), ..Default::default() };
+        self.push(self.now, Input::Notification(n));
+    }
+
     fn update_quiet(&mut self, now: i64) {
         let p = self.data.privacy;
         let in_meeting = self.cfg.quiet_in_meetings
@@ -1452,9 +1511,19 @@ impl Island {
             Some("screen share")
         } else if self.cfg.quiet_on_mic && p.mic {
             Some("microphone")
+        } else if self.data.focus.as_ref().is_some_and(|f| f.active) {
+            Some("focus")
         } else {
             None
         };
+        match (self.quiet(), self.quiet_since) {
+            (true, None) => self.quiet_since = Some(now),
+            (false, Some(since)) => {
+                self.quiet_since = None;
+                self.recap(since);
+            }
+            _ => {}
+        }
         // the daemon holds the sounds back too: tell it whenever the state it should keep changes
         if self.quiet() != self.dnd_sent {
             self.dnd_sent = self.quiet();
@@ -2281,6 +2350,66 @@ mod tests {
         ];
         run(&mut i, 2000);
         assert!(!i.quiet());
+    }
+
+    #[test]
+    fn snoozing_a_notification_brings_it_back_in_ten_minutes() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::Notification(Incoming { id: 7, app: "Mail".into(), summary: "Invoice".into(), ..Default::default() }));
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::Snooze), "the bell is drawn on the card");
+        assert!(i.notif.is_none());
+        assert!(i.take_commands().iter().any(|c| matches!(c, Command::NotificationClosed { id: 7, .. })));
+        run(&mut i, 9 * 60_000);
+        assert!(i.notif.is_none(), "not yet");
+        run(&mut i, 61_000);
+        assert_eq!(i.notif.as_ref().map(|n| n.summary.as_str()), Some("Mail: Invoice"), "and then it is back");
+        draw_frames(&mut i, 200);
+        assert!(!press(&mut i, Action::Snooze), "a reminder's own card has no snooze");
+    }
+
+    #[test]
+    fn what_was_held_back_comes_as_one_recap_that_opens_the_list() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::SetDnd(true));
+        let n = |id: u32, app: &str| Input::Notification(Incoming { id, app: app.into(), summary: format!("m{id}"), ..Default::default() });
+        run(&mut i, 1000);
+        for (id, app) in [(1, "Telegram"), (2, "Telegram"), (3, "Mail"), (4, "Telegram")] {
+            i.push(i.now, n(id, app));
+        }
+        assert!(i.notif.is_none(), "held");
+        i.push(i.now, Input::SetDnd(false));
+        run(&mut i, 1000);
+        let card = i.notif.clone().expect("the recap");
+        assert_eq!((card.summary.as_str(), card.body.as_str()), ("4 held back", "Telegram 3 · Mail"));
+        assert_eq!(i.history.len(), 4, "the recap is not a notification of its own");
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::NotifOpen), "a click on it");
+        assert!(i.take_commands().iter().all(|c| !matches!(c, Command::FocusApp { .. })), "does not look for a window");
+        run(&mut i, 600);
+        assert_eq!(i.current_face(), Face::Notifs);
+    }
+
+    #[test]
+    fn nothing_held_means_no_recap_and_a_reminder_gets_through_a_meeting() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::SetDnd(true));
+        run(&mut i, 1000);
+        i.push(i.now, Input::SetDnd(false));
+        run(&mut i, 1000);
+        assert!(i.notif.is_none(), "quiet but nothing came: no card");
+        i.push(i.now, Input::SetDnd(true));
+        i.restore_reminders(vec![Reminder { due_ms: i.now + 2000, text: "Call".into() }]);
+        run(&mut i, 3000);
+        assert_eq!(i.notif.as_ref().map(|n| n.summary.as_str()), Some("Call"), "a reminder is not held back");
+    }
+
+    #[test]
+    fn a_study_focus_holds_notifications_too() {
+        let mut i = Island::new(Config::default());
+        i.data.focus = Some(Focus { active: true, end_epoch: None });
+        run(&mut i, 2000);
+        assert_eq!(i.auto_quiet_reason(), Some("focus"));
     }
 
     #[test]

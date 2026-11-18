@@ -414,7 +414,7 @@ impl Island {
         }
         let more = self.queue.len();
         let tx = 72.0;
-        let tmax = (w - tx - 56.0) as f32;
+        let tmax = (w - tx - 84.0) as f32;
         let mut app = n.app.clone();
         let group = self.queue.iter().find(|q| q.app == n.app).map(|q| q.group_count).unwrap_or(1);
         if group > 1 {
@@ -427,7 +427,11 @@ impl Island {
             p.bar(rect(tx, h - 18.0, tmax as f64, 5.0), pr as f64 / 100.0, theme::FG, theme::TRACK);
         }
         // every card has an x that dismisses it (the next waiting one comes up); how many wait shows under it
-        p.icon_button(w - 28.0, lead_cy - if more > 0 { 6.0 } else { 0.0 }, 28.0, "x", 14.0, Action::Dismiss);
+        let xy = lead_cy - if more > 0 { 6.0 } else { 0.0 };
+        p.icon_button(w - 28.0, xy, 28.0, "x", 14.0, Action::Dismiss);
+        if !super::island::is_own_notification(n) {
+            p.icon_button(w - 58.0, xy, 28.0, "bell-z", 14.0, Action::Snooze);
+        }
         if more > 0 {
             p.text(&format!("+{more}"), w - 28.0, lead_cy + 14.0, 10.0, SEMI, theme::DIM, Align::Center, 30.0);
         }

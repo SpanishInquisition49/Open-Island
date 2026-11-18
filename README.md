@@ -174,3 +174,7 @@ Notifications are held (they stay in the history, and the sound stays off) while
 3 hours), while the microphone is in use and while the screen is shared; a small crossed bell shows it in the pill and
 `critical` notifications still come through. Switch any of the three off in the configuration:
 `"quiet_in_meetings": false`, `"quiet_on_mic": false`, `"quiet_on_screen_share": false`.
+
+The bell with a z on a notification card hides it and brings it back after ten minutes. When the island stops being
+quiet (a meeting ends, a call, `dnd off`, the study focus) one card says how much was held back and from whom; a click
+opens the list. The focus mode of `~/.local/bin/focus` counts as quiet too.
