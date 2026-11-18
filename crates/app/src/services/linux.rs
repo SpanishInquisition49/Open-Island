@@ -195,9 +195,34 @@ fn camera_in_use() -> bool {
     false
 }
 
+/// True when an application is really recording from a microphone. Streams that capture what the speakers
+/// play (the equalizer of a shell, a visualiser, this island's own spectrum) are not the microphone, nor are
+/// paused streams or this program's own.
+pub fn mic_streams_active(source_outputs_json: &str, sources_json: &str) -> bool {
+    use serde_json::Value;
+    let outputs: Vec<Value> = serde_json::from_str(source_outputs_json).unwrap_or_default();
+    let sources: Vec<Value> = serde_json::from_str(sources_json).unwrap_or_default();
+    let is_monitor_source = |idx: Option<u64>| {
+        sources.iter().any(|s| {
+            s.get("index").and_then(Value::as_u64) == idx
+                && (s.get("monitor_of_sink").is_some_and(|m| !m.is_null()) || s.get("name").and_then(Value::as_str).is_some_and(|n| n.ends_with(".monitor")))
+        })
+    };
+    outputs.iter().any(|o| {
+        let props = o.get("properties");
+        let prop = |k: &str| props.and_then(|p| p.get(k)).and_then(Value::as_str).unwrap_or("");
+        let corked = o.get("corked").and_then(Value::as_bool).unwrap_or(false);
+        let captures_a_sink = prop("stream.capture.sink") == "true" || is_monitor_source(o.get("source").and_then(Value::as_u64));
+        let ours = ["open-island", "open_island"].iter().any(|n| prop("application.name").contains(n) || prop("application.process.binary").contains(n) || prop("node.name").contains(n));
+        !corked && !captures_a_sink && !ours
+    })
+}
+
 fn mic_in_use() -> bool {
-    // PipeWire/PulseAudio: any recording stream that is not a monitor
-    run("pactl", &["list", "short", "source-outputs"]).is_some_and(|o| o.lines().any(|l| !l.trim().is_empty()))
+    match (run("pactl", &["-f", "json", "list", "source-outputs"]), run("pactl", &["-f", "json", "list", "sources"])) {
+        (Some(outs), Some(srcs)) => mic_streams_active(&outs, &srcs),
+        _ => false,
+    }
 }
 
 fn privacy(rep: Reporter) {
@@ -373,4 +398,39 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
             std::thread::sleep(Duration::from_millis(500));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SOURCES: &str = r#"[
+      {"index": 53, "name": "alsa_output.pci.Speaker__sink.monitor", "monitor_of_sink": 1},
+      {"index": 54, "name": "alsa_input.pci.Mic2__source", "monitor_of_sink": null}]"#;
+
+    #[test]
+    fn no_streams_means_no_microphone() {
+        assert!(!mic_streams_active("[]", SOURCES));
+        assert!(!mic_streams_active("not json", SOURCES), "unreadable output shows nothing rather than a false alarm");
+    }
+
+    #[test]
+    fn a_stream_on_a_real_microphone_counts() {
+        let outs = r#"[{"index": 7, "source": 54, "corked": false, "properties": {"application.name": "Microsoft Teams"}}]"#;
+        assert!(mic_streams_active(outs, SOURCES));
+    }
+
+    #[test]
+    fn spectrum_streams_and_paused_streams_do_not() {
+        let monitor = r#"[{"index": 8, "source": 53, "corked": false, "properties": {"application.name": "noctalia"}}]"#;
+        assert!(!mic_streams_active(monitor, SOURCES), "capturing a monitor source");
+        let flagged = r#"[{"index": 8, "source": 54, "corked": false, "properties": {"stream.capture.sink": "true"}}]"#;
+        assert!(!mic_streams_active(flagged, SOURCES), "stream.capture.sink");
+        let paused = r#"[{"index": 9, "source": 54, "corked": true, "properties": {"application.name": "Firefox"}}]"#;
+        assert!(!mic_streams_active(paused, SOURCES), "corked");
+        let ours = r#"[{"index": 10, "source": 54, "corked": false, "properties": {"application.name": "open-island"}}]"#;
+        assert!(!mic_streams_active(ours, SOURCES), "this program's own stream");
+        let mixed = r#"[{"index": 8, "source": 53, "corked": false, "properties": {}}, {"index": 7, "source": 54, "corked": false, "properties": {"application.name": "Zoom"}}]"#;
+        assert!(mic_streams_active(mixed, SOURCES), "one real recorder among spectrum streams");
+    }
 }
