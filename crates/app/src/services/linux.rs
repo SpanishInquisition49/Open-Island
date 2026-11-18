@@ -226,11 +226,31 @@ fn mic_in_use() -> bool {
     }
 }
 
+/// True when an application is sharing the screen: PipeWire has a running video *producer* stream (the portal's
+/// screen-cast node). Cameras are read from /dev/video instead, and video players only consume.
+pub fn screen_capture_active(pw_dump_json: &str) -> bool {
+    let Ok(serde_json::Value::Array(objects)) = serde_json::from_str::<serde_json::Value>(pw_dump_json) else { return false };
+    objects.iter().any(|o| {
+        let info = o.get("info");
+        info.and_then(|i| i.pointer("/props/media.class")).and_then(|c| c.as_str()) == Some("Stream/Output/Video") && info.and_then(|i| i.get("state")).and_then(|s| s.as_str()) == Some("running")
+    })
+}
+
+fn screen_sharing() -> bool {
+    run("pw-dump", &[]).is_some_and(|j| screen_capture_active(&j))
+}
+
 fn privacy(rep: Reporter) {
     std::thread::spawn(move || {
         let mut last = Privacy::default();
+        let (mut round, mut screen) = (0u32, false);
         loop {
-            let now = Privacy { mic: mic_in_use(), camera: camera_in_use(), screen: false };
+            round += 1;
+            // pw-dump is a big document: every other round
+            if round % 2 == 1 {
+                screen = screen_sharing();
+            }
+            let now = Privacy { mic: mic_in_use(), camera: camera_in_use(), screen };
             if now != last {
                 last = now;
                 rep.patch(move |d| d.privacy = now);
@@ -408,6 +428,18 @@ mod tests {
     const SOURCES: &str = r#"[
       {"index": 53, "name": "alsa_output.pci.Speaker__sink.monitor", "monitor_of_sink": 1},
       {"index": 54, "name": "alsa_input.pci.Mic2__source", "monitor_of_sink": null}]"#;
+
+    #[test]
+    fn a_running_video_producer_is_a_screen_share() {
+        let sharing = r#"[{"id": 1, "info": {"state": "running", "props": {"media.class": "Stream/Output/Video", "node.name": "xdg-desktop-portal"}}},
+                          {"id": 2, "info": {"state": "running", "props": {"media.class": "Audio/Sink"}}}]"#;
+        assert!(screen_capture_active(sharing));
+        let idle = r#"[{"id": 1, "info": {"state": "idle", "props": {"media.class": "Stream/Output/Video"}}}]"#;
+        assert!(!screen_capture_active(idle), "a stream that is not running is not sharing");
+        let consumer = r#"[{"id": 1, "info": {"state": "running", "props": {"media.class": "Stream/Input/Video"}}}]"#;
+        assert!(!screen_capture_active(consumer), "a consumer is a player or a camera app");
+        assert!(!screen_capture_active("[]") && !screen_capture_active("nope"));
+    }
 
     #[test]
     fn no_streams_means_no_microphone() {
