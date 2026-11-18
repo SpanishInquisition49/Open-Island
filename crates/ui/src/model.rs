@@ -153,6 +153,8 @@ pub struct Data {
     pub bluetooth: Option<bool>,
     /// The idle inhibitor is held ("keep awake").
     pub keep_awake: bool,
+    /// Night light (wlsunset): None when it is not installed.
+    pub night_light: Option<bool>,
     /// "performance", "balanced" or "powersave".
     pub profile: Option<String>,
     pub sinks: Vec<Sink>,
@@ -291,6 +293,7 @@ pub enum Command {
     ToggleWifi,
     ToggleBluetooth,
     ToggleKeepAwake,
+    ToggleNightLight,
     NextProfile,
     NextSink,
     /// Re-read the quick-settings state (the page was just opened).

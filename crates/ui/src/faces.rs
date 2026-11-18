@@ -713,6 +713,9 @@ impl Island {
         };
         chip(p, 1, 0, "coffee", "Keep awake", d.keep_awake, Action::Cmd(Command::ToggleKeepAwake));
         chip(p, 1, 1, picon, &plabel, profile == "performance", Action::Cmd(Command::NextProfile));
+        if let Some(on) = d.night_light {
+            chip(p, 1, 2, "moon-stars", "Night light", on, Action::Cmd(Command::ToggleNightLight));
+        }
         let mut rows = 2.0;
         if let Some(f) = d.focus {
             let label = if f.active { self.focus_minutes_left().map_or("Focus · on".to_string(), |m| format!("Focus · {m} min left")) } else { "Focus 50 min".to_string() };

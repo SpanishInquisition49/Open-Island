@@ -964,6 +964,7 @@ impl Island {
                     Command::ToggleWifi => self.data.wifi = self.data.wifi.map(|v| !v),
                     Command::ToggleBluetooth => self.data.bluetooth = self.data.bluetooth.map(|v| !v),
                     Command::ToggleKeepAwake => self.data.keep_awake = !self.data.keep_awake,
+                    Command::ToggleNightLight => self.data.night_light = self.data.night_light.map(|v| !v),
                     _ => {}
                 }
                 return vec![c];
@@ -1840,6 +1841,12 @@ mod tests {
         i.data.wifi = None;
         i.activate(Action::Cmd(Command::ToggleWifi));
         assert_eq!(i.data.wifi, None, "unknown stays unknown until the next sample");
+        i.data.night_light = Some(false);
+        i.activate(Action::Cmd(Command::ToggleNightLight));
+        assert_eq!(i.data.night_light, Some(true));
+        i.data.night_light = None;
+        i.activate(Action::Cmd(Command::ToggleNightLight));
+        assert_eq!(i.data.night_light, None, "no wlsunset: the chip stays hidden");
     }
 
     #[test]

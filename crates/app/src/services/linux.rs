@@ -37,7 +37,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                 Command::InvokeAction { .. } | Command::CloseNotification(_) | Command::SetDnd(_) | Command::NotificationClosed { .. } | Command::NotificationReplied { .. } => {
                     let _ = notif_cmd_tx.send(c);
                 }
-                Command::ToggleWifi | Command::ToggleBluetooth | Command::ToggleKeepAwake | Command::NextProfile | Command::NextSink | Command::RefreshQuick => {
+                Command::ToggleWifi | Command::ToggleBluetooth | Command::ToggleKeepAwake | Command::ToggleNightLight | Command::NextProfile | Command::NextSink | Command::RefreshQuick => {
                     let _ = quick_tx.send(c);
                 }
                 Command::StartFocus(m) => {

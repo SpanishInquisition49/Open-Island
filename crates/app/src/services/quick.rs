@@ -20,6 +20,29 @@ fn run(prog: &str, args: &[&str]) {
     let _ = Proc::new(prog).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
+/// wlsunset arguments: the sun's real times from the weather location when there is one, else 07:00 to 19:00.
+pub fn wlsunset_args(lat: Option<f64>, lon: Option<f64>) -> Vec<String> {
+    let mut a: Vec<String> = ["-t", "3800", "-T", "6500"].iter().map(|s| s.to_string()).collect();
+    match (lat, lon) {
+        (Some(la), Some(lo)) => a.extend(["-l".to_string(), format!("{la:.4}"), "-L".to_string(), format!("{lo:.4}")]),
+        _ => a.extend(["-s", "07:00", "-S", "19:00"].iter().map(|s| s.to_string())),
+    }
+    a
+}
+
+fn night_light_installed() -> bool {
+    Proc::new("wlsunset").arg("-h").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok()
+}
+
+fn night_light_running(ours: &mut Option<Child>) -> bool {
+    if let Some(c) = ours.as_mut() {
+        if c.try_wait().ok().flatten().is_some() {
+            *ours = None;
+        }
+    }
+    ours.is_some() || Proc::new("pgrep").args(["-x", "wlsunset"]).stdout(Stdio::null()).status().is_ok_and(|s| s.success())
+}
+
 pub fn parse_wifi(nmcli_radio: &str) -> Option<bool> {
     match nmcli_radio.trim() {
         "enabled" => Some(true),
@@ -61,6 +84,8 @@ fn next<T: PartialEq + Clone>(list: &[T], current: Option<&T>) -> Option<T> {
 pub fn start(rep: Reporter, cmd_rx: Receiver<Command>) {
     std::thread::spawn(move || {
         let mut inhibitor: Option<Child> = None;
+        let mut night: Option<Child> = None;
+        let has_night_light = night_light_installed();
         let mut sinks: Vec<Sink> = vec![];
         let mut sink: Option<String> = None;
         let mut profile: Option<String> = None;
@@ -92,6 +117,21 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>) {
                                 .spawn()
                                 .ok();
                         }
+                    }
+                    sample_now = true;
+                }
+                Ok(Command::ToggleNightLight) => {
+                    if night_light_running(&mut night) {
+                        match night.take() {
+                            Some(mut c) => {
+                                let _ = c.kill();
+                                let _ = c.wait();
+                            }
+                            None => run("pkill", &["-x", "wlsunset"]),
+                        }
+                    } else {
+                        let cfg = crate::config::load();
+                        night = Proc::new("wlsunset").args(wlsunset_args(cfg.latitude, cfg.longitude)).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok();
                     }
                     sample_now = true;
                 }
@@ -132,11 +172,13 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>) {
                     inhibitor = None;
                 }
             }
+            let night_now = has_night_light.then(|| night_light_running(&mut night));
             let (keep, p, s, k) = (inhibitor.is_some(), profile.clone(), sinks.clone(), sink.clone());
             rep.patch(move |d| {
                 d.wifi = wifi;
                 d.bluetooth = bt;
                 d.keep_awake = keep;
+                d.night_light = night_now;
                 d.profile = p;
                 d.sinks = s;
                 d.sink = k;
@@ -162,6 +204,14 @@ mod tests {
         assert!(parse_sinks("nope").is_empty());
         assert_eq!(profile_name("low-power\n"), "powersave");
         assert_eq!(profile_name("balanced"), "balanced");
+    }
+
+    #[test]
+    fn night_light_uses_the_sun_when_it_knows_where_you_are() {
+        let with = wlsunset_args(Some(43.7228), Some(10.4017));
+        assert_eq!(with, ["-t", "3800", "-T", "6500", "-l", "43.7228", "-L", "10.4017"]);
+        let without = wlsunset_args(None, Some(10.0));
+        assert_eq!(without, ["-t", "3800", "-T", "6500", "-s", "07:00", "-S", "19:00"], "a half-known location is no location");
     }
 
     #[test]
