@@ -31,11 +31,24 @@ pub struct Painter<'a, A> {
     pub pointer: Option<(f64, f64)>,
     /// Applied to everything drawn.
     pub transform: Affine,
+    /// The face's own opacity and transform, which `stagger` builds on.
+    pub base: (f32, Affine),
+    /// Milliseconds since the face began to appear (the stagger clock).
+    pub since_enter: i64,
 }
 
 impl<A: Clone> Painter<'_, A> {
     fn c(&self, c: Color) -> Color {
         with_alpha(c, self.opacity)
+    }
+
+    /// Rows of an open page come in one after another: each fades and rises 28 ms after the previous.
+    /// Call before drawing row `i`; everything drawn afterwards follows until the next call.
+    pub fn stagger(&mut self, i: usize) {
+        let k = ((self.since_enter - i as i64 * 28) as f64 / 170.0).clamp(0.0, 1.0);
+        let k = 1.0 - (1.0 - k).powi(3);
+        self.opacity = self.base.0 * k as f32;
+        self.transform = self.base.1 * Affine::translate((0.0, 8.0 * (1.0 - k)));
     }
 
     pub fn hovered(&self, r: Rect) -> bool {

@@ -209,6 +209,8 @@ pub struct Island {
     lyric_src: Option<String>,
     pub(crate) cal: Cal,
     /// The clipboard entry just restored, and until when it shows a check mark.
+    /// When the shown face began to appear (drives the stagger of page rows).
+    pub(crate) enter_at: i64,
     pub(crate) spectrum: Vec<f32>,
     pub(crate) spectrum_at: i64,
     pub(crate) copied: Option<(usize, i64)>,
@@ -272,6 +274,7 @@ impl Island {
             lyric_lines: None,
             lyric_src: None,
             cal: Cal { year: 1970, month: 1, day: 1 },
+            enter_at: -100_000,
             spectrum: vec![],
             spectrum_at: -100_000,
             copied: None,
@@ -1095,6 +1098,9 @@ impl Island {
                 1.0 - (tw - self.spring.w.pos).abs().max((th - self.spring.h.pos).abs()) / span
             };
             if done >= FADE_IN_AT {
+                if self.alpha <= 0.0 && dt > 0.0 {
+                    self.enter_at = now;
+                }
                 self.alpha = (self.alpha + dt / FADE_IN_MS).min(1.0);
             }
         }

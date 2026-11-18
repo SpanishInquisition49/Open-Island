@@ -183,6 +183,7 @@ fn main() {
         ("page-clip", Box::new(|i, d| { d.clipboard = vec!["cargo test --workspace".into(), "https://example.org/a/very/long/link/that/needs/an/ellipsis?with=query&and=more".into(), "Reti di calcolatori\n  lezione 12".into()]; i.push(NOW, Input::OpenPage(island_core::face::Page::Clip)); })),
         ("focus-mini", Box::new(|_, d| d.focus = Some(Focus { active: true, end_epoch: Some(NOW / 1000 + 23 * 60) }))),
         ("focus-full", Box::new(|i, d| { d.focus = Some(Focus { active: true, end_epoch: Some(NOW / 1000 + 23 * 60) }); i.push(NOW, Input::OpenPage(island_core::face::Page::Focus)); })),
+        ("page-sys-opening", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Sys)))),
         ("page-qs", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Qs)))),
         ("page-sys", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Sys)))),
         ("page-notifs", Box::new(|i, _| {
@@ -198,8 +199,8 @@ fn main() {
         setup(&mut i, &mut d);
         i.data = d.clone();
         // pages need a page request; "home" and "meeting" go through the hover-less path
-        let hold = name == "media-transition" || name.contains("full") || name.starts_with("focus-full") || name.contains("lyrics") || name == "home" || name.starts_with("page-");
-        let frames = if name == "media-transition" { 26 } else { 400 };
+        let hold = name == "page-sys-opening" || name == "media-transition" || name.contains("full") || name.starts_with("focus-full") || name.contains("lyrics") || name == "home" || name.starts_with("page-");
+        let frames = if name == "media-transition" { 26 } else if name == "page-sys-opening" { 38 } else { 400 };
         let f = settle(&mut i, &d, frames, hold);
         let (sw, sh) = (f.surface.0.ceil().max(520.0) as u32, f.surface.1.ceil().max(90.0) as u32);
         let mut scene = Scene::new();

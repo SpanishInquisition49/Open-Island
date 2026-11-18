@@ -50,7 +50,7 @@ impl Island {
             * Affine::translate((-w / 2.0, -h / 2.0));
         scene.push_clip_layer(Fill::NonZero, base, &RoundedRect::new(0.0, 0.0, w, h, radius));
         {
-            let mut p = Painter { scene, fonts, hits: &mut hits, opacity: op, pointer, transform: content_t };
+            let mut p = Painter { scene, fonts, hits: &mut hits, opacity: op, pointer, transform: content_t, base: (op, content_t), since_enter: self.now - self.enter_at };
             self.draw_face(&mut p, self.shown, w, h);
         }
         // the keyboard focus ring
@@ -69,7 +69,7 @@ impl Island {
             let lerp = |a: f64, b: f64| a + (b - a) * t;
             let size = lerp(20.0, 64.0);
             let (x, y, r) = (lerp(8.0, 14.0), lerp((28.0 - 20.0) / 2.0, 14.0), lerp(6.0, 12.0));
-            let mut p = Painter { scene, fonts, hits: &mut hits, opacity: 1.0, pointer: None, transform: base };
+            let mut p = Painter { scene, fonts, hits: &mut hits, opacity: 1.0, pointer: None, transform: base, base: (1.0, base), since_enter: 10_000 };
             let art = self.data.media.as_ref().and_then(|m| m.art.as_ref());
             self.draw_art(&mut p, art, x, y, size, r);
         }
@@ -84,7 +84,7 @@ impl Island {
                 * Affine::scale(0.6 + 0.4 * kk)
                 * Affine::translate((-BUBBLE_W / 2.0, -h / 2.0));
             scene.fill(Fill::NonZero, bt, with_alpha(theme::BG, kk as f32), None, &RoundedRect::new(0.0, 0.0, BUBBLE_W, h, (h / 2.0).min(30.0)));
-            let mut p = Painter { scene, fonts, hits: &mut hits, opacity: kk as f32, pointer: None, transform: bt };
+            let mut p = Painter { scene, fonts, hits: &mut hits, opacity: kk as f32, pointer: None, transform: bt, base: (kk as f32, bt), since_enter: 10_000 };
             self.draw_bubble(&mut p, side, BUBBLE_W, h);
         }
         self.hits = hits;
@@ -526,6 +526,7 @@ impl Island {
 
     /// The header of a page: a back button and the title; returns the vertical centre of the header.
     fn page_header(&self, p: P, w: f64, title: &str) -> f64 {
+        p.stagger(0);
         let cy = 14.0 + 17.0;
         p.icon_button(14.0 + 14.0, cy, 28.0, "arrow-left", 15.0, Action::Back);
         p.text(title, 14.0 + 28.0 + 8.0, cy, 14.0, SEMI, theme::FG, Align::Left, (w - 160.0) as f32);
@@ -540,6 +541,7 @@ impl Island {
         p.icon_button(w - 14.0 - 14.0, hy, 28.0, "chevron-right", 16.0, Action::CalNext);
         let colw = (w - 28.0) / 7.0;
         let top = 14.0 + 34.0 + 4.0;
+        p.stagger(1);
         for (i, d) in ["M", "T", "W", "T", "F", "S", "S"].iter().enumerate() {
             p.text(d, 14.0 + colw * (i as f64 + 0.5), top + 8.0, 10.0, REG, theme::DIM, Align::Center, 20.0);
         }
@@ -549,6 +551,7 @@ impl Island {
         for (r, row) in grid.iter().enumerate() {
             for (i, d) in row.iter().enumerate() {
                 let Some(d) = d else { continue };
+                p.stagger(2 + r);
                 let cx = 14.0 + colw * (i as f64 + 0.5);
                 let cy = top + 16.0 + r as f64 * 30.0 + 14.0;
                 let cell = rect(cx - colw / 2.0 + 1.0, cy - 14.0, colw - 2.0, 28.0);
@@ -569,6 +572,7 @@ impl Island {
             }
         }
         let mut y = top + 16.0 + grid.len() as f64 * 30.0 + 10.0 + 11.0;
+        p.stagger(2 + grid.len());
         let evs = self.day_events();
         if evs.is_empty() {
             p.text(if self.data.events.is_empty() { "Calendar not synced yet" } else { "No events" }, 14.0, y, 12.0, REG, theme::DIM, Align::Left, 300.0);
@@ -621,6 +625,7 @@ impl Island {
         let d = &self.data;
         let cw = (w - 28.0 - 16.0) / 3.0;
         let chip = |p: P, row: usize, col: usize, icon: &str, label: &str, on: bool, a: Action| {
+            p.stagger(1 + row);
             let y = 14.0 + 34.0 + 8.0 + row as f64 * 44.0;
             p.chip(rect(14.0 + col as f64 * (cw + 8.0), y, cw, 36.0), icon, label, on, a);
         };
@@ -644,8 +649,11 @@ impl Island {
             rows = 3.0;
         }
         let sy = 14.0 + 34.0 + 8.0 + rows * 44.0 + 14.0;
+        p.stagger(4);
         self.slider_row(p, w, sy, if d.muted { "volume-3" } else { "volume" }, d.volume, Action::VolumeBar);
+        p.stagger(5);
         self.slider_row(p, w, sy + 36.0, "brightness-half", d.brightness, Action::BrightnessBar);
+        p.stagger(6);
         let out = d.sinks.iter().find(|s| Some(&s.name) == d.sink.as_ref());
         let headphones = out.is_some_and(|s| s.name.contains("bluez"));
         let r = rect(14.0, sy + 36.0 + 24.0, w - 28.0, 32.0);
@@ -659,6 +667,7 @@ impl Island {
     }
 
     fn metric_row(&self, p: P, w: f64, y: f64, label: &str, frac: Option<f64>, text: &str, color: Color) {
+        p.stagger(1 + ((y - 62.0) / 28.0).round().max(0.0) as usize);
         p.text(label, 14.0, y, 11.0, SEMI, theme::DIM, Align::Left, 60.0);
         let tw = p.fonts.measure(text, 11.0, REG) as f64;
         let right = w - 14.0;
@@ -692,6 +701,7 @@ impl Island {
         self.metric_row(p, w, y, "CPU", Some(f), &parts.join(" · "), load_color(f));
         y += 28.0;
         // per-core load as small bars
+        p.stagger(2);
         p.text("Cores", 14.0, y, 10.0, REG, theme::DIM, Align::Left, 60.0);
         let n = st.cores.len().max(1) as f64;
         let (x0, x1) = (14.0 + 62.0, w - 14.0);
@@ -769,6 +779,7 @@ impl Island {
             p.text("Clipboard history is empty", 14.0, y + 14.0, 12.0, REG, theme::DIM, Align::Left, 300.0);
         }
         for (i, t) in self.data.clipboard.iter().take(5).enumerate() {
+            p.stagger(1 + i);
             let row = rect(14.0, y, w - 28.0, 28.0);
             p.rrect(row, 10.0, if p.hovered(row) { theme::HOT_CHIP } else { theme::CHIP });
             let copied = self.copied.is_some_and(|(j, until)| j == i && self.now < until);
@@ -797,6 +808,7 @@ impl Island {
             p.text("No notifications", w / 2.0, y + 20.0, 12.0, REG, theme::DIM, Align::Center, 200.0);
         }
         for (i, (n, at)) in self.history.iter().take(5).enumerate() {
+            p.stagger(1 + i);
             let row = rect(14.0, y, w - 28.0, 40.0);
             p.rrect(row, 12.0, if p.hovered(row) { theme::HOT_CHIP } else { theme::CHIP });
             match n.image.as_ref().or(n.app_icon.as_ref()) {
