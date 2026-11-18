@@ -16,6 +16,8 @@ use island_core::spring::Spring;
 use island_core::weather;
 
 pub const TOP_MARGIN: f64 = 4.0;
+/// Height of the page dock at the bottom of a page.
+pub const DOCK_H: f64 = 34.0;
 pub const BUBBLE_W: f64 = 66.0;
 pub const BUBBLE_GAP: f64 = 6.0;
 pub const ICON_W: f64 = 19.0;
@@ -92,6 +94,8 @@ pub enum Action {
     ReplySend,
     ReplyCancel,
     CyclePlayer,
+    /// Switch to a page from the dock (does not add to the back history).
+    Goto(Page),
     EditField(Field),
     RemoveCalendar(usize),
     Back,
@@ -244,6 +248,10 @@ pub struct Island {
     pub(crate) reply: Option<Reply>,
     /// Keyboard navigation: the focused control among the drawn ones.
     pub(crate) kb: Option<Kb>,
+    /// Pages opened from other pages, for the back button.
+    pub(crate) page_stack: Vec<Page>,
+    /// Which way the last page change went (1 = to the right, -1 = to the left, 0 = no page change).
+    pub(crate) slide: f64,
     pub(crate) edit: Option<Edit>,
     pub(crate) note: Option<(String, i64)>,
     pub(crate) queue: Vec<notify::Notification>,
@@ -316,6 +324,8 @@ impl Island {
             notif_until: 0,
             reply: None,
             kb: None,
+            page_stack: vec![],
+            slide: 0.0,
             edit: None,
             note: None,
             queue: vec![],
@@ -379,6 +389,10 @@ impl Island {
             }
             Input::Key(k) => self.on_key(k),
             Input::StartReply => self.start_reply(),
+            Input::CyclePage(dir) => {
+                self.cycle_page(dir);
+                self.expand_until = now + 5000;
+            }
             Input::SettingsNote(t) => self.note = Some((t, now + 5000)),
             Input::OpenKeyboard(p) => {
                 self.kb = Some(Kb { index: 0, last_key: now });
@@ -604,6 +618,10 @@ impl Island {
         let nav = self.nav_hits();
         let n = nav.len().max(1);
         match k {
+            KeyInput::NextPage | KeyInput::PrevPage => {
+                self.cycle_page(if k == KeyInput::NextPage { 1 } else { -1 });
+                kb.index = 0;
+            }
             KeyInput::Right | KeyInput::Down => kb.index = (kb.index + 1) % n,
             KeyInput::Left | KeyInput::Up => kb.index = (kb.index + n - 1) % n,
             KeyInput::Enter => {
@@ -816,12 +834,8 @@ impl Island {
         self.now = now;
         if dx.abs() > dy.abs() && dx.abs() > 0.5 {
             // horizontal swipe: next/previous page
-            let big = self.shown.size().1 > 40.0;
-            let pages = self.pages();
-            let dir = if dx > 0.0 { 1 } else { -1 };
-            if big {
-                let current = self.page.or_else(|| page_of(self.shown));
-                self.page = face::cycle_page(&pages, current, dir);
+            if self.shown.size().1 > 40.0 {
+                self.cycle_page(if dx > 0.0 { 1 } else { -1 });
                 self.expand_until = now + 4000;
             }
             return vec![];
@@ -835,15 +849,29 @@ impl Island {
         vec![]
     }
 
-    fn pages(&self) -> Vec<Page> {
-        face::swipe_pages(
+    /// Moves to the next (1) or previous (-1) page in the dock's order, wrapping around.
+    pub(crate) fn cycle_page(&mut self, dir: i32) {
+        let pages = self.pages();
+        let current = self.page.or_else(|| page_of(self.shown));
+        self.page = face::cycle_page(&pages, current, dir);
+        self.hover_page = self.page;
+    }
+
+    /// The pages the dock shows and a swipe cycles through: the live activities first, then the fixed pages.
+    pub(crate) fn pages(&self) -> Vec<Page> {
+        let mut v = face::swipe_pages(
             self.data.media.is_some(),
             self.timer.is_some(),
             self.focus_active(),
             self.soon().is_some(),
             self.ops.op.is_some(),
             !self.history.is_empty(),
-        )
+        );
+        if self.cfg.clipboard_history {
+            v.push(Page::Clip);
+        }
+        v.push(Page::Settings);
+        v
     }
 
     fn soon(&self) -> Option<&calendar::Event> {
@@ -883,8 +911,19 @@ impl Island {
                 return vec![c];
             }
             Action::Back => {
-                self.page = None;
-                self.hover_page = None;
+                // back to the page that led here, else to whatever the island shows by default
+                let prev = loop {
+                    match self.page_stack.pop() {
+                        Some(p) if Some(p) == self.page => continue,
+                        other => break other,
+                    }
+                };
+                self.page = prev;
+                self.hover_page = prev;
+            }
+            Action::Goto(p) => {
+                self.page = Some(p);
+                self.hover_page = Some(p);
             }
             Action::TimerStart(s) => self.start_timer(s),
             Action::PomodoroStart => self.start_pomodoro(),
@@ -921,6 +960,12 @@ impl Island {
             Action::ReplyCancel => self.end_reply(false),
             Action::CyclePlayer => return vec![Command::MediaCyclePlayer],
             Action::Open(p) => {
+                if let Some(cur) = self.page.or_else(|| page_of(self.shown)).filter(|c| *c != p) {
+                    if self.page_stack.last() != Some(&cur) {
+                        self.page_stack.push(cur);
+                    }
+                    self.page_stack.truncate(8);
+                }
                 self.page = Some(p);
                 self.hover_page = Some(p);
                 if p == Page::Cal {
@@ -992,6 +1037,10 @@ impl Island {
             Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
             Face::MediaMini | Face::TimerMini | Face::MeetMini => w += self.icon_count(true) as f64 * ICON_W,
             _ => {}
+        }
+        if has_dock(face) {
+            h += DOCK_H;
+            w = w.max(self.pages().len() as f64 * 30.0 + 28.0);
         }
         (w, h)
     }
@@ -1217,6 +1266,15 @@ impl Island {
             self.cal = Cal { year: c.year, month: c.month, day: c.day };
         }
         if want != self.want {
+            // between two pages the content slides the way the page order goes
+            let pages = self.pages();
+            let idx = |f: Face| page_of(f).and_then(|p| pages.iter().position(|x| *x == p));
+            self.slide = match (idx(self.shown), idx(want)) {
+                (Some(a), Some(b)) if a != b => if b > a { 1.0 } else { -1.0 },
+                _ => 0.0,
+            };
+        }
+        if want != self.want {
             log::debug!("face {:?} -> {:?} (shown {:?}, notif {})", self.want, want, self.shown, self.notif.is_some());
         }
         self.want = want;
@@ -1334,7 +1392,12 @@ fn side_page(s: Side) -> Page {
     }
 }
 
-fn page_of(f: Face) -> Option<Page> {
+/// Faces that are pages: they carry the dock at the bottom.
+pub(crate) fn has_dock(f: Face) -> bool {
+    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings)
+}
+
+pub(crate) fn page_of(f: Face) -> Option<Page> {
     Some(match f {
         Face::MediaFull | Face::MediaLyric => Page::Media,
         Face::TimerFull => Page::Timer,
@@ -1345,6 +1408,9 @@ fn page_of(f: Face) -> Option<Page> {
         Face::Qs => Page::Qs,
         Face::Sys => Page::Sys,
         Face::Notifs => Page::Notifs,
+        Face::Clip => Page::Clip,
+        Face::Settings => Page::Settings,
+        Face::FocusFull => Page::Focus,
         _ => return None,
     })
 }
@@ -1868,5 +1934,97 @@ mod tests {
         i.expand_until = i.now + 5000;
         run(&mut i, 400);
         assert_eq!((i.cal.year, i.cal.month, i.cal.day), (c.year, c.month, c.day));
+    }
+
+    fn draw_frames(i: &mut Island, n: usize) -> (f64, f64) {
+        let f = fonts();
+        let mut surface = (0.0, 0.0);
+        for _ in 0..n {
+            let fr = i.tick(i.now + 8, 8.0);
+            let mut scene = Scene::new();
+            i.draw(&mut scene, &f, fr.surface, 1.0);
+            surface = fr.surface;
+        }
+        surface
+    }
+
+    #[test]
+    fn pages_carry_a_dock_that_jumps_straight_to_a_page() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenPage(Page::Qs));
+        draw_frames(&mut i, 200);
+        let gotos: Vec<Page> = i.hits.iter().filter_map(|h| if let Action::Goto(p) = h.action { Some(p) } else { None }).collect();
+        assert_eq!(gotos, vec![Page::Home, Page::Cal, Page::Qs, Page::Sys, Page::Clip, Page::Settings], "no media, timer or notifications yet");
+        let home = i.hits.iter().find(|h| h.action == Action::Goto(Page::Sys)).unwrap().rect;
+        i.pointer_down(i.now, home.center().x + i.pill_origin.0, home.center().y + i.pill_origin.1);
+        assert_eq!(i.page, Some(Page::Sys));
+        assert!(i.page_stack.is_empty(), "the dock does not add to the back history");
+        draw_frames(&mut i, 200);
+        assert_eq!(i.current_face(), Face::Sys);
+        // a card without a page has no dock
+        let mut j = Island::new(Config::default());
+        j.push(T0, Input::StartTimer(60));
+        j.push(j.now, Input::Notification(Incoming { id: 1, ..Default::default() }));
+        draw_frames(&mut j, 200);
+        assert!(!j.hits.iter().any(|h| matches!(h.action, Action::Goto(_))));
+    }
+
+    #[test]
+    fn the_dock_lists_live_activities_first_and_grows_the_face() {
+        let mut i = Island::new(Config::default());
+        i.data = data();
+        i.push(T0, Input::StartTimer(600));
+        assert_eq!(i.pages()[..2], [Page::Media, Page::Timer]);
+        assert_eq!(i.face_size(Face::Qs).1, 262.0 + DOCK_H, "room for the dock");
+        assert_eq!(i.face_size(Face::Idle).1, 28.0, "the compact pill has none");
+    }
+
+    #[test]
+    fn back_returns_to_the_page_that_led_here() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenPage(Page::Home));
+        i.activate(Action::Open(Page::Cal));
+        i.activate(Action::Open(Page::Settings));
+        assert_eq!(i.page, Some(Page::Settings));
+        i.activate(Action::Back);
+        assert_eq!(i.page, Some(Page::Cal));
+        i.activate(Action::Back);
+        assert_eq!(i.page, Some(Page::Home));
+        i.activate(Action::Back);
+        assert_eq!(i.page, None, "nothing left: the island goes back to what it shows by default");
+    }
+
+    #[test]
+    fn next_and_previous_page_wrap_and_the_content_slides_the_right_way() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenPage(Page::Home));
+        draw_frames(&mut i, 150);
+        i.push(i.now, Input::CyclePage(1));
+        assert_eq!(i.page, Some(Page::Cal));
+        i.tick(i.now + 8, 8.0);
+        assert_eq!(i.slide, 1.0, "forward slides in from the right");
+        draw_frames(&mut i, 150);
+        i.push(i.now, Input::CyclePage(-1));
+        i.push(i.now, Input::CyclePage(-1));
+        assert_eq!(i.page, Some(Page::Settings), "wraps around to the last page");
+        i.tick(i.now + 8, 8.0);
+        assert_eq!(i.slide, 1.0, "Cal -> Settings is still forward in the dock's order");
+        draw_frames(&mut i, 150);
+        i.push(i.now, Input::CyclePage(-1));
+        i.tick(i.now + 8, 8.0);
+        assert_eq!(i.slide, -1.0);
+    }
+
+    #[test]
+    fn tab_changes_page_in_keyboard_mode() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenKeyboard(Some(Page::Home)));
+        draw_frames(&mut i, 150);
+        i.push(i.now, Input::Key(KeyInput::NextPage));
+        assert_eq!(i.page, Some(Page::Cal));
+        i.push(i.now, Input::Key(KeyInput::PrevPage));
+        i.push(i.now, Input::Key(KeyInput::PrevPage));
+        assert_eq!(i.page, Some(Page::Settings));
+        assert_eq!(i.kb.unwrap().index, 0, "the focus ring starts again on the new page");
     }
 }

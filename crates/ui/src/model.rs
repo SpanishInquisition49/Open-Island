@@ -210,6 +210,9 @@ pub enum KeyInput {
     End,
     Up,
     Down,
+    /// Tab / Page Down: the next page; Shift+Tab / Page Up: the previous one.
+    NextPage,
+    PrevPage,
     Enter,
     Escape,
 }
@@ -255,6 +258,8 @@ pub enum Input {
     Peek,
     /// Do not disturb on/off, from a script (focus mode).
     SetDnd(bool),
+    /// The next (1) or previous (-1) page of the open island (shortcut, IPC).
+    CyclePage(i32),
     /// Open the island on a page (shortcut, IPC).
     OpenPage(island_core::face::Page),
 }

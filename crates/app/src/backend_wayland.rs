@@ -227,6 +227,8 @@ impl Wl {
             Keysym::Right => Some(KeyInput::Right),
             Keysym::Home => Some(KeyInput::Home),
             Keysym::End => Some(KeyInput::End),
+            Keysym::Tab | Keysym::Page_Down => Some(KeyInput::NextPage),
+            Keysym::ISO_Left_Tab | Keysym::Page_Up => Some(KeyInput::PrevPage),
             Keysym::Up => Some(KeyInput::Up),
             Keysym::Down => Some(KeyInput::Down),
             Keysym::Return | Keysym::KP_Enter => Some(KeyInput::Enter),

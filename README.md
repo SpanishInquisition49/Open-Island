@@ -72,10 +72,17 @@ notification sound. It writes the file below, keeping the keys it does not know,
 
 Weather needs a location: the island never guesses one and calls out to nothing you did not configure.
 
+## Moving between pages
+
+Every page carries a row of page icons at the bottom (media and timer first when active, then home, calendar, quick settings,
+system, clipboard, settings): click one to jump straight to it. A horizontal swipe, Tab / Shift+Tab (keyboard mode) and
+`open-island msg page next|prev` step through the same list, and the content slides the way the pages are ordered. The back arrow
+returns to the page that led there.
+
 ## Controlling it
 
 `open-island msg <event> [payload]`: `peek`, `open [page]` (keyboard navigation: arrows move a focus ring, Enter
-activates, Escape closes), `page <home|cal|qs|sys|notifs|media|timer|clip|focus>`, `dnd on|off`, `timer 25m`,
+activates, Tab / Shift+Tab change page, Escape closes), `page next|prev`, `page <home|cal|qs|sys|notifs|media|timer|clip|focus>`, `dnd on|off`, `timer 25m`,
 `pomodoro`, `stopwatch`, `timer-cancel`, `reply` (reply to the notification on screen: bind it to a key), and for long operations `progress <percent|?> <label>`,
 `progress-done [label]`, `progress-fail [label]`, `progress-clear`: a card for 3 s, then a `64%` bubble
 beside the pill, then a card again when it ends (red when it failed).

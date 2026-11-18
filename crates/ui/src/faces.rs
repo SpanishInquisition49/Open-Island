@@ -44,14 +44,20 @@ impl Island {
         // its content, clipped to the pill and crossfaded: the old face leaves, the new one scales in
         let op = self.content_opacity();
         let k = 0.94 + 0.06 * op as f64;
+        // a page change slides sideways (the way the pages are ordered); other changes rise a little
+        let (dx, dy) = if self.slide != 0.0 && has_dock(self.shown) { (self.slide * 22.0 * (1.0 - op as f64), 0.0) } else { (0.0, -3.0 * (1.0 - op as f64)) };
         let content_t = base
-            * Affine::translate((w / 2.0, h / 2.0 - 3.0 * (1.0 - op as f64)))
+            * Affine::translate((w / 2.0 + dx, h / 2.0 + dy))
             * Affine::scale(k)
             * Affine::translate((-w / 2.0, -h / 2.0));
         scene.push_clip_layer(Fill::NonZero, base, &RoundedRect::new(0.0, 0.0, w, h, radius));
         {
             let mut p = Painter { scene, fonts, hits: &mut hits, opacity: op, pointer, transform: content_t, base: (op, content_t), since_enter: self.now - self.enter_at };
-            self.draw_face(&mut p, self.shown, w, h);
+            let dock = if has_dock(self.shown) { DOCK_H } else { 0.0 };
+            self.draw_face(&mut p, self.shown, w, h - dock);
+            if dock > 0.0 {
+                self.draw_dock(&mut p, w, h);
+            }
         }
         // the keyboard focus ring
         if let Some(kb) = self.kb {
@@ -88,6 +94,30 @@ impl Island {
             self.draw_bubble(&mut p, side, BUBBLE_W, h);
         }
         self.hits = hits;
+    }
+
+    /// The row of page icons at the bottom of a page: a click goes straight to that page.
+    fn draw_dock(&self, p: P, w: f64, h: f64) {
+        p.stagger(9);
+        let pages = self.pages();
+        let current = self.page.or_else(|| page_of(self.shown));
+        let n = pages.len().max(1) as f64;
+        let step = ((w - 28.0) / n).min(38.0);
+        let x0 = (w - step * n) / 2.0;
+        let cy = h - DOCK_H / 2.0 - 1.0;
+        p.rrect(rect(14.0, h - DOCK_H, w - 28.0, 1.0), 0.5, with_alpha(theme::FG, 0.1));
+        for (i, pg) in pages.iter().enumerate() {
+            let cx = x0 + step * (i as f64 + 0.5);
+            let cell = rect(cx - step / 2.0 + 1.0, cy - 12.0, step - 2.0, 24.0);
+            let here = Some(*pg) == current;
+            if here {
+                p.rrect(cell, 12.0, theme::CHIP);
+            } else if p.hovered(cell) {
+                p.rrect(cell, 12.0, with_alpha(theme::FG, 0.08));
+            }
+            p.icon(page_icon(*pg), cx, cy, 14.0, if here { theme::FG } else if p.hovered(cell) { with_alpha(theme::FG, 0.8) } else { with_alpha(theme::FG, 0.45) });
+            p.hit(cell, Action::Goto(*pg));
+        }
     }
 
     fn pointer_local(&self) -> Option<(f64, f64)> {
@@ -978,6 +1008,23 @@ impl Island {
         p.icon(icon, x0 + 6.5, h / 2.0, 13.0, theme::ACCENT);
         p.text(&text, x0 + 17.0, h / 2.0, 12.0, SEMI, theme::FG, Align::Left, 50.0);
         p.hit(rect(0.0, 0.0, w, h), Action::Open(side_to_page(side)));
+    }
+}
+
+fn page_icon(p: Page) -> &'static str {
+    match p {
+        Page::Home => "home",
+        Page::Media => "music",
+        Page::Timer => "hourglass",
+        Page::Focus => "target",
+        Page::Meeting => "calendar-event",
+        Page::Op => "download",
+        Page::Cal => "calendar",
+        Page::Qs => "adjustments-horizontal",
+        Page::Sys => "cpu",
+        Page::Notifs => "bell",
+        Page::Clip => "clipboard-text",
+        Page::Settings => "settings",
     }
 }
 

@@ -72,7 +72,11 @@ fn parse(line: &str) -> Option<Input> {
         "pomodoro" => Input::StartPomodoro,
         "stopwatch" => Input::StartStopwatch,
         "timer-cancel" => Input::CancelTimer,
-        "page" => Input::OpenPage(page(payload)?),
+        "page" => match payload {
+            "next" => Input::CyclePage(1),
+            "prev" | "previous" => Input::CyclePage(-1),
+            p => Input::OpenPage(page(p)?),
+        },
         _ => return None,
     })
 }
@@ -127,6 +131,8 @@ mod tests {
         assert!(matches!(parse("progress 42 Copying"), Some(Input::Progress(p)) if p == "42 Copying"));
         assert!(matches!(parse("timer 25m"), Some(Input::StartTimer(1500))));
         assert!(matches!(parse("page cal"), Some(Input::OpenPage(_))));
+        assert!(matches!(parse("page next"), Some(Input::CyclePage(1))));
+        assert!(matches!(parse("page prev"), Some(Input::CyclePage(-1))));
         assert!(matches!(parse("open qs"), Some(Input::OpenKeyboard(Some(_)))));
         assert!(matches!(parse("open"), Some(Input::OpenKeyboard(None))));
         assert!(parse("open nowhere").is_none());
