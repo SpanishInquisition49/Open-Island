@@ -18,7 +18,7 @@ crates/app    window backends (Wayland layer-shell, winit), the OS services, the
 
 | | Linux (Wayland, wlr-layer-shell) | Linux (X11) / Windows / macOS (winit window) |
 |---|---|---|
-| island, springs, all faces, hover/click/scroll | yes | yes (built and type-checked; **not yet run** on Windows/macOS) |
+| island, springs, all faces, hover/click/scroll/keyboard | yes | yes (built and type-checked; **not yet run** on Windows/macOS) |
 | fractional scaling, click-through margin | yes | HiDPI through winit; click-through margin: no |
 | clock, timers, Pomodoro, stopwatch | yes | yes |
 | control socket (`open-island msg ...`) | yes | yes (named pipe on Windows) |
@@ -28,7 +28,10 @@ crates/app    window backends (Wayland layer-shell, winit), the OS services, the
 | volume / brightness OSD, battery, privacy dots | yes (wpctl, sysfs, pactl) | **not yet** |
 | hide under fullscreen windows | niri | **not yet** |
 
-The faces for clipboard history, focus mode and the update check of the Luau original are not ported yet.
+| quick settings (Wi-Fi, Bluetooth, DND, keep awake, power profile, outputs), system page | yes (nmcli, bluetoothctl, systemd-inhibit, pactl, /proc) | **not yet** |
+| clipboard history (wl-clipboard), focus mode (`~/.local/bin/focus`), real audio spectrum (parec) | yes | **not yet** |
+
+The update-check card of the Luau original is not ported (it was specific to Noctalia).
 Complex scripts (Arabic, Hindi, ...) are not shaped: text is laid out glyph by glyph.
 
 On X11 with the proprietary NVIDIA driver the window cannot be transparent (the driver offers no alpha
@@ -67,7 +70,8 @@ Weather needs a location: the island never guesses one and calls out to nothing 
 
 ## Controlling it
 
-`open-island msg <event> [payload]`: `peek`, `page <home|cal|qs|sys|notifs|media|timer>`, `timer 25m`,
+`open-island msg <event> [payload]`: `peek`, `open [page]` (keyboard navigation: arrows move a focus ring, Enter
+activates, Escape closes), `page <home|cal|qs|sys|notifs|media|timer|clip|focus>`, `dnd on|off`, `timer 25m`,
 `pomodoro`, `stopwatch`, `timer-cancel`, `reply` (reply to the notification on screen: bind it to a key), and for long operations `progress <percent|?> <label>`,
 `progress-done [label]`, `progress-fail [label]`, `progress-clear`: a card for 3 s, then a `64%` bubble
 beside the pill, then a card again when it ends (red when it failed).
