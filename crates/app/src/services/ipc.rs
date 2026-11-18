@@ -73,6 +73,7 @@ fn parse(line: &str) -> Option<Input> {
         }
         "peek" => Input::Peek,
         "reply" => Input::StartReply,
+        "bar" | "command" => Input::OpenBar,
         "open" => Input::OpenKeyboard(match payload {
             "" => None,
             p => Some(page(p)?),

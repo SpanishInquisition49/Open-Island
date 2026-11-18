@@ -256,6 +256,8 @@ pub enum Input {
     ProgressDone(String),
     ProgressFail(String),
     ProgressClear,
+    /// Open the command bar (from a shortcut).
+    OpenBar,
     /// A shell started a command: it becomes a progress pill when it runs longer than `after_secs`.
     CommandStart { id: String, label: String, after_secs: u32 },
     /// The shell command ended with this exit code.

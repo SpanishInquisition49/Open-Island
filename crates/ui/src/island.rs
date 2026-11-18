@@ -22,6 +22,7 @@ pub const BUBBLE_W: f64 = 66.0;
 pub const BUBBLE_GAP: f64 = 6.0;
 pub const ICON_W: f64 = 19.0;
 const REPLY_IDLE_MS: i64 = 20_000;
+const BAR_IDLE_MS: i64 = 30_000;
 const KB_IDLE_MS: i64 = 9_000;
 const EDIT_IDLE_MS: i64 = 40_000;
 const LYRIC_LEAD_MS: f64 = 250.0;
@@ -153,6 +154,21 @@ pub struct Reply {
     pub until: i64,
 }
 
+/// The command bar being typed in.
+#[derive(Clone, Debug, Default)]
+pub struct Bar {
+    pub text: String,
+    pub cursor: usize,
+    pub until: i64,
+}
+
+/// A reminder set from the command bar.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reminder {
+    pub due_ms: i64,
+    pub text: String,
+}
+
 /// A setting being edited in the settings menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
@@ -280,6 +296,9 @@ pub struct Island {
     pub(crate) notif: Option<Incoming>,
     notif_until: i64,
     pub(crate) reply: Option<Reply>,
+    pub(crate) bar: Option<Bar>,
+    pub(crate) reminders: Vec<Reminder>,
+    next_own_id: u32,
     /// Keyboard navigation: the focused control among the drawn ones.
     pub(crate) kb: Option<Kb>,
     /// Pages opened from other pages, for the back button.
@@ -365,6 +384,9 @@ impl Island {
             notif: None,
             notif_until: 0,
             reply: None,
+            bar: None,
+            reminders: vec![],
+            next_own_id: 3_000_000,
             kb: None,
             page_stack: vec![],
             slide: 0.0,
@@ -435,6 +457,7 @@ impl Island {
             }
             Input::Key(k) => self.on_key(k),
             Input::StartReply => self.start_reply(),
+            Input::OpenBar => self.bar = Some(Bar { until: now + BAR_IDLE_MS, ..Default::default() }),
             Input::Click(x, y) => {
                 let cmds = self.pointer_down(now, x, y);
                 self.pending.extend(cmds);
@@ -596,10 +619,91 @@ impl Island {
         }
     }
 
+    /// A message from the island itself (a confirmation, a copied result).
+    fn say(&mut self, summary: &str, body: &str) {
+        self.next_own_id += 1;
+        let id = self.next_own_id;
+        let n = Incoming { id, app: "open-island".into(), summary: summary.into(), body: body.into(), expire_ms: Some(3000), ..Default::default() };
+        self.push(self.now, Input::Notification(n));
+    }
+
+    pub(crate) fn bar_cmd(&self) -> Option<island_core::bar::Cmd> {
+        let b = self.bar.as_ref()?;
+        let local = (self.now / 1000 + self.data.utc_offset_secs as i64).rem_euclid(86_400);
+        island_core::bar::parse(&b.text, local)
+    }
+
+    fn bar_key(&mut self, k: KeyInput) {
+        let now = self.now;
+        let Some(b) = self.bar.as_mut() else { return };
+        b.until = now + BAR_IDLE_MS;
+        if edit_text(&mut b.text, &mut b.cursor, &k) {
+            return;
+        }
+        match k {
+            KeyInput::Escape => self.bar = None,
+            KeyInput::Enter => {
+                // nothing understood: the bar stays, its preview line says so
+                if let Some(c) = self.bar_cmd() {
+                    self.bar = None;
+                    self.run_bar(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn run_bar(&mut self, c: island_core::bar::Cmd) {
+        use island_core::bar::Cmd;
+        let now = self.now;
+        match c {
+            Cmd::Timer { secs } => self.start_timer(secs),
+            Cmd::Pomodoro => self.start_pomodoro(),
+            Cmd::Stopwatch => self.push(now, Input::StartStopwatch),
+            Cmd::Dnd(on) => self.pending.push(Command::SetDnd(on)),
+            Cmd::Focus { minutes } => self.pending.push(Command::StartFocus(minutes)),
+            Cmd::Remind { secs, text } => {
+                self.reminders.push(Reminder { due_ms: now + secs * 1000, text: text.clone() });
+                self.reminders.sort_by_key(|r| r.due_ms);
+                self.reminders.truncate(50);
+                self.say("Reminder set", &format!("in {} · {text}", island_core::duration::fmt_took(secs * 1000).replace(' ', "")));
+            }
+            Cmd::Value(v) => {
+                let copy = v.rsplit_once(" = ").map_or(v.clone(), |(_, r)| r.to_string());
+                self.pending.push(Command::RestoreClipboard(copy.clone()));
+                self.say("Copied", &copy);
+            }
+        }
+    }
+
+    /// Reminders that are due become notifications.
+    fn fire_reminders(&mut self, now: i64) {
+        while self.reminders.first().is_some_and(|r| r.due_ms <= now) {
+            let r = self.reminders.remove(0);
+            self.next_own_id += 1;
+            let n = Incoming { id: self.next_own_id, app: "Reminder".into(), summary: r.text, body: String::new(), expire_ms: Some(15_000), ..Default::default() };
+            self.pending.push(Command::PlaySound);
+            self.push(now, Input::Notification(n));
+        }
+    }
+
+    pub fn reminders(&self) -> &[Reminder] {
+        &self.reminders
+    }
+
+    pub fn restore_reminders(&mut self, r: Vec<Reminder>) {
+        self.reminders = r;
+        self.reminders.truncate(50);
+    }
+
     fn on_key(&mut self, k: KeyInput) {
         let now = self.now;
         if self.edit.is_some() {
             self.edit_key(k);
+            return;
+        }
+        if self.bar.is_some() {
+            self.bar_key(k);
             return;
         }
         if self.reply.is_none() {
@@ -768,7 +872,7 @@ impl Island {
     }
 
     pub fn wants_keyboard(&self) -> bool {
-        self.reply.is_some() || self.kb.is_some() || self.edit.is_some()
+        self.reply.is_some() || self.kb.is_some() || self.edit.is_some() || self.bar.is_some()
     }
 
     fn start_timer(&mut self, secs: u64) {
@@ -1291,6 +1395,7 @@ impl Island {
         let media = self.data.media.as_ref().is_some_and(|m| !m.title.is_empty());
         let notif = self.notif.as_ref().map(|n| if n.actions.is_empty() { NotifFace::Plain } else { NotifFace::Actions });
         let snap = Snapshot {
+            barring: self.bar.is_some(),
             replying: self.reply.is_some(),
             osd: self.osd.is_some() && now < self.osd_until,
             notif,
@@ -1384,6 +1489,10 @@ impl Island {
         self.now = now;
         self.ops.expire(now);
         self.shell_commands(now);
+        self.fire_reminders(now);
+        if self.bar.as_ref().is_some_and(|b| now > b.until) {
+            self.bar = None;
+        }
         self.slow_checks();
         self.sync_lyrics();
         // notifications: expiry and the next waiting one
@@ -1523,7 +1632,7 @@ impl Island {
         let waiting_for_hover = (self.hovering && now - self.hover_since < HOVER_INTENT_MS + 60) || now < self.hover_left + HOVER_GRACE_MS + 60;
         let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover;
         let equalizer = self.data.media.as_ref().is_some_and(|m| m.playing) && matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric);
-        let expiring = snap.osd || snap.notif.is_some() || snap.timer_done || snap.power || snap.meeting || snap.rain || snap.op_flash || self.edit.is_some() || self.reply.is_some() || self.kb.is_some();
+        let expiring = snap.osd || snap.notif.is_some() || snap.timer_done || snap.power || snap.meeting || snap.rain || snap.op_flash || self.edit.is_some() || self.reply.is_some() || self.kb.is_some() || self.bar.is_some();
         let next_ms: u32 = if moving {
             0
         } else if equalizer {
@@ -1993,6 +2102,83 @@ mod tests {
             i.draw(&mut scene, &f, fr.surface, 2.0);
         }
         assert_eq!(i.current_face(), Face::Reply);
+    }
+
+    fn type_line(i: &mut Island, text: &str) {
+        i.push(i.now, Input::Key(KeyInput::Text(text.into())));
+    }
+
+    #[test]
+    fn the_command_bar_starts_a_timer() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenBar);
+        run(&mut i, 600);
+        assert_eq!(i.current_face(), Face::Bar);
+        assert!(i.wants_keyboard());
+        type_line(&mut i, "10m tea");
+        assert!(matches!(i.bar_cmd(), Some(island_core::bar::Cmd::Timer { secs: 600 })));
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert!(i.bar.is_none() && i.timer.is_some(), "the bar closes and the timer runs");
+        assert!(!i.wants_keyboard());
+    }
+
+    #[test]
+    fn the_command_bar_stays_open_on_what_it_does_not_understand_and_escape_closes_it() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenBar);
+        type_line(&mut i, "blah blah");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert!(i.bar.is_some(), "nothing happened, the preview says why");
+        assert!(i.timer.is_none() && i.take_commands().is_empty());
+        i.push(i.now, Input::Key(KeyInput::Escape));
+        assert!(i.bar.is_none());
+        i.push(i.now, Input::OpenBar);
+        run(&mut i, 31_000);
+        assert!(i.bar.is_none(), "an idle bar closes itself");
+    }
+
+    #[test]
+    fn a_sum_is_copied_to_the_clipboard() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenBar);
+        type_line(&mut i, "5 km in mi");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert!(i.take_commands().contains(&Command::RestoreClipboard("3.106855961 mi".into())), "the result with its unit, not the whole line");
+        i.push(T0, Input::OpenBar);
+        type_line(&mut i, "12*7");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert!(i.take_commands().contains(&Command::RestoreClipboard("84".into())));
+    }
+
+    #[test]
+    fn a_reminder_comes_back_as_a_notification_and_survives_a_restart() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenBar);
+        type_line(&mut i, "remind 2m Call Anna");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert_eq!(i.reminders().len(), 1);
+        let saved = i.reminders().to_vec();
+        run(&mut i, 5000);
+        assert_eq!(i.reminders().len(), 1, "not yet");
+        // a new run of the app reads it back
+        let mut j = Island::new(Config::default());
+        j.restore_reminders(saved);
+        run(&mut j, 130_000);
+        assert!(j.reminders().is_empty(), "it fired");
+        assert!(j.history.iter().any(|(n, _)| n.summary == "Call Anna" && n.app == "Reminder"));
+    }
+
+    #[test]
+    fn the_do_not_disturb_and_focus_words_reach_the_platform() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenBar);
+        type_line(&mut i, "dnd on");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert!(i.take_commands().contains(&Command::SetDnd(true)));
+        i.push(T0, Input::OpenBar);
+        type_line(&mut i, "focus 45");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert!(i.take_commands().contains(&Command::StartFocus(45)));
     }
 
     #[test]

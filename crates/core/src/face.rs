@@ -28,6 +28,7 @@ pub enum Face {
     Notif,
     NotifAct,
     Reply,
+    Bar,
 }
 
 impl Face {
@@ -61,6 +62,7 @@ impl Face {
             Notif => (410.0, 82.0),
             NotifAct => (410.0, 150.0),
             Reply => (430.0, 168.0),
+            Bar => (430.0, 92.0),
         }
     }
 
@@ -105,6 +107,7 @@ pub enum NotifFace {
 /// Snapshot of the state the choice depends on.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Snapshot {
+    pub barring: bool,
     pub replying: bool,
     pub osd: bool,
     pub notif: Option<NotifFaceOpt>,
@@ -131,6 +134,9 @@ pub type NotifFaceOpt = NotifFace;
 /// activity for the side bubble. Hovering the side bubble opens that activity: the caller sets `page`.
 pub fn choose(s: &Snapshot) -> (Face, Option<Side>) {
     use Face::*;
+    if s.barring {
+        return (Bar, None);
+    }
     if s.replying {
         return (Reply, None);
     }

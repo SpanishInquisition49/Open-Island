@@ -173,6 +173,28 @@ pub fn save_dnd(on: bool) {
     }
 }
 
+/// The reminders set from the command bar, kept between runs.
+pub fn load_reminders() -> Vec<island_ui::island::Reminder> {
+    let Some(text) = state_file("reminders.json").and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(&text) else { return vec![] };
+    items.iter().filter_map(|v| Some(island_ui::island::Reminder { due_ms: v.get("due")?.as_i64()?, text: v.get("text")?.as_str()?.to_string() })).collect()
+}
+
+pub fn save_reminders_if_changed(reminders: &[island_ui::island::Reminder]) {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<Vec<island_ui::island::Reminder>>> = Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return };
+    if last.as_deref() == Some(reminders) || (last.is_none() && reminders.is_empty()) {
+        return;
+    }
+    *last = Some(reminders.to_vec());
+    let Some(p) = state_file("reminders.json") else { return };
+    let items: Vec<serde_json::Value> = reminders.iter().map(|r| serde_json::json!({"due": r.due_ms, "text": r.text})).collect();
+    if let Ok(text) = serde_json::to_string(&items) {
+        let _ = std::fs::write(p, text);
+    }
+}
+
 /// The notification history, kept between runs: (id, app, summary, body, epoch ms). Pictures are not kept.
 pub fn load_history() -> Vec<(island_ui::model::Incoming, i64)> {
     let Some(text) = state_file("notification-history.json").and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };

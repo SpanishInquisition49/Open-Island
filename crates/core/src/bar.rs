@@ -78,7 +78,7 @@ pub fn parse(line: &str, local_secs: i64) -> Option<Cmd> {
                 if matches!(rest.first(), Some(&("me" | "mi"))) {
                     rest = &rest[1..];
                 }
-                if matches!(rest.first(), Some(&("in" | "tra" | "fra" | "at" | "alle" | "to" | "di"))) && rest.get(1).is_some_and(|w| delay_or_clock(&rest[1..], local_secs).is_some()) {
+                if matches!(rest.first(), Some(&("in" | "tra" | "fra" | "at" | "alle" | "to" | "di"))) && rest.get(1).is_some_and(|_| delay_or_clock(&rest[1..], local_secs).is_some()) {
                     rest = &rest[1..];
                 }
             }

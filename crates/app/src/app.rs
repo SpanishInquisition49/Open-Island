@@ -66,6 +66,7 @@ impl App {
         let now = Instant::now();
         let mut island = Island::new(Config::default());
         island.restore_announced(services::load_announced());
+        island.restore_reminders(services::load_reminders());
         if crate::config::load().persist_history {
             island.restore_history(services::load_history());
         }
@@ -122,6 +123,7 @@ impl App {
                 services::QUICK_WANTED.store(false, Ordering::Relaxed);
             }
         }
+        services::save_reminders_if_changed(self.island.reminders());
         let keys = self.island.announced_keys();
         services::save_announced_if_changed(&keys);
         if self.persist_history {

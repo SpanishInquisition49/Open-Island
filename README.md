@@ -155,3 +155,15 @@ A command that runs longer than 10 seconds becomes a progress pill with its name
 long it took, or red with its exit code. Editors, pagers, `ssh`, `top`, REPLs and similar are skipped. Set
 `OPEN_ISLAND_HOOK_SECONDS=30` to change the threshold and `OPEN_ISLAND_HOOK_IGNORE="make,go"` to skip more programs.
 A shell that is closed mid-command takes its pill with it.
+
+## The command bar
+
+Bind `open-island msg bar` to a key (niri: `Mod+Space { spawn "open-island" "msg" "bar"; }`). Type, Enter runs it, Esc closes:
+
+| type | does |
+|---|---|
+| `10m tea`, `1h30m`, `timer 25` | a timer |
+| `remind 20m call mom`, `in 2h x`, `ricordami tra 10m …`, `remind 15:30 …` | a reminder (a notification when due; kept across restarts) |
+| `pomodoro`, `stopwatch`, `focus 45`, `dnd on` / `dnd off` | the matching mode |
+| `12*7+3`, `sqrt(2)`, `2^10`, `(1+2)*3` | a sum; Enter copies the result |
+| `5 km in mi`, `70 f to c`, `1 gib to mb` | a conversion (length, mass, volume, speed, data, temperature); Enter copies it |

@@ -21,6 +21,7 @@ fn usage() {
   open-island autostart on|off|status     start with the session
   open-island doctor                      what works on this machine, what is missing
   open-island --version\n\nEVENTS (for msg):\n  peek | open [page] | reply | dnd <on|off> | page <home|cal|qs|sys|notifs|media|timer|clip> | timer <25m> | pomodoro | stopwatch | timer-cancel\n  refresh (read the calendars now) | font <family|file> | calendar add <url> | calendar remove <n> | sound <file>   (settings, same as the menu)
+  bar                                     open the command bar (bind it to a key): 10m tea, remind 20m ..., 12*7, 5 km in mi
   progress run [-l label] -- command...   (shows a command's progress)
   hook <zsh|bash|fish>                   a pill for every long shell command (eval $(open-island hook zsh))
   progress <percent|?> <label> | progress-done [label] | progress-fail [label] | progress-clear\n\nCONFIG: {}",

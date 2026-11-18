@@ -149,6 +149,7 @@ impl Island {
             Face::TimerDone => self.face_simple(p, w, h, "bell-ringing", theme::ACCENT, &self.timer_done_text.0, &self.timer_done_text.1),
             Face::Notif | Face::NotifAct => self.face_notif(p, w, h, face == Face::NotifAct),
             Face::Reply => self.face_reply(p, w, h),
+            Face::Bar => self.face_bar(p, w, h),
             Face::Osd => self.face_osd(p, w, h),
             Face::Power => self.face_power(p, w, h),
             Face::Progress => self.face_progress(p, w, h),
@@ -474,6 +475,32 @@ impl Island {
         let (cw, sw) = (p.button_width("Cancel"), p.button_width("Send"));
         p.button(rect(w - 20.0 - sw, h - 14.0 - 30.0, sw, 30.0), "Send", Action::ReplySend);
         p.button(rect(w - 20.0 - sw - 8.0 - cw, h - 14.0 - 30.0, cw, 30.0), "Cancel", Action::ReplyCancel);
+    }
+
+    fn face_bar(&self, p: P, w: f64, h: f64) {
+        let Some(b) = &self.bar else { return };
+        let field = rect(16.0, 14.0, w - 32.0, 38.0);
+        p.rrect(field, 12.0, theme::CHIP);
+        p.rrect_stroke(field, 12.0, 1.0, theme::TRACK);
+        p.icon("terminal-2", field.x0 + 20.0, field.center().y, 16.0, theme::DIM);
+        let tx = field.x0 + 38.0;
+        let inner = (field.width() - 50.0) as f32;
+        if b.text.is_empty() {
+            p.text("10m tea · remind 20m … · 12*7 · 5 km in mi", tx, field.center().y, 13.0, REG, theme::DIM, Align::Left, inner);
+        } else {
+            p.text(&b.text, tx, field.center().y, 14.0, REG, theme::FG, Align::Left, inner);
+        }
+        if (self.now / 530) % 2 == 0 {
+            let before: String = b.text.chars().take(b.cursor).collect();
+            let cx = tx + p.fonts.measure(&before, 14.0, REG).min(inner) as f64;
+            p.rrect(rect(cx, field.center().y - 8.0, 1.5, 16.0), 0.75, theme::FG);
+        }
+        let (line, color) = match (self.bar_cmd(), b.text.trim().is_empty()) {
+            (Some(c), _) => (island_core::bar::preview(&c), theme::FG),
+            (None, true) => ("Enter runs it · Esc closes".to_string(), theme::DIM),
+            (None, false) => ("Not understood".to_string(), theme::DIM),
+        };
+        p.text(&line, 24.0, h - 20.0, 12.0, SEMI, color, Align::Left, (w - 48.0) as f32);
     }
 
     fn face_osd(&self, p: P, w: f64, h: f64) {
