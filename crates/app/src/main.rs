@@ -2,6 +2,8 @@
 
 mod app;
 mod backend_winit;
+#[cfg(target_os = "linux")]
+mod backend_wayland;
 mod config;
 mod gpu;
 mod services;
@@ -37,6 +39,19 @@ fn main() {
 }
 
 fn run(backend: Option<&str>) {
+    #[cfg(target_os = "linux")]
+    {
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        match backend {
+            Some("winit") => return backend_winit::run(),
+            Some("wayland") => return backend_wayland::run().unwrap_or_else(|e| fail(&e)),
+            _ if wayland => match backend_wayland::run() {
+                Ok(()) => return,
+                Err(e) => log::warn!("layer-shell backend unavailable ({e}); falling back to a plain window"),
+            },
+            _ => {}
+        }
+    }
     let _ = backend;
     backend_winit::run();
 }
