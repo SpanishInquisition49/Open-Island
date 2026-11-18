@@ -129,6 +129,28 @@ impl<A: Clone> Painter<'_, A> {
         self.hits.push(Hit { rect: r, action });
     }
 
+    /// A toggle chip: filled white when on, dim when off.
+    pub fn chip(&mut self, r: Rect, icon: &str, label: &str, on: bool, action: A) {
+        let hot = self.hovered(r);
+        let (fill, fg) = if on {
+            (if hot { theme::HOT_ACCENT } else { theme::ACCENT }, theme::ON_ACCENT)
+        } else {
+            (if hot { theme::HOT_CHIP } else { theme::CHIP }, theme::FG)
+        };
+        self.rrect(r, 12.0, fill);
+        self.icon(icon, r.x0 + 18.0, r.center().y, 16.0, fg);
+        self.text(label, r.x0 + 32.0, r.center().y, 12.0, Weight::Semibold, fg, Align::Left, (r.width() - 40.0) as f32);
+        self.hits.push(Hit { rect: r, action });
+    }
+
+    /// A slider: track, fill and a round thumb (value 0..=1).
+    pub fn slider(&mut self, r: Rect, value: f64, action: A) {
+        self.bar(r, value, theme::FG, theme::TRACK);
+        let x = r.x0 + (r.width() - r.height()) * value.clamp(0.0, 1.0) + r.height() / 2.0;
+        self.circle(x, r.center().y, r.height() * 0.9, theme::FG);
+        self.hits.push(Hit { rect: Rect::new(r.x0 - 6.0, r.y0 - 9.0, r.x1 + 6.0, r.y1 + 9.0), action });
+    }
+
     pub fn hit(&mut self, rect: Rect, action: A) {
         self.hits.push(Hit { rect, action });
     }

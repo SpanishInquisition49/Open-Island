@@ -8,6 +8,7 @@ pub const DIM: Color = Color::from_rgba8(255, 255, 255, 0x99);
 pub const TRACK: Color = Color::from_rgba8(255, 255, 255, 0x33);
 pub const CHIP: Color = Color::from_rgba8(255, 255, 255, 0x1f);
 pub const HOT_CHIP: Color = Color::from_rgba8(255, 255, 255, 0x3d);
+pub const HOT_ACCENT: Color = Color::from_rgba8(255, 255, 255, 0xd9);
 pub const ACCENT: Color = Color::from_rgba8(255, 255, 255, 255);
 pub const ON_ACCENT: Color = Color::from_rgba8(0, 0, 0, 255);
 /// macOS systemRed / systemOrange / systemGreen (dark appearance).

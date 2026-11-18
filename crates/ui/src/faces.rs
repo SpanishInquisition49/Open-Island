@@ -492,20 +492,24 @@ impl Island {
         }
     }
 
-    fn page_header(&self, p: P, w: f64, title: &str) {
-        p.text(title, 20.0, 28.0 + 12.0, 15.0, SEMI, theme::FG, Align::Left, (w - 120.0) as f32);
+    /// The header of a page: a back button and the title; returns the vertical centre of the header.
+    fn page_header(&self, p: P, w: f64, title: &str) -> f64 {
+        let cy = 14.0 + 17.0;
+        p.icon_button(14.0 + 14.0, cy, 28.0, "arrow-left", 15.0, Action::Back);
+        p.text(title, 14.0 + 28.0 + 8.0, cy, 14.0, SEMI, theme::FG, Align::Left, (w - 160.0) as f32);
+        cy
     }
 
     fn face_cal(&self, p: P, w: f64, h: f64) {
         let c = &self.cal;
-        let title = format!("{} {}", clock::MONTHS[c.month as usize - 1], c.year);
-        self.page_header(p, w, &title);
-        p.icon_button(w - 70.0, 40.0, 28.0, "player-skip-back", 14.0, Action::CalPrev);
-        p.icon_button(w - 34.0, 40.0, 28.0, "player-skip-forward", 14.0, Action::CalNext);
-        let colw = (w - 40.0) / 7.0;
-        let top = 28.0 + 34.0 + 6.0;
+        let hy = self.page_header(p, w, &format!("{} {}", clock::MONTHS[c.month as usize - 1], c.year));
+        p.icon_button(w - 14.0 - 14.0 - 60.0, hy, 28.0, "chevron-left", 16.0, Action::CalPrev);
+        p.icon_button(w - 14.0 - 14.0 - 30.0, hy, 28.0, "calendar-event", 15.0, Action::CalToday);
+        p.icon_button(w - 14.0 - 14.0, hy, 28.0, "chevron-right", 16.0, Action::CalNext);
+        let colw = (w - 28.0) / 7.0;
+        let top = 14.0 + 34.0 + 4.0;
         for (i, d) in ["M", "T", "W", "T", "F", "S", "S"].iter().enumerate() {
-            p.text(d, 20.0 + colw * (i as f64 + 0.5), top + 8.0, 10.0, SEMI, theme::DIM, Align::Center, 20.0);
+            p.text(d, 14.0 + colw * (i as f64 + 0.5), top + 8.0, 10.0, REG, theme::DIM, Align::Center, 20.0);
         }
         let today = clock::civil(self.now, self.data.utc_offset_secs);
         let grid = calendar::month_grid(c.year, c.month);
@@ -513,103 +517,219 @@ impl Island {
         for (r, row) in grid.iter().enumerate() {
             for (i, d) in row.iter().enumerate() {
                 let Some(d) = d else { continue };
-                let cx = 20.0 + colw * (i as f64 + 0.5);
-                let cy = top + 16.0 + r as f64 * 30.0 + 15.0;
+                let cx = 14.0 + colw * (i as f64 + 0.5);
+                let cy = top + 16.0 + r as f64 * 30.0 + 14.0;
+                let cell = rect(cx - colw / 2.0 + 1.0, cy - 14.0, colw - 2.0, 28.0);
                 let is_today = (c.year, c.month, *d) == (today.year, today.month, today.day);
                 let selected = *d == c.day;
-                if is_today {
-                    p.circle(cx, cy, 12.0, theme::FG);
-                } else if selected {
-                    p.circle(cx, cy, 12.0, theme::HOT_CHIP);
+                if selected {
+                    p.rrect(cell, 10.0, theme::ACCENT);
+                } else if p.hovered(cell) {
+                    p.rrect(cell, 10.0, theme::HOT_CHIP);
                 }
-                p.text(&d.to_string(), cx, cy, 12.0, if is_today { SEMI } else { REG }, if is_today { theme::ON_ACCENT } else { theme::FG }, Align::Center, 24.0);
-                if marks.get(*d as usize).copied().unwrap_or(false) && !is_today {
-                    p.circle(cx, cy + 10.0, 1.8, theme::ORANGE);
+                let fg = if selected { theme::ON_ACCENT } else { theme::FG };
+                let dy = if marks.get(*d as usize).copied().flatten().is_some() { -3.0 } else { 0.0 };
+                p.text(&d.to_string(), cx, cy + dy, 12.0, if is_today || selected { SEMI } else { REG }, fg, Align::Center, 24.0);
+                if let Some(Some(col)) = marks.get(*d as usize) {
+                    p.circle(cx, cy + 9.0, 2.0, if selected { theme::ON_ACCENT } else { *col });
                 }
-                p.hit(rect(cx - colw / 2.0, cy - 15.0, colw, 30.0), Action::CalDay(*d));
+                p.hit(cell, Action::CalDay(*d));
             }
         }
-        let mut y = top + 16.0 + grid.len() as f64 * 30.0 + 10.0 + 12.0;
+        let mut y = top + 16.0 + grid.len() as f64 * 30.0 + 10.0 + 11.0;
         let evs = self.day_events();
         if evs.is_empty() {
-            p.text("No events", 20.0, y, 12.0, REG, theme::DIM, Align::Left, 200.0);
+            p.text(if self.data.events.is_empty() { "Calendar not synced yet" } else { "No events" }, 14.0, y, 12.0, REG, theme::DIM, Align::Left, 300.0);
         }
         let off = self.data.utc_offset_secs;
         for e in evs.iter().take(4) {
-            let when = if e.all_day { "all day".to_string() } else { clock::civil(e.start_ms, off).hhmm() };
-            let dot = e.color.map(theme::rgb).unwrap_or(theme::ORANGE);
-            p.circle(26.0, y, 3.0, dot);
-            p.text(&when, 38.0, y, 11.0, REG, theme::DIM, Align::Left, 60.0);
-            p.text(&e.title, 100.0, y, 12.0, SEMI, theme::FG, Align::Left, (w - 120.0) as f32);
+            let when = if e.all_day { "All day".to_string() } else { clock::civil(e.start_ms, off).hhmm() };
+            let row = rect(8.0, y - 11.0, w - 16.0, 22.0);
+            let has_url = e.url.as_deref().is_some_and(|u| !u.is_empty());
+            if has_url && p.hovered(row) {
+                p.rrect(row, 8.0, theme::CHIP);
+            }
+            p.rrect(rect(16.0, y - 8.0, 3.0, 16.0), 1.5, e.color.map(|c| theme::rgb(color::readable_tint(c, true))).unwrap_or(theme::ACCENT));
+            p.text(&when, 28.0, y, 11.0, REG, theme::DIM, Align::Left, 44.0);
+            p.text(&e.title, 76.0, y, 12.0, SEMI, theme::FG, Align::Left, (w - 76.0 - 40.0) as f32);
+            if has_url {
+                p.icon("external-link", w - 26.0, y, 13.0, theme::DIM);
+                p.hit(row, Action::Join(e.url.clone().unwrap_or_default()));
+            }
             y += 24.0;
         }
         let _ = h;
     }
 
-    /// Days (index = day of month) of the shown month that have an event.
-    fn month_marks(&self) -> Vec<bool> {
+    /// Days (index = day of month) of the shown month that have an event, with the first event's colour.
+    fn month_marks(&self) -> Vec<Option<Color>> {
         let c = &self.cal;
         let off = self.data.utc_offset_secs;
         let days = calendar::days_in_month(c.year, c.month);
-        let mut marks = vec![false; days as usize + 2];
+        let mut marks = vec![None; days as usize + 2];
         for d in 1..=days {
             let (s, e) = (clock::midnight_ms(c.year, c.month, d, off), clock::midnight_ms(c.year, c.month, d + 1, off));
-            marks[d as usize] = self.data.events.iter().any(|ev| ev.start_ms < e && ev.end_ms > s);
+            if let Some(ev) = self.data.events.iter().find(|ev| ev.start_ms < e && ev.end_ms > s) {
+                marks[d as usize] = Some(ev.color.map(|c| theme::rgb(color::readable_tint(c, true))).unwrap_or(theme::ORANGE));
+            }
         }
         marks
     }
 
     fn slider_row(&self, p: P, w: f64, cy: f64, icon: &str, value: Option<f32>, action: Action) {
-        p.icon(icon, 34.0, cy, 18.0, theme::FG);
-        let bar = rect(54.0, cy - 5.0, w - 54.0 - 24.0, 10.0);
-        p.bar(bar, value.unwrap_or(0.0) as f64, theme::FG, theme::TRACK);
-        p.hit(rect(bar.x0 - 4.0, bar.y0 - 8.0, bar.width() + 8.0, 26.0), action);
+        p.icon(icon, 14.0 + 8.0, cy, 16.0, theme::FG);
+        let bar = rect(14.0 + 26.0, cy - 3.0, w - 14.0 - 26.0 - 14.0 - 44.0, 6.0);
+        p.slider(bar, value.unwrap_or(0.0) as f64, action);
+        let t = value.map_or("–".to_string(), |v| format!("{}%", (v * 100.0).round() as i32));
+        p.text(&t, w - 14.0, cy, 11.0, REG, theme::DIM, Align::Right, 40.0);
     }
 
     fn face_qs(&self, p: P, w: f64, _h: f64) {
         self.page_header(p, w, "Quick settings");
-        let muted_icon = if self.data.muted { "volume-3" } else { "volume" };
-        self.slider_row(p, w, 78.0, muted_icon, self.data.volume, Action::VolumeBar);
-        self.slider_row(p, w, 112.0, "sun-high", self.data.brightness, Action::BrightnessBar);
-        let dnd = if self.data.dnd { "Do Not Disturb: on" } else { "Do Not Disturb" };
-        let mute = if self.data.muted { "Unmute" } else { "Mute" };
-        self.button_row(p, &[(dnd, Action::ToggleDnd), (mute, Action::Cmd(Command::ToggleMute))], w / 2.0, 156.0);
+        let d = &self.data;
+        let cw = (w - 28.0 - 16.0) / 3.0;
+        let chip = |p: P, row: usize, col: usize, icon: &str, label: &str, on: bool, a: Action| {
+            let y = 14.0 + 34.0 + 8.0 + row as f64 * 44.0;
+            p.chip(rect(14.0 + col as f64 * (cw + 8.0), y, cw, 36.0), icon, label, on, a);
+        };
+        chip(p, 0, 0, if d.wifi == Some(false) { "wifi-off" } else { "wifi" }, "Wi-Fi", d.wifi == Some(true), Action::Cmd(Command::ToggleWifi));
+        chip(p, 0, 1, if d.bluetooth == Some(false) { "bluetooth-off" } else { "bluetooth" }, "Bluetooth", d.bluetooth == Some(true), Action::Cmd(Command::ToggleBluetooth));
+        chip(p, 0, 2, "bell-off", "DND", d.dnd, Action::ToggleDnd);
+        let profile = d.profile.as_deref().unwrap_or("");
+        let plabel = if profile.is_empty() { "Profile".to_string() } else { profile[..1].to_uppercase() + &profile[1..] };
+        let picon = match profile {
+            "performance" => "bolt",
+            "powersave" => "leaf",
+            _ => "gauge",
+        };
+        chip(p, 1, 0, "coffee", "Keep awake", d.keep_awake, Action::Cmd(Command::ToggleKeepAwake));
+        chip(p, 1, 1, picon, &plabel, profile == "performance", Action::Cmd(Command::NextProfile));
+        let sy = 14.0 + 34.0 + 8.0 + 2.0 * 44.0 + 14.0;
+        self.slider_row(p, w, sy, if d.muted { "volume-3" } else { "volume" }, d.volume, Action::VolumeBar);
+        self.slider_row(p, w, sy + 36.0, "brightness-half", d.brightness, Action::BrightnessBar);
+        let out = d.sinks.iter().find(|s| Some(&s.name) == d.sink.as_ref());
+        let headphones = out.is_some_and(|s| s.name.contains("bluez"));
+        let r = rect(14.0, sy + 36.0 + 24.0, w - 28.0, 32.0);
+        p.rrect(r, 12.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
+        p.icon(if headphones { "headphones" } else { "device-speaker" }, r.x0 + 18.0, r.center().y, 16.0, theme::FG);
+        p.text(out.map_or("Output", |s| s.label.as_str()), r.x0 + 34.0, r.center().y, 12.0, SEMI, theme::FG, Align::Left, (r.width() - 120.0) as f32);
+        if d.sinks.len() > 1 {
+            p.text("switch", r.x1 - 12.0, r.center().y, 11.0, REG, theme::DIM, Align::Right, 60.0);
+        }
+        p.hit(r, Action::Cmd(Command::NextSink));
+    }
+
+    fn metric_row(&self, p: P, w: f64, y: f64, label: &str, frac: Option<f64>, text: &str, color: Color) {
+        p.text(label, 14.0, y, 11.0, SEMI, theme::DIM, Align::Left, 60.0);
+        let tw = p.fonts.measure(text, 11.0, REG) as f64;
+        let right = w - 14.0;
+        if let Some(f) = frac {
+            let bar_x = 14.0 + 62.0;
+            let bar_end = (right - tw - 10.0).max(bar_x + 20.0);
+            p.bar(rect(bar_x, y - 3.0, bar_end - bar_x, 6.0), f, color, theme::TRACK);
+        }
+        p.text(text, right, y, 11.0, REG, theme::FG, Align::Right, (w * 0.62) as f32);
     }
 
     fn face_sys(&self, p: P, w: f64, _h: f64) {
-        self.page_header(p, w, "Power");
-        match self.data.battery {
-            Some(b) => {
-                p.text(&format!("{}%", b.percent.round() as i32), 24.0, 84.0, 30.0, SEMI, theme::FG, Align::Left, 120.0);
-                let state = if b.charging { "Charging" } else if b.on_ac { "Plugged in" } else { "On battery" };
-                p.text(state, w - 24.0, 80.0, 13.0, SEMI, theme::FG, Align::Right, 160.0);
-                p.bar(rect(24.0, 112.0, w - 48.0, 8.0), b.percent as f64 / 100.0, if b.percent <= self.cfg.low_battery && !b.on_ac { theme::RED } else { theme::FG }, theme::TRACK);
+        let hy = self.page_header(p, w, "System");
+        let Some(st) = &self.data.system else {
+            p.text("Collecting…", 14.0, 14.0 + 34.0 + 14.0, 12.0, REG, theme::DIM, Align::Left, 200.0);
+            return;
+        };
+        if let Some(l) = st.load {
+            p.text(&format!("load {:.2}  {:.2}  {:.2}", l[0], l[1], l[2]), w - 14.0, hy, 11.0, REG, theme::DIM, Align::Right, 200.0);
+        }
+        let load_color = |f: f64| if f >= 0.9 { theme::RED } else if f >= 0.7 { theme::ORANGE } else { theme::ACCENT };
+        let mut y = 14.0 + 34.0 + 14.0;
+        let mut parts = vec![format!("{}%", st.cpu_percent.round() as i32)];
+        if let Some(t) = st.cpu_temp_c {
+            parts.push(format!("{}°C", t.round() as i32));
+        }
+        if let Some(g) = st.cpu_ghz {
+            parts.push(format!("{g:.1} GHz"));
+        }
+        let f = st.cpu_percent as f64 / 100.0;
+        self.metric_row(p, w, y, "CPU", Some(f), &parts.join(" · "), load_color(f));
+        y += 28.0;
+        // per-core load as small bars
+        p.text("Cores", 14.0, y, 10.0, REG, theme::DIM, Align::Left, 60.0);
+        let n = st.cores.len().max(1) as f64;
+        let (x0, x1) = (14.0 + 62.0, w - 14.0);
+        let bw = ((x1 - x0) - 2.0 * (n - 1.0)) / n;
+        for (i, u) in st.cores.iter().enumerate() {
+            let f = (*u as f64 / 100.0).clamp(0.0, 1.0);
+            let bh = (18.0 * f).max(3.0);
+            let col = if f < 0.15 { theme::TRACK } else { load_color(f) };
+            p.rrect(rect(x0 + i as f64 * (bw + 2.0), y + 9.0 - bh, bw, bh), 1.0, col);
+        }
+        y += 28.0;
+        if let Some(m) = &st.memory {
+            let mut t = format!("{} / {}", island_core::system::fmt_mb(m.used_mb), island_core::system::fmt_mb(m.total_mb));
+            if m.swap_used_mb > 0.5 {
+                t += &format!(" · swap {}", island_core::system::fmt_mb(m.swap_used_mb));
             }
-            None => {
-                p.text("No battery", 24.0, 84.0, 13.0, REG, theme::DIM, Align::Left, 200.0);
+            let f = if m.total_mb > 0.0 { m.used_mb / m.total_mb } else { 0.0 };
+            self.metric_row(p, w, y, "Memory", Some(f), &t, load_color(f));
+            y += 28.0;
+        }
+        if let Some(g) = &st.gpu {
+            let t = format!("{} · {:.1} W · {}°C · {}%", g.pstate, g.watts, g.temp_c.round() as i32, g.util.round() as i32);
+            self.metric_row(p, w, y, "GPU", Some(g.util as f64 / 100.0), &t, load_color(g.util as f64 / 100.0));
+            y += 28.0;
+        }
+        if let Some(b) = self.data.battery {
+            let mut t = format!("{}%", b.percent.round() as i32);
+            if let Some(wt) = st.battery_watts.filter(|w| *w > 0.1) {
+                t += &format!(" · {wt:.1} W");
             }
+            match st.battery_eta_min {
+                Some(m) => t += &format!(" · {} {}", duration::fmt_minutes(Some(m)), if b.charging { "to full" } else { "left" }),
+                None if !b.on_ac => {}
+                None => t += if b.charging { " · charging" } else { " · plugged in" },
+            }
+            let col = if b.percent < 15.0 { theme::RED } else if b.percent < 30.0 { theme::ORANGE } else { theme::FG };
+            self.metric_row(p, w, y, "Battery", Some(b.percent as f64 / 100.0), &t, col);
+            y += 28.0;
+        }
+        let net = format!("↓ {}   ↑ {}", island_core::system::fmt_rate(st.net_rx), island_core::system::fmt_rate(st.net_tx));
+        self.metric_row(p, w, y, "Network", None, &net, theme::FG);
+        y += 28.0;
+        if let Some((used, total)) = st.disk {
+            let f = if total > 0.0 { used / total } else { 0.0 };
+            self.metric_row(p, w, y, "Disk /", Some(f), &format!("{} / {}", island_core::system::fmt_mb(used), island_core::system::fmt_mb(total)), load_color(f));
         }
     }
 
     fn face_notifs(&self, p: P, w: f64, _h: f64) {
-        self.page_header(p, w, "Notifications");
+        let hy = self.page_header(p, w, "Notifications");
+        let clear = p.button_width("Clear");
         if !self.history.is_empty() {
-            let bw = p.button_width("Clear");
-            p.button(rect(w - 20.0 - bw, 28.0 + 6.0, bw, 26.0), "Clear", Action::ClearHistory);
+            p.button(rect(w - 14.0 - clear, hy - 15.0, clear, 30.0), "Clear", Action::ClearHistory);
         }
-        let mut y = 28.0 + 34.0 + 8.0;
+        let dnd = rect(w - 14.0 - clear - 8.0 - 76.0, hy - 15.0, 76.0, 30.0);
+        let on = self.data.dnd;
+        p.rrect(dnd, 15.0, if on { theme::ACCENT } else if p.hovered(dnd) { theme::HOT_CHIP } else { theme::CHIP });
+        p.icon("bell-off", dnd.x0 + 16.0, hy, 14.0, if on { theme::ON_ACCENT } else { theme::FG });
+        p.text("DND", dnd.x0 + 28.0, hy, 12.0, SEMI, if on { theme::ON_ACCENT } else { theme::FG }, Align::Left, 40.0);
+        p.hit(dnd, Action::ToggleDnd);
+        let mut y = 14.0 + 34.0 + 6.0;
         if self.history.is_empty() {
-            p.text("Nothing new", 20.0, y + 12.0, 12.0, REG, theme::DIM, Align::Left, 200.0);
+            p.text("No notifications", w / 2.0, y + 20.0, 12.0, REG, theme::DIM, Align::Center, 200.0);
         }
-        for (n, at) in self.history.iter().take(5) {
-            match &n.image {
-                Some(img) => draw_image(p, img, 20.0, y + 3.0, 36.0, 8.0),
-                None => p.icon("bell", 38.0, y + 23.0, 20.0, theme::DIM),
+        for (i, (n, at)) in self.history.iter().take(5).enumerate() {
+            let row = rect(14.0, y, w - 28.0, 40.0);
+            p.rrect(row, 12.0, if p.hovered(row) { theme::HOT_CHIP } else { theme::CHIP });
+            match n.image.as_ref().or(n.app_icon.as_ref()) {
+                Some(img) => draw_image(p, img, row.x0 + 10.0, y + 6.0, 28.0, if n.image.is_some() { 14.0 } else { 7.0 }),
+                None => p.icon("bell", row.x0 + 24.0, y + 20.0, 18.0, theme::DIM),
             }
-            p.text(&n.app, 68.0, y + 10.0, 10.0, REG, theme::DIM, Align::Left, (w - 160.0) as f32);
-            p.text(&ago(self.now - at), w - 20.0, y + 10.0, 10.0, REG, theme::DIM, Align::Right, 70.0);
-            p.text(&n.summary, 68.0, y + 25.0, 12.0, SEMI, theme::FG, Align::Left, (w - 90.0) as f32);
-            p.text(&n.body, 68.0, y + 40.0, 11.0, REG, theme::DIM, Align::Left, (w - 90.0) as f32);
+            let tx = row.x0 + 48.0;
+            let tmax = (row.width() - 48.0 - 40.0) as f32;
+            p.text(&format!("{}  ·  {}", n.app, ago(self.now - at)), tx, y + 12.0, 10.0, REG, theme::DIM, Align::Left, tmax);
+            p.text(if n.summary.is_empty() { &n.body } else { &n.summary }, tx, y + 27.0, 12.0, SEMI, theme::FG, Align::Left, tmax);
+            p.icon_button(row.x1 - 18.0, y + 20.0, 26.0, "x", 13.0, Action::HistoryRemove(i));
+            p.hit(row, Action::HistoryOpen(i));
             y += 46.0;
         }
     }

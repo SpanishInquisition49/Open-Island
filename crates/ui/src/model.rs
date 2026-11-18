@@ -72,6 +72,40 @@ pub struct Privacy {
     pub screen: bool,
 }
 
+/// An audio output.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sink {
+    pub name: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Gpu {
+    pub pstate: String,
+    pub watts: f32,
+    pub temp_c: f32,
+    pub util: f32,
+}
+
+/// The numbers of the system page.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SystemStats {
+    pub cpu_percent: f32,
+    pub cpu_temp_c: Option<f32>,
+    pub cpu_ghz: Option<f32>,
+    pub cores: Vec<f32>,
+    pub memory: Option<island_core::sysmon::Memory>,
+    pub gpu: Option<Gpu>,
+    pub battery_watts: Option<f32>,
+    /// Minutes to empty (discharging) or to full (charging).
+    pub battery_eta_min: Option<u64>,
+    pub net_rx: f64,
+    pub net_tx: f64,
+    /// (used MB, total MB) of the root filesystem.
+    pub disk: Option<(f64, f64)>,
+    pub load: Option<[f32; 3]>,
+}
+
 /// Everything sampled from the system, replaced as a whole whenever something changes.
 #[derive(Clone, Default)]
 pub struct Data {
@@ -84,6 +118,15 @@ pub struct Data {
     pub muted: bool,
     pub brightness: Option<f32>,
     pub dnd: bool,
+    pub wifi: Option<bool>,
+    pub bluetooth: Option<bool>,
+    /// The idle inhibitor is held ("keep awake").
+    pub keep_awake: bool,
+    /// "performance", "balanced" or "powersave".
+    pub profile: Option<String>,
+    pub sinks: Vec<Sink>,
+    pub sink: Option<String>,
+    pub system: Option<SystemStats>,
     /// Lyrics of the current track, as LRC text (the platform layer fetches them).
     pub lyrics_lrc: Option<String>,
     pub utc_offset_secs: i32,
@@ -194,6 +237,11 @@ pub enum Command {
     SetBrightness(f32),
     ToggleMute,
     SetDnd(bool),
+    ToggleWifi,
+    ToggleBluetooth,
+    ToggleKeepAwake,
+    NextProfile,
+    NextSink,
     OpenUrl(String),
     InvokeAction { id: u32, key: String },
     CloseNotification(u32),

@@ -86,6 +86,10 @@ pub enum Action {
     ReplySend,
     ReplyCancel,
     CyclePlayer,
+    Back,
+    CalToday,
+    HistoryRemove(usize),
+    HistoryOpen(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -663,7 +667,20 @@ impl Island {
         let now = self.now;
         self.expand_until = self.expand_until.max(now + 4000);
         match a {
-            Action::Cmd(c) => return vec![c],
+            Action::Cmd(c) => {
+                // the chips answer at once; the next sample confirms
+                match &c {
+                    Command::ToggleWifi => self.data.wifi = self.data.wifi.map(|v| !v),
+                    Command::ToggleBluetooth => self.data.bluetooth = self.data.bluetooth.map(|v| !v),
+                    Command::ToggleKeepAwake => self.data.keep_awake = !self.data.keep_awake,
+                    _ => {}
+                }
+                return vec![c];
+            }
+            Action::Back => {
+                self.page = None;
+                self.hover_page = None;
+            }
             Action::TimerStart(s) => self.start_timer(s),
             Action::PomodoroStart => self.start_pomodoro(),
             Action::StopwatchStart => self.push(now, Input::StartStopwatch),
@@ -716,6 +733,16 @@ impl Island {
                 return vec![Command::OpenUrl(url)];
             }
             Action::ClearHistory => self.history.clear(),
+            Action::CalToday => {
+                let c = crate::clock::civil(now, self.data.utc_offset_secs);
+                self.cal = Cal { year: c.year, month: c.month, day: c.day };
+            }
+            Action::HistoryRemove(i) => {
+                if i < self.history.len() {
+                    self.history.remove(i);
+                }
+            }
+            Action::HistoryOpen(_) => {}
             Action::ToggleDnd => {
                 self.data.dnd = !self.data.dnd;
                 return vec![Command::SetDnd(self.data.dnd)];
@@ -740,17 +767,25 @@ impl Island {
             Face::Cal => {
                 let weeks = calendar::month_grid(self.cal.year, self.cal.month).len() as f64;
                 let n = self.day_events().len().clamp(1, 4) as f64;
-                h = 28.0 + 34.0 + 6.0 + 16.0 + weeks * 30.0 + 10.0 + n * 24.0;
+                h = 14.0 + 34.0 + 4.0 + 16.0 + weeks * 30.0 + 10.0 + n * 24.0 + 6.0;
             }
             Face::Notif if self.notif.as_ref().is_some_and(|n| n.progress.is_some()) => h += 14.0,
-            Face::Notifs => h = 28.0 + 34.0 + 8.0 + self.history.len().clamp(1, 5) as f64 * 46.0,
-            Face::Qs => h = 190.0,
-            Face::Sys => h = 150.0,
+            Face::Notifs => h = 14.0 + 34.0 + 6.0 + self.history.len().clamp(1, 5) as f64 * 46.0 + if self.history.is_empty() { 20.0 } else { 8.0 },
+            Face::Qs => h = 14.0 + 34.0 + 8.0 + 36.0 + 8.0 + 36.0 + 8.0 + 28.0 + 8.0 + 28.0 + 8.0 + 32.0 + 14.0,
+            Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
             Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
             Face::MediaMini | Face::TimerMini | Face::MeetMini => w += self.icon_count(true) as f64 * ICON_W,
             _ => {}
         }
         (w, h)
+    }
+
+    /// Rows of the system page that have data.
+    pub(crate) fn sys_rows(&self) -> usize {
+        let Some(st) = &self.data.system else { return 1 };
+        let mut n = 2; // cpu, cores
+        n += st.memory.is_some() as usize + st.gpu.is_some() as usize + self.data.battery.is_some() as usize + st.disk.is_some() as usize;
+        n + 1 // network
     }
 
     pub(crate) fn day_events(&self) -> Vec<&calendar::Event> {

@@ -31,6 +31,25 @@ fn data() -> Data {
     let mut d = Data::default();
     d.utc_offset_secs = 3600;
     d.volume = Some(0.62);
+    d.wifi = Some(true);
+    d.bluetooth = Some(false);
+    d.profile = Some("balanced".into());
+    d.sinks = vec![Sink { name: "alsa_output.pci".into(), label: "Built-in Audio Speaker".into() }, Sink { name: "bluez_output.x".into(), label: "WH-1000XM5".into() }];
+    d.sink = Some("alsa_output.pci".into());
+    d.system = Some(SystemStats {
+        cpu_percent: 23.0,
+        cpu_temp_c: Some(58.0),
+        cpu_ghz: Some(3.4),
+        cores: vec![12.0, 30.0, 5.0, 80.0, 22.0, 91.0, 3.0, 40.0, 10.0, 15.0, 60.0, 7.0],
+        memory: Some(island_core::sysmon::Memory { total_mb: 15900.0, used_mb: 7800.0, swap_used_mb: 120.0 }),
+        gpu: Some(island_ui::model::Gpu { pstate: "P8".into(), watts: 4.2, temp_c: 41.0, util: 3.0 }),
+        battery_watts: Some(8.4),
+        battery_eta_min: Some(310),
+        net_rx: 1.4 * 1048576.0,
+        net_tx: 52.0 * 1024.0,
+        disk: Some((304000.0, 466943.0)),
+        load: Some([0.52, 0.4, 0.31]),
+    });
     d.brightness = Some(0.8);
     d.battery = Some(Battery { percent: 79.0, charging: false, on_ac: false });
     d.weather = Some(Weather { temp_c: 14.0, feels_c: 12.0, code: 2, day: true, high_c: 17.0, low_c: 9.0, rain_slots: vec![Slot { offset_min: 0, mm: 0.0 }, Slot { offset_min: 30, mm: 0.0 }] });

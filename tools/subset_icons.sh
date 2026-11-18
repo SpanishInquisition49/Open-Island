@@ -4,7 +4,7 @@
 # (the full font and its name->codepoint json ship with the Noctalia shell: lib/assets/fonts/)
 set -eu
 font=$1; json=$2
-names="sun moon cloud-sun cloud cloud-fog cloud-snow cloud-storm cloud-rain umbrella download circle-check alert-triangle bell bell-ringing battery battery-1 battery-charging music player-play player-pause player-skip-back player-skip-forward hourglass target calendar-event volume volume-3 volume-2 sun-high brightness-up microphone video screen-share bluetooth wifi moon-stars coffee clipboard settings x send mail-forward cpu device-desktop plane-tilt arrows-exchange message-reply trash bell-off plug"
+names="sun moon cloud-sun cloud cloud-fog cloud-snow cloud-storm cloud-rain umbrella download circle-check alert-triangle bell bell-ringing battery battery-1 battery-charging music player-play player-pause player-skip-back player-skip-forward hourglass target calendar-event volume volume-3 volume-2 sun-high brightness-up microphone video screen-share bluetooth wifi moon-stars coffee clipboard settings x send mail-forward cpu device-desktop plane-tilt arrows-exchange message-reply trash bell-off plug wifi-off bluetooth-off bolt leaf gauge headphones device-speaker brightness-half arrow-left chevron-left chevron-right external-link clipboard-text"
 python3 - "$json" $names <<'PY' > /tmp/island-icons.txt
 import json, sys
 d = json.load(open(sys.argv[1]))
