@@ -32,6 +32,8 @@ pub fn config_view_of(fonts: &Fonts) -> island_ui::model::ConfigView {
         latitude: s.latitude,
         longitude: s.longitude,
         notification_sound: s.notification_sound.unwrap_or_default(),
+        timer_presets: s.ui.timer_presets.iter().map(|p| island_core::duration::preset_label(*p)).collect::<Vec<_>>().join(", "),
+        screen: s.screen,
     }
 }
 
@@ -69,6 +71,11 @@ pub fn frame_dt(gap_ms: f64, was_animating: bool) -> f64 {
 }
 
 impl App {
+    /// Fullscreen windows hide the island, unless the option says not to.
+    pub fn fullscreen_hides(&self) -> bool {
+        self.fullscreen && self.island.cfg.hide_on_fullscreen
+    }
+
     pub fn new(waker: Waker) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         let cmd_tx = services::start(tx, waker);
@@ -163,6 +170,9 @@ impl App {
             if self.settings_command(&c) {
                 continue;
             }
+            if matches!(c, Command::PlaySound) && !self.island.cfg.timer_sound {
+                continue;
+            }
             let _ = self.cmd_tx.send(c);
         }
     }
@@ -217,6 +227,11 @@ impl App {
             Command::SetLongitude(v) => crate::config::update(|o| {
                 o.insert("longitude".into(), json!(v));
             }),
+            Command::SetOption { key, value } => crate::config::set_option(&mut serde_json::Map::new(), key, value).and_then(|()| {
+                crate::config::update(|o| {
+                    let _ = crate::config::set_option(o, key, value);
+                })
+            }),
             Command::SetNotificationSound(f) => crate::config::update(|o| {
                 if f.is_empty() {
                     o.remove("notification_sound");
@@ -239,6 +254,9 @@ impl App {
                     }
                 }
                 self.island.data.config = config_view_of(&self.fonts);
+                if matches!(c, Command::SetOption { .. }) {
+                    self.island.cfg = crate::config::load().ui;
+                }
                 services::CONFIG_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             Err(e) => {

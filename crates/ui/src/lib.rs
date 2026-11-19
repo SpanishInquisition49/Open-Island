@@ -2,6 +2,7 @@
 
 mod config_check;
 mod icon_table;
+pub mod options;
 pub mod clock;
 pub mod faces;
 pub mod island;

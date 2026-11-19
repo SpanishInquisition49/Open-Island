@@ -224,3 +224,19 @@ cutting the window to the island's shape.
 120 Hz), the slowest one, how many took over 20 ms, and what drawing cost. The island asks for the low-power GPU
 (`WGPU_POWER_PREF=low`, change it in the environment); on a laptop with a discrete GPU, installing the integrated GPU's
 Vulkan driver (`vulkan-radeon`, `vulkan-intel`) lets it run there instead of keeping the big GPU awake.
+
+## Options
+
+The same settings as the Noctalia island plugin, on the Options page (the toggle icon in the dock: tabs Island, Alerts, Music)
+or in `config.json`, or from a script with `open-island msg set <option> <value>`:
+
+| tab | option | default |
+|---|---|---|
+| Island | `clock_in_pill`, `status_icons`, `clipboard_history`, `hide_on_fullscreen`, `weather`, `timer_sound` | on |
+| Island | `timer_presets` (`["5m","10m","25m"]`), `screen` (`focused` or a name such as `eDP-1`; pinning works on X11/Windows/macOS, not yet on Wayland), `timer_sound_file` | |
+| Alerts | `show_notifications`, `show_osd`, `battery_alerts`, `meeting_alerts`, `rain_alerts` | on |
+| Alerts | `quiet_in_meetings`, `quiet_on_mic`, `quiet_on_screen_share` (extras of this island) | on |
+| Alerts | `notification_seconds` (2-30, 5), `osd_seconds` (0.5-5, 1.6), `low_battery_percent` (5-50, 15), `meeting_lead_minutes` (1-60, 10) | |
+| Music | `media_auto_expand`, `lyrics`, `lyrics_in_pill` (off), `art_tint` | on |
+
+Not carried over, because they are about running inside Noctalia: `style` (the island is always black), `update_check`.

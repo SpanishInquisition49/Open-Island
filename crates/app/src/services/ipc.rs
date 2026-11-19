@@ -40,6 +40,25 @@ fn parse_command(line: &str) -> Option<island_ui::model::Command> {
     Some(match event {
         "refresh" => Command::RefreshCalendars,
         "font" => Command::SetFont(payload.to_string()),
+        // `set <option> <value>`: the same as the options page
+        "set" => {
+            use island_ui::model::OptionValue;
+            let (key, value) = payload.split_once(char::is_whitespace).map_or((payload, ""), |(a, b)| (a, b.trim()));
+            let value = if crate::config::BOOL_OPTIONS.contains(&key) {
+                OptionValue::Bool(match value.to_ascii_lowercase().as_str() {
+                    "on" | "true" | "yes" | "1" => true,
+                    "off" | "false" | "no" | "0" => false,
+                    _ => return None,
+                })
+            } else if crate::config::NUM_OPTIONS.iter().any(|(k, ..)| *k == key) {
+                OptionValue::Num(value.parse().ok()?)
+            } else if matches!(key, "timer_presets" | "screen") {
+                OptionValue::Text(value.to_string())
+            } else {
+                return None;
+            };
+            Command::SetOption { key: key.to_string(), value }
+        }
         "sound" => Command::SetNotificationSound(payload.to_string()),
         "calendar" => match payload.split_once(char::is_whitespace) {
             Some(("add", url)) if island_ui::is_calendar_url(url) => Command::AddCalendar(url.trim().to_string()),
@@ -228,6 +247,11 @@ mod tests {
         assert!(matches!(parse(r#"activity fail {"label":"CI","detail":"2 failed"}"#), Some(Input::Activity(island_core::progress::State::Fail, a)) if a.detail == "2 failed" && a.icon.is_none() && a.tint.is_none()));
         assert!(matches!(parse("activity clear"), Some(Input::ProgressClear)));
         assert!(parse("activity wobble {}").is_none() && parse("activity run {broken").is_none());
+        let opt = |l: &str| parse_command(l);
+        assert_eq!(opt("set lyrics off"), Some(island_ui::model::Command::SetOption { key: "lyrics".into(), value: island_ui::model::OptionValue::Bool(false) }));
+        assert_eq!(opt("set notification_seconds 8"), Some(island_ui::model::Command::SetOption { key: "notification_seconds".into(), value: island_ui::model::OptionValue::Num(8.0) }));
+        assert_eq!(opt("set timer_presets 5m, 20m"), Some(island_ui::model::Command::SetOption { key: "timer_presets".into(), value: island_ui::model::OptionValue::Text("5m, 20m".into()) }));
+        assert!(opt("set lyrics maybe").is_none() && opt("set nonsense on").is_none() && opt("set osd_seconds fast").is_none());
         assert!(matches!(parse("cmd-end 99 130"), Some(Input::CommandEnd { id, code: 130 }) if id == "99"));
         assert!(parse("cmd-start 99 ten make").is_none() && parse("cmd-start 99 5").is_none() && parse("cmd-end 99").is_none());
         assert!(matches!(parse("timer 25m"), Some(Input::StartTimer(1500))));

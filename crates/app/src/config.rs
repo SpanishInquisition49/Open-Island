@@ -150,6 +150,8 @@ pub struct Settings {
     pub take_over_notifications: bool,
     /// A font family name or the path of a font file; empty = the built-in list (SF Pro first).
     pub font: String,
+    /// "focused", or the name of the screen to pin the island to.
+    pub screen: String,
 }
 
 impl Default for Settings {
@@ -167,6 +169,7 @@ impl Default for Settings {
             persist_history: true,
             take_over_notifications: true,
             font: String::new(),
+            screen: "focused".into(),
         }
     }
 }
@@ -211,7 +214,6 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     let path = |k: &str| v.get(k).and_then(|x| x.as_str()).map(expand_home);
     s.notification_sound = path("notification_sound");
     s.volume_sound = path("volume_sound");
-    s.timer_sound = path("timer_sound");
     if let Some(o) = v.get("app_sounds").and_then(|x| x.as_object()) {
         s.app_sounds = o.iter().filter_map(|(k, v)| Some((k.clone(), expand_home(v.as_str()?)))).collect();
     }
@@ -257,6 +259,28 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     u.lyrics = b("lyrics", u.lyrics);
     u.clipboard_history = b("clipboard_history", u.clipboard_history);
     u.lyrics_in_pill = b("lyrics_in_pill", u.lyrics_in_pill);
+    u.show_notifications = b("show_notifications", u.show_notifications);
+    u.show_osd = b("show_osd", u.show_osd);
+    u.art_tint = b("art_tint", u.art_tint);
+    u.hide_on_fullscreen = b("hide_on_fullscreen", u.hide_on_fullscreen);
+    u.weather = b("weather", u.weather);
+    // `timer_sound` is on or off (as in the Noctalia island) and `timer_sound_file` the file; an older `timer_sound`
+    // holding a path still means that file, played
+    match v.get("timer_sound") {
+        Some(serde_json::Value::Bool(on)) => u.timer_sound = *on,
+        Some(serde_json::Value::String(f)) => {
+            s.timer_sound = Some(expand_home(f));
+            u.timer_sound = true;
+        }
+        _ => {}
+    }
+    if let Some(f) = v.get("timer_sound_file").and_then(|x| x.as_str()).filter(|f| !f.trim().is_empty()) {
+        s.timer_sound = Some(expand_home(f));
+    }
+    s.screen = v.get("screen").and_then(|x| x.as_str()).map(str::trim).filter(|x| !x.is_empty()).unwrap_or("focused").to_string();
+    if let Some(sec) = v.get("osd_seconds").and_then(|x| x.as_f64()).filter(|s| (0.5..=5.0).contains(s)) {
+        u.osd_ms = (sec * 1000.0).round() as i64;
+    }
     if let Some(m) = v.get("meeting_lead_minutes").and_then(|x| x.as_i64()).filter(|m| (1..=120).contains(m)) {
         u.meeting_lead_ms = m * 60_000;
     }
@@ -267,6 +291,51 @@ pub fn parse(text: &str) -> Result<Settings, String> {
         u.low_battery = p as f32;
     }
     Ok(s)
+}
+
+/// The options of the options page: the keys that are on or off.
+pub const BOOL_OPTIONS: &[&str] = &[
+    "show_notifications", "show_osd", "media_auto_expand", "timer_sound", "battery_alerts", "weather", "rain_alerts", "meeting_alerts", "lyrics", "lyrics_in_pill", "art_tint", "status_icons",
+    "clipboard_history", "clock_in_pill", "hide_on_fullscreen", "quiet_in_meetings", "quiet_on_mic", "quiet_on_screen_share",
+];
+
+/// The numeric options: key, smallest, largest, and whether it is a whole number.
+pub const NUM_OPTIONS: &[(&str, f64, f64, bool)] = &[("notification_seconds", 2.0, 30.0, true), ("osd_seconds", 0.5, 5.0, false), ("low_battery_percent", 5.0, 50.0, true), ("meeting_lead_minutes", 1.0, 60.0, true)];
+
+/// Sets one option in the configuration object; an unknown key or a value out of range is an error.
+pub fn set_option(o: &mut serde_json::Map<String, serde_json::Value>, key: &str, value: &island_ui::model::OptionValue) -> Result<(), String> {
+    use island_ui::model::OptionValue::*;
+    use serde_json::json;
+    match value {
+        Bool(b) if BOOL_OPTIONS.contains(&key) => {
+            o.insert(key.into(), json!(b));
+        }
+        Num(n) => {
+            let (_, lo, hi, whole) = NUM_OPTIONS.iter().find(|(k, ..)| *k == key).ok_or_else(|| format!("{key} is not a number option"))?;
+            if !n.is_finite() || n < lo || n > hi {
+                return Err(format!("{key} is between {lo} and {hi}"));
+            }
+            o.insert(key.into(), if *whole { json!(n.round() as i64) } else { json!((n * 10.0).round() / 10.0) });
+        }
+        Text(t) if key == "timer_presets" => {
+            let list: Vec<String> = t.split([',', ';']).map(str::trim).filter(|p| island_core::duration::parse(p).is_some_and(|s| s > 0)).map(str::to_string).take(6).collect();
+            if list.is_empty() {
+                o.remove("timer_presets"); // back to the defaults
+            } else {
+                o.insert("timer_presets".into(), json!(list));
+            }
+        }
+        Text(t) if key == "screen" => {
+            let t = t.trim();
+            if t.is_empty() || t.eq_ignore_ascii_case("focused") {
+                o.remove("screen");
+            } else {
+                o.insert("screen".into(), json!(t));
+            }
+        }
+        _ => return Err(format!("{key}: not an option, or the wrong kind of value")),
+    }
+    Ok(())
 }
 
 /// Changes `config.json` in place: the keys the island does not know are kept. The file and its directory are
@@ -316,6 +385,46 @@ pub fn load() -> Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_options_of_the_noctalia_island() {
+        let s = parse(r#"{"show_notifications":false,"show_osd":false,"art_tint":false,"hide_on_fullscreen":false,"weather":false,"osd_seconds":2.5,"screen":"eDP-1","timer_sound":false,"timer_sound_file":"~/a.ogg"}"#).unwrap();
+        let u = &s.ui;
+        assert!(!u.show_notifications && !u.show_osd && !u.art_tint && !u.hide_on_fullscreen && !u.weather && !u.timer_sound);
+        assert_eq!(u.osd_ms, 2500);
+        assert_eq!(s.screen, "eDP-1");
+        assert!(s.timer_sound.as_deref().is_some_and(|f| f.ends_with("/a.ogg")), "the file is kept even while the sound is off");
+        let d = parse("{}").unwrap();
+        assert!(d.ui.show_notifications && d.ui.show_osd && d.ui.art_tint && d.ui.hide_on_fullscreen && d.ui.weather && d.ui.timer_sound);
+        assert_eq!((d.screen.as_str(), d.ui.osd_ms), ("focused", 1600));
+        // an older `timer_sound` that holds a path still means that file, on
+        let old = parse(r#"{"timer_sound":"/x/y.wav"}"#).unwrap();
+        assert!(old.ui.timer_sound && old.timer_sound.as_deref() == Some("/x/y.wav"));
+        assert_eq!(parse(r#"{"osd_seconds":99}"#).unwrap().ui.osd_ms, 1600, "out of range: the default");
+    }
+
+    #[test]
+    fn options_are_written_checked_and_can_be_reset() {
+        use island_ui::model::OptionValue::*;
+        let mut o = serde_json::Map::new();
+        set_option(&mut o, "lyrics", &Bool(false)).unwrap();
+        set_option(&mut o, "notification_seconds", &Num(7.4)).unwrap();
+        set_option(&mut o, "osd_seconds", &Num(1.26)).unwrap();
+        set_option(&mut o, "timer_presets", &Text("5m, 90s ; nonsense, 1h30m".into())).unwrap();
+        set_option(&mut o, "screen", &Text("DP-2".into())).unwrap();
+        assert_eq!(serde_json::Value::Object(o.clone()), serde_json::json!({"lyrics": false, "notification_seconds": 7, "osd_seconds": 1.3, "timer_presets": ["5m", "90s", "1h30m"], "screen": "DP-2"}));
+        assert!(set_option(&mut o, "lyrics", &Num(1.0)).is_err(), "a number for a switch");
+        assert!(set_option(&mut o, "nonsense", &Bool(true)).is_err());
+        assert!(set_option(&mut o, "notification_seconds", &Num(500.0)).is_err(), "out of range");
+        assert!(set_option(&mut o, "notification_seconds", &Num(f64::NAN)).is_err());
+        set_option(&mut o, "screen", &Text("focused".into())).unwrap();
+        set_option(&mut o, "timer_presets", &Text("".into())).unwrap();
+        assert!(!o.contains_key("screen") && !o.contains_key("timer_presets"), "back to the defaults");
+        for k in BOOL_OPTIONS {
+            let mut m = serde_json::Map::new();
+            set_option(&mut m, k, &Bool(true)).unwrap_or_else(|e| panic!("{k}: {e}"));
+        }
+    }
 
     #[test]
     fn reads_the_known_keys() {

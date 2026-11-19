@@ -36,6 +36,7 @@ pub fn start(rep: Reporter) {
     std::thread::spawn(move || loop {
         let s = crate::config::load();
         match (s.latitude, s.longitude) {
+            _ if !s.ui.weather => weather_rep.patch(|d| d.weather = None),
             (Some(lat), Some(lon)) => match fetch_weather(lat, lon) {
                 Ok(w) => weather_rep.patch(move |d| d.weather = Some(w)),
                 Err(e) => log::warn!("weather: {e}"),

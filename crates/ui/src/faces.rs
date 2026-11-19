@@ -153,6 +153,7 @@ impl Island {
             Face::Reply => self.face_reply(p, w, h),
             Face::Device => self.face_device(p, w, h),
             Face::Weather => self.face_weather(p, w, h),
+            Face::Options => self.face_options(p, w, h),
             Face::Bar => self.face_bar(p, w, h),
             Face::Osd => self.face_osd(p, w, h),
             Face::Power => self.face_power(p, w, h),
@@ -228,6 +229,9 @@ impl Island {
     }
 
     fn art_tint(&self) -> Color {
+        if !self.cfg.art_tint {
+            return theme::FG;
+        }
         self.data
             .media
             .as_ref()
@@ -1271,6 +1275,77 @@ impl Island {
         }
     }
 
+    fn face_options(&self, p: P, w: f64, _h: f64) {
+        use crate::options::{self, TABS};
+        self.page_header(p, w, "Options");
+        let tab = self.options_tab.min(TABS.len() - 1);
+        // the tabs
+        p.stagger(1);
+        let tab_y = 14.0 + 34.0 + 4.0;
+        let tw = (w - 28.0 - 8.0 * (TABS.len() as f64 - 1.0)) / TABS.len() as f64;
+        for (t, name) in TABS.iter().enumerate() {
+            let r = rect(14.0 + t as f64 * (tw + 8.0), tab_y, tw, 28.0);
+            let on = t == tab;
+            p.rrect(r, 14.0, if on { theme::ACCENT } else if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
+            p.text(name, r.center().x, r.center().y, 12.0, SEMI, if on { theme::ON_ACCENT } else { theme::FG }, Align::Center, (tw - 12.0) as f32);
+            p.hit(r, Action::OptionsTab(t));
+        }
+        let col_w = (w - 28.0 - 8.0) / 2.0;
+        let mut y = tab_y + 28.0 + 12.0;
+        let cell = |i: usize, y: f64| rect(14.0 + (i % 2) as f64 * (col_w + 8.0), y + (i / 2) as f64 * 34.0, col_w, 30.0);
+        let mut n = 2;
+        // switches
+        let toggles = options::toggles(tab);
+        for (i, (key, label)) in toggles.iter().enumerate() {
+            p.stagger(n + i / 2);
+            let r = cell(i, y);
+            let on = options::get_bool(&self.cfg, key);
+            p.rrect(r, 10.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
+            p.text(label, r.x0 + 12.0, r.center().y, 12.0, SEMI, theme::FG, Align::Left, (r.width() - 12.0 - 50.0) as f32);
+            let track = rect(r.x1 - 12.0 - 32.0, r.center().y - 9.0, 32.0, 18.0);
+            p.rrect(track, 9.0, if on { theme::GREEN } else { theme::TRACK });
+            p.circle(if on { track.x1 - 9.0 } else { track.x0 + 9.0 }, track.center().y, 7.0, theme::FG);
+            p.hit(r, Action::Toggle(key));
+        }
+        y += toggles.len().div_ceil(2) as f64 * 34.0;
+        n += toggles.len().div_ceil(2);
+        // numbers
+        let steppers = options::steppers(tab);
+        for (i, (key, label, unit, ..)) in steppers.iter().enumerate() {
+            p.stagger(n + i / 2);
+            let r = cell(i, y);
+            p.rrect(r, 10.0, theme::CHIP);
+            // from the right: plus, the value in a fixed column, minus
+            p.text(label, r.x0 + 12.0, r.center().y, 12.0, SEMI, theme::FG, Align::Left, (r.width() - 12.0 - 118.0) as f32);
+            let value = options::fmt_num(options::get_num(&self.cfg, key), unit);
+            p.text(&value, r.x1 - 37.0, r.center().y, 11.0, REG, theme::DIM, Align::Right, 52.0);
+            p.icon_button(r.x1 - 104.0, r.center().y, 22.0, "minus", 12.0, Action::Step(key, -1));
+            p.icon_button(r.x1 - 22.0, r.center().y, 22.0, "plus", 12.0, Action::Step(key, 1));
+        }
+        y += steppers.len().div_ceil(2) as f64 * 34.0;
+        n += steppers.len().div_ceil(2);
+        // text fields
+        if options::text_rows(tab) > 0 {
+            let c = &self.data.config;
+            let editing = |f: Field| self.edit.as_ref().filter(|e| e.field == f);
+            let screen = if c.screen == "focused" { "Focused".to_string() } else { c.screen.clone() };
+            for (i, (label, value, f, hint)) in [("Timer presets", c.timer_presets.clone(), Field::TimerPresets, "5m, 10m, 25m, 1h30m"), ("Screen", screen, Field::Screen, "A screen name such as eDP-1; empty = the focused one")].into_iter().enumerate() {
+                p.stagger(n + i);
+                let r = rect(14.0, y + i as f64 * 34.0, w - 28.0, 30.0);
+                match editing(f) {
+                    Some(e) => self.edit_row(p, r, e, hint),
+                    None => {
+                        p.rrect(r, 10.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
+                        p.text(label, r.x0 + 12.0, r.center().y, 12.0, SEMI, theme::FG, Align::Left, 120.0);
+                        let lw = p.fonts.measure(label, 12.0, SEMI) as f64;
+                        p.text(&value, r.x1 - 12.0, r.center().y, 12.0, REG, theme::DIM, Align::Right, (r.width() - lw - 40.0).max(60.0) as f32);
+                        p.hit(r, Action::EditField(f));
+                    }
+                }
+            }
+        }
+    }
+
     fn face_clip(&self, p: P, w: f64, _h: f64) {
         let hy = self.page_header(p, w, "Clipboard");
         p.text("click to copy", w - 14.0, hy, 11.0, REG, theme::DIM, Align::Right, 120.0);
@@ -1384,6 +1459,7 @@ fn page_icon(p: Page) -> &'static str {
         Page::Clip => "clipboard-text",
         Page::Settings => "settings",
         Page::Weather => "cloud-sun",
+        Page::Options => "toggle-right",
     }
 }
 

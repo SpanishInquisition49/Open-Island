@@ -61,7 +61,12 @@ fn attributes() -> WindowAttributes {
 
 impl Shell {
     fn place(&self, window: &Window) {
-        let Some(m) = window.current_monitor().or_else(|| window.primary_monitor()) else { return };
+        // the screen option pins the island to a screen by name; otherwise the one it is on (the primary at first)
+        let pinned = match self.app.island.data.config.screen.as_str() {
+            "" | "focused" => None,
+            name => window.available_monitors().find(|m| m.name().as_deref() == Some(name)),
+        };
+        let Some(m) = pinned.or_else(|| window.current_monitor()).or_else(|| window.primary_monitor()) else { return };
         let scale = m.scale_factor();
         let size = window.outer_size();
         let mp = m.position();
@@ -105,7 +110,7 @@ impl Shell {
         // under a fullscreen window the island hides (the platform service says when); under a maximized one it
         // hides too, except while it has something to say (a card, a page) or the pointer is at the top edge
         let resting = self.app.island.current_face().is_compact();
-        let want_hidden = should_hide(self.app.fullscreen, self.app.maximized, resting, self.app.pointer_near);
+        let want_hidden = should_hide(self.app.fullscreen_hides(), self.app.maximized, resting, self.app.pointer_near);
         if want_hidden != self.hidden {
             self.hidden = want_hidden;
             log::info!("{} the island (fullscreen: {}, maximized window: {}, pointer at the edge: {})", if self.hidden { "hiding" } else { "showing" }, self.app.fullscreen, self.app.maximized, self.app.pointer_near);

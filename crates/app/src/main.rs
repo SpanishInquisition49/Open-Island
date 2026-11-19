@@ -21,7 +21,7 @@ fn usage() {
   open-island notify <title> [body]       show a notification (any platform)
   open-island autostart on|off|status     start with the session
   open-island doctor                      what works on this machine, what is missing
-  open-island --version\n\nEVENTS (for msg):\n  peek | open [page] | reply | dnd <on|off> | page <home|cal|qs|sys|notifs|media|timer|clip> | timer <25m> | pomodoro | stopwatch | timer-cancel\n  refresh (read the calendars now) | font <family|file> | calendar add <url> | calendar remove <n> | sound <file>   (settings, same as the menu)
+  open-island --version\n\nEVENTS (for msg):\n  peek | open [page] | reply | dnd <on|off> | page <home|cal|qs|sys|notifs|media|timer|clip> | timer <25m> | pomodoro | stopwatch | timer-cancel\n  set <option> <value> (any option of the options page: lyrics off, notification_seconds 8, timer_presets 5m,20m) | refresh (read the calendars now) | font <family|file> | calendar add <url> | calendar remove <n> | sound <file>   (settings, same as the menu)
   bar                                     open the command bar (bind it to a key): 10m tea, remind 20m ..., 12*7, 5 km in mi
   progress run [-l label] -- command...   (shows a command's progress)
   activity run|done|fail|clear [label] [--detail t] [--icon i] [--color c] [--progress n]   a status for a script (CI, build)

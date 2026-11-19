@@ -58,6 +58,18 @@ pub struct Config {
     pub quiet_in_meetings: bool,
     pub quiet_on_mic: bool,
     pub quiet_on_screen_share: bool,
+    /// Show notifications as cards (off: they only go to the history).
+    pub show_notifications: bool,
+    /// Show the volume and brightness bars.
+    pub show_osd: bool,
+    /// Colour the media card from the cover.
+    pub art_tint: bool,
+    /// Go out of sight under a fullscreen window.
+    pub hide_on_fullscreen: bool,
+    /// Fetch and show the weather.
+    pub weather: bool,
+    /// Play a sound when a timer ends.
+    pub timer_sound: bool,
 }
 
 impl Default for Config {
@@ -80,6 +92,12 @@ impl Default for Config {
             quiet_in_meetings: true,
             quiet_on_mic: true,
             quiet_on_screen_share: true,
+            show_notifications: true,
+            show_osd: true,
+            art_tint: true,
+            hide_on_fullscreen: true,
+            weather: true,
+            timer_sound: true,
         }
     }
 }
@@ -99,6 +117,12 @@ pub enum Action {
     PomodoroSkip,
     Dismiss,
     NextNotif,
+    /// A tab of the options page.
+    OptionsTab(usize),
+    /// Flip a switch of the options page.
+    Toggle(&'static str),
+    /// Raise (1) or lower (-1) a number of the options page.
+    Step(&'static str, i32),
     /// Hide the notification on screen and bring it back in ten minutes.
     Snooze,
     NotifAction(String),
@@ -201,6 +225,8 @@ pub enum Field {
     Latitude,
     Longitude,
     Sound,
+    TimerPresets,
+    Screen,
 }
 
 #[derive(Clone, Debug)]
@@ -317,6 +343,7 @@ pub struct Island {
     notif_until: i64,
     pub(crate) reply: Option<Reply>,
     pub(crate) bar: Option<Bar>,
+    pub(crate) options_tab: usize,
     pub(crate) reminders: Vec<Reminder>,
     next_own_id: u32,
     /// Keyboard navigation: the focused control among the drawn ones.
@@ -420,6 +447,7 @@ impl Island {
             notif_until: 0,
             reply: None,
             bar: None,
+            options_tab: 0,
             reminders: vec![],
             next_own_id: OWN_ID_BASE,
             kb: None,
@@ -536,6 +564,7 @@ impl Island {
                 self.spectrum = v;
                 self.spectrum_at = now;
             }
+            Input::Osd { .. } if !self.cfg.show_osd => {}
             Input::Osd { kind, level, muted } => {
                 // a bar that was not on screen starts from the level it had before, and slides to the new one
                 let before = match kind {
@@ -610,7 +639,7 @@ impl Island {
             self.history.insert(0, (n.clone(), self.now));
             self.history.truncate(30);
         }
-        if self.quiet() && !n.critical && !is_own(&n) {
+        if (self.quiet() || !self.cfg.show_notifications) && !n.critical && !is_own(&n) {
             return;
         }
         if self.notif.as_ref().is_some_and(|c| c.id == n.id) {
@@ -794,6 +823,11 @@ impl Island {
         }
     }
 
+    /// Opens a tab of the options page (0 Island, 1 Alerts, 2 Music).
+    pub fn show_options_tab(&mut self, tab: usize) {
+        self.options_tab = tab.min(crate::options::TABS.len() - 1);
+    }
+
     pub fn history(&self) -> &[(Incoming, i64)] {
         &self.history
     }
@@ -831,6 +865,8 @@ impl Island {
             Field::Latitude => c.latitude.map(|v| v.to_string()).unwrap_or_default(),
             Field::Longitude => c.longitude.map(|v| v.to_string()).unwrap_or_default(),
             Field::Sound => c.notification_sound.clone(),
+            Field::TimerPresets => c.timer_presets.clone(),
+            Field::Screen => if c.screen == "focused" { String::new() } else { c.screen.clone() },
         };
         let cursor = text.chars().count();
         self.edit = Some(Edit { field, text, cursor, until: self.now + EDIT_IDLE_MS });
@@ -882,6 +918,8 @@ impl Island {
                     }
                     Field::Font => self.pending.push(Command::SetFont(t)),
                     Field::Sound => self.pending.push(Command::SetNotificationSound(t)),
+                    Field::TimerPresets => self.pending.push(Command::SetOption { key: "timer_presets".into(), value: OptionValue::Text(t) }),
+                    Field::Screen => self.pending.push(Command::SetOption { key: "screen".into(), value: OptionValue::Text(t) }),
                     Field::Latitude | Field::Longitude => {
                         let (range, lat) = if e.field == Field::Latitude { (-90.0..=90.0, true) } else { (-180.0..=180.0, false) };
                         match t.replace(',', ".").parse::<f64>() {
@@ -1167,6 +1205,7 @@ impl Island {
         if self.cfg.clipboard_history {
             v.push(Page::Clip);
         }
+        v.push(Page::Options);
         v.push(Page::Settings);
         v
     }
@@ -1251,6 +1290,19 @@ impl Island {
                 }
             }
             Action::Dismiss | Action::NextNotif => self.close_notif(CloseReason::Dismissed),
+            Action::OptionsTab(t) => self.options_tab = t.min(crate::options::TABS.len() - 1),
+            Action::Toggle(key) => {
+                let on = !crate::options::get_bool(&self.cfg, key);
+                crate::options::set_bool(&mut self.cfg, key, on);
+                return vec![Command::SetOption { key: key.into(), value: OptionValue::Bool(on) }];
+            }
+            Action::Step(key, dir) => {
+                if let Some((_, _, _, step, min, max)) = (0..crate::options::TABS.len()).flat_map(|t| crate::options::steppers(t)).find(|s| s.0 == key) {
+                    let v = ((crate::options::get_num(&self.cfg, key) + dir as f64 * step).clamp(*min, *max) * 10.0).round() / 10.0;
+                    crate::options::set_num(&mut self.cfg, key, v);
+                    return vec![Command::SetOption { key: key.into(), value: OptionValue::Num(v) }];
+                }
+            }
             Action::Snooze => {
                 if let Some(n) = self.notif.clone() {
                     let text = match (n.summary.is_empty(), n.app.is_empty()) {
@@ -1382,6 +1434,7 @@ impl Island {
             Face::Clip => h = 14.0 + 34.0 + 4.0 + self.data.clipboard.len().clamp(1, 5) as f64 * 32.0 + 10.0,
             Face::FocusMini => w += self.icon_count(true) as f64 * ICON_W,
             Face::Settings => h = 14.0 + 34.0 + self.settings_content_height() + 14.0,
+            Face::Options => h = 14.0 + 34.0 + 40.0 + crate::options::content_height(self.options_tab) + 14.0,
             Face::Qs => h = self.qs_layout().height,
             Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
             Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
@@ -1926,7 +1979,7 @@ fn side_page(s: Side) -> Page {
 
 /// Faces that are pages: they carry the dock at the bottom.
 pub(crate) fn has_dock(f: Face) -> bool {
-    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings)
+    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options)
 }
 
 pub(crate) fn page_of(f: Face) -> Option<Page> {
@@ -1943,6 +1996,7 @@ pub(crate) fn page_of(f: Face) -> Option<Page> {
         Face::Clip => Page::Clip,
         Face::Settings => Page::Settings,
         Face::Weather => Page::Weather,
+        Face::Options => Page::Options,
         Face::FocusFull => Page::Focus,
         _ => return None,
     })
@@ -2697,6 +2751,50 @@ mod tests {
     }
 
     #[test]
+    fn the_options_page_flips_switches_and_steps_numbers() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenPage(Page::Options));
+        draw_frames(&mut i, 300);
+        assert_eq!(i.current_face(), Face::Options);
+        // a switch on the first tab
+        assert!(press(&mut i, Action::Toggle("clock_in_pill")));
+        assert!(!i.cfg.clock_in_pill, "the island follows at once");
+        assert_eq!(i.take_commands(), vec![Command::SetOption { key: "clock_in_pill".into(), value: OptionValue::Bool(false) }]);
+        // another tab
+        assert!(press(&mut i, Action::OptionsTab(1)));
+        draw_frames(&mut i, 300);
+        assert!(press(&mut i, Action::Step("notification_seconds", 1)));
+        assert_eq!(i.cfg.notification_ms, 6000);
+        assert_eq!(i.take_commands(), vec![Command::SetOption { key: "notification_seconds".into(), value: OptionValue::Num(6.0) }]);
+        assert!(press(&mut i, Action::Step("osd_seconds", -1)));
+        assert_eq!(i.cfg.osd_ms, 1500);
+        // the ends of the range hold
+        i.cfg.notification_ms = 30_000;
+        i.activate(Action::Step("notification_seconds", 1));
+        assert_eq!(i.cfg.notification_ms, 30_000);
+        // the page changes height with the tab
+        assert_ne!(i.face_size(Face::Options).1, { i.activate(Action::OptionsTab(2)); i.face_size(Face::Options).1 });
+    }
+
+    #[test]
+    fn options_that_switch_a_behaviour_off_do_so() {
+        let n = |id: u32| Input::Notification(Incoming { id, app: "a".into(), summary: "s".into(), ..Default::default() });
+        // no cards, but the history keeps them
+        let mut i = Island::new(Config { show_notifications: false, ..Config::default() });
+        i.push(T0, n(1));
+        assert!(i.notif.is_none() && i.history.len() == 1);
+        // no volume bar
+        let mut j = Island::new(Config { show_osd: false, ..Config::default() });
+        j.push(T0, Input::Osd { kind: OsdKind::Volume, level: 0.5, muted: false });
+        run(&mut j, 600);
+        assert_ne!(j.current_face(), Face::Osd);
+        let mut k = Island::new(Config::default());
+        k.push(T0, Input::Osd { kind: OsdKind::Volume, level: 0.5, muted: false });
+        run(&mut k, 600);
+        assert_eq!(k.current_face(), Face::Osd, "and with it on, it shows");
+    }
+
+    #[test]
     fn focus_shows_its_minutes_and_a_bubble_beside_music() {
         let mut i = Island::new(Config::default());
         i.data.focus = Some(Focus { active: true, end_epoch: Some(T0 / 1000 + 23 * 60 - 5) });
@@ -2933,7 +3031,7 @@ mod tests {
         i.push(T0, Input::OpenPage(Page::Qs));
         draw_frames(&mut i, 200);
         let gotos: Vec<Page> = i.hits.iter().filter_map(|h| if let Action::Goto(p) = h.action { Some(p) } else { None }).collect();
-        assert_eq!(gotos, vec![Page::Home, Page::Cal, Page::Qs, Page::Sys, Page::Clip, Page::Settings], "no media, timer, notifications or forecast yet");
+        assert_eq!(gotos, vec![Page::Home, Page::Cal, Page::Qs, Page::Sys, Page::Clip, Page::Options, Page::Settings], "no media, timer, notifications or forecast yet");
         let home = i.hits.iter().find(|h| h.action == Action::Goto(Page::Sys)).unwrap().rect;
         i.pointer_down(i.now, home.center().x + i.pill_origin.0, home.center().y + i.pill_origin.1);
         assert_eq!(i.page, Some(Page::Sys));

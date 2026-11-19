@@ -136,6 +136,10 @@ pub struct ConfigView {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     pub notification_sound: String,
+    /// The timer presets as typed (`5m, 10m, 25m`).
+    pub timer_presets: String,
+    /// "focused", or the name of the screen the island is pinned to.
+    pub screen: String,
 }
 
 /// The study mode (`~/.local/bin/focus`): sites blocked and notifications silenced until `end_epoch`.
@@ -311,6 +315,14 @@ pub enum Input {
 }
 
 /// What the island asks the platform layer to do.
+/// The value of an option.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OptionValue {
+    Bool(bool),
+    Num(f64),
+    Text(String),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     MediaPrevious,
@@ -344,6 +356,8 @@ pub enum Command {
     SetLatitude(f64),
     SetLongitude(f64),
     SetNotificationSound(String),
+    /// Change one option of the options page; the platform layer writes it to the configuration.
+    SetOption { key: String, value: OptionValue },
     StartFocus(u32),
     StopFocus,
     /// Put this text back on the clipboard.

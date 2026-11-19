@@ -83,8 +83,9 @@ impl Wl {
             return;
         }
         // fullscreen windows: drop under them (overlay -> top) so the island hides, and come back after
-        if self.app.fullscreen != self.on_top_layer {
-            self.on_top_layer = self.app.fullscreen;
+        let under = self.app.fullscreen_hides();
+        if under != self.on_top_layer {
+            self.on_top_layer = under;
             self.layer.set_layer(if self.on_top_layer { Layer::Top } else { Layer::Overlay });
         }
         // the keyboard is only taken while an inline reply is being typed
@@ -322,6 +323,9 @@ pub fn run() -> Result<(), String> {
     let fractional = globals.bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ()).ok().map(|m| m.get_fractional_scale(&surface, &qh, ()));
     if viewport.is_none() || fractional.is_none() {
         log::warn!("no fractional scaling: the island will look soft on scaled displays");
+    }
+    if let Some(screen) = Some(crate::config::load().screen).filter(|s| s != "focused") {
+        log::warn!("screen = {screen}: pinning to a screen is not done on Wayland yet; the compositor puts the island on the focused one");
     }
     layer.commit();
 
