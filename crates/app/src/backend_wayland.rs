@@ -40,6 +40,10 @@ use wayland_client::{
     protocol::{wl_data_device::WlDataDevice, wl_data_source::WlDataSource, wl_data_device_manager::DndAction, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
     Connection, Dispatch, Proxy, QueueHandle,
 };
+use wayland_protocols::ext::idle_notify::v1::client::{
+    ext_idle_notification_v1::{self, ExtIdleNotificationV1},
+    ext_idle_notifier_v1::ExtIdleNotifierV1,
+};
 use wayland_protocols::wp::{
     fractional_scale::v1::client::{
         wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
@@ -64,6 +68,11 @@ struct Wl {
     _fractional: Option<WpFractionalScaleV1>,
     pointer: Option<wl_pointer::WlPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    idle_manager: Option<ExtIdleNotifierV1>,
+    idle: Option<ExtIdleNotificationV1>,
+    /// When the person went idle (no keyboard or pointer for `idle_secs`), until they come back.
+    idle_since: Option<Instant>,
+    idle_secs: u32,
     data_manager: Option<DataDeviceManagerState>,
     data_device: Option<DataDevice>,
     /// Paths of files dropped on the island (read on another thread).
@@ -175,6 +184,14 @@ impl SeatHandler for Wl {
     }
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
     fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, capability: Capability) {
+        // told when the person has not touched the keyboard or the pointer for a while, and when they are back
+        if self.idle.is_none() {
+            if let Some(m) = &self.idle_manager {
+                let ms = self.idle_secs * 1000;
+                log::debug!("watching for idleness after {} s", self.idle_secs);
+                self.idle = Some(if m.version() >= 2 { m.get_input_idle_notification(ms, &seat, qh, ()) } else { m.get_idle_notification(ms, &seat, qh, ()) });
+            }
+        }
         if capability == Capability::Pointer && self.pointer.is_none() {
             self.pointer = self.seat_state.get_pointer(qh, &seat).ok();
             // files dragged onto the island
@@ -300,6 +317,30 @@ impl Dispatch<WpFractionalScaleV1, ()> for Wl {
         if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
             state.scale = scale as f64 / 120.0;
             state.dirty = true;
+        }
+    }
+}
+
+impl Dispatch<ExtIdleNotifierV1, ()> for Wl {
+    fn event(_: &mut Self, _: &ExtIdleNotifierV1, _: <ExtIdleNotifierV1 as Proxy>::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+}
+
+impl Dispatch<ExtIdleNotificationV1, ()> for Wl {
+    fn event(state: &mut Self, _: &ExtIdleNotificationV1, event: ext_idle_notification_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        match event {
+            ext_idle_notification_v1::Event::Idled => {
+                log::debug!("idle");
+                state.idle_since = Some(Instant::now());
+            }
+            ext_idle_notification_v1::Event::Resumed => {
+                if let Some(since) = state.idle_since.take() {
+                    let away_ms = since.elapsed().as_millis() as i64 + state.idle_secs as i64 * 1000;
+                    log::debug!("back after {away_ms} ms");
+                    state.app.input(island_ui::model::Input::Returned { away_ms });
+                    state.dirty = true;
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -475,6 +516,10 @@ pub fn run() -> Result<(), String> {
         _fractional: fractional,
         pointer: None,
         keyboard: None,
+        idle_manager: globals.bind::<ExtIdleNotifierV1, _, _>(&qh, 1..=2, ()).ok(),
+        idle: None,
+        idle_since: None,
+        idle_secs: std::env::var("OPEN_ISLAND_IDLE_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(120),
         data_manager: DataDeviceManagerState::bind(&globals, &qh).ok(),
         data_device: None,
         drop_tx,
@@ -497,7 +542,7 @@ pub fn run() -> Result<(), String> {
         no_pointer: std::env::var_os("OPEN_ISLAND_NO_POINTER").is_some(),
         perf: crate::perf::Perf::from_env(),
     };
-    log::info!("layer-shell surface created");
+    log::info!("layer-shell surface created; away detection {}", if state.idle_manager.is_some() { "on" } else { "unavailable (no ext-idle-notify)" });
     loop {
         // frames only when something needs them: at vsync while the shape moves, otherwise when `next_ms` has passed
         let due = Duration::from_millis(state.next_ms as u64);

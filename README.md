@@ -294,3 +294,10 @@ Not done: receiving, and dropping on Windows and macOS.
 A notification that says it carries a code ("verification code", "codice", "OTP", "PIN"...) next to 4 to 8 digits shows the
 code large; a click copies it. The code is never put in the clipboard history, and it leaves the clipboard after thirty seconds
 if it is still there. Times, amounts, dates and phone numbers are not taken for codes.
+
+## Recap when you are back
+
+After two minutes without the keyboard or the pointer (`ext-idle-notify`, any Wayland compositor that has it; set
+`OPEN_ISLAND_IDLE_SECS` to change the two minutes) and then a touch, a card says what came in meanwhile ("3 while you were
+away: Telegram 2 · Mail") and a click opens the list. It covers a lock screen too, since nobody touches anything there.
+Switch it off with `away_recap` (Options > Alerts > "Recap when back"). Linux (Wayland) only for now.

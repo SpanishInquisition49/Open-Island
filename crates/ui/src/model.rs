@@ -312,6 +312,8 @@ pub enum Input {
     Activity(island_core::progress::State, island_core::progress::Activity),
     /// Open the command bar (from a shortcut).
     OpenBar,
+    /// The person is back after this many milliseconds without touching the keyboard or the pointer.
+    Returned { away_ms: i64 },
     /// Files to send: opens the page that lists the devices (from `open-island send`, or a file dropped on the island).
     SendFiles(Vec<String>),
     /// A shell started a command: it becomes a progress pill when it runs longer than `after_secs`.

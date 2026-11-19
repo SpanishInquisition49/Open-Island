@@ -251,6 +251,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     u.rain_alerts = b("rain_alerts", u.rain_alerts);
     u.quiet_in_meetings = b("quiet_in_meetings", u.quiet_in_meetings);
     u.quiet_on_mic = b("quiet_on_mic", u.quiet_on_mic);
+    u.away_recap = b("away_recap", u.away_recap);
     u.quiet_on_screen_share = b("quiet_on_screen_share", u.quiet_on_screen_share);
     u.battery_alerts = b("battery_alerts", u.battery_alerts);
     u.media_auto_expand = b("media_auto_expand", u.media_auto_expand);
@@ -300,7 +301,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
 /// The options of the options page: the keys that are on or off.
 pub const BOOL_OPTIONS: &[&str] = &[
     "show_notifications", "show_osd", "media_auto_expand", "timer_sound", "battery_alerts", "weather", "rain_alerts", "meeting_alerts", "lyrics", "lyrics_in_pill", "art_tint", "status_icons",
-    "clipboard_history", "clock_in_pill", "hide_on_fullscreen", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "quiet_on_screen_share",
+    "clipboard_history", "clock_in_pill", "hide_on_fullscreen", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "away_recap", "quiet_on_screen_share",
 ];
 
 /// The numeric options: key, smallest, largest, and whether it is a whole number.

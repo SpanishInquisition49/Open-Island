@@ -64,6 +64,8 @@ pub struct Config {
     /// Notifications are held (not shown) during a calendar event / while the microphone or the screen share is on.
     pub quiet_in_meetings: bool,
     pub quiet_on_mic: bool,
+    /// A card with what came in while the person was away, when they come back.
+    pub away_recap: bool,
     pub quiet_on_screen_share: bool,
     /// Show notifications as cards (off: they only go to the history).
     pub show_notifications: bool,
@@ -101,6 +103,7 @@ impl Default for Config {
             timer_presets: vec![300, 600, 1500],
             quiet_in_meetings: true,
             quiet_on_mic: true,
+            away_recap: true,
             quiet_on_screen_share: true,
             show_notifications: true,
             show_osd: true,
@@ -606,6 +609,12 @@ impl Island {
                 self.page = p.or(Some(Page::Home));
                 self.hover_page = self.page;
                 self.expand_until = now + KB_IDLE_MS;
+            }
+            Input::Returned { away_ms } => {
+                // a short pause is not an absence
+                if self.cfg.away_recap && away_ms >= 60_000 {
+                    self.recap(now - away_ms, "while you were away");
+                }
             }
             Input::SetDnd(on) => {
                 self.data.dnd = on;
@@ -1722,7 +1731,7 @@ impl Island {
     }
 
     /// One card for what was held while the island was quiet.
-    fn recap(&mut self, since: i64) {
+    fn recap(&mut self, since: i64, what: &str) {
         let mut apps: Vec<(String, usize)> = vec![];
         for (n, at) in self.history.iter().filter(|(n, at)| *at >= since && !is_own(n)) {
             let _ = at;
@@ -1739,7 +1748,7 @@ impl Island {
         let body = apps.iter().take(4).map(|(a, c)| if *c > 1 { format!("{a} {c}") } else { a.clone() }).collect::<Vec<_>>().join(" · ");
         self.next_own_id += 1;
         self.recap_id = self.next_own_id;
-        let n = Incoming { id: self.recap_id, app: "open-island".into(), summary: format!("{total} held back"), body, expire_ms: Some(8000), ..Default::default() };
+        let n = Incoming { id: self.recap_id, app: "open-island".into(), summary: format!("{total} {what}"), body, expire_ms: Some(8000), ..Default::default() };
         self.push(self.now, Input::Notification(n));
     }
 
@@ -1762,7 +1771,7 @@ impl Island {
             (true, None) => self.quiet_since = Some(now),
             (false, Some(since)) => {
                 self.quiet_since = None;
-                self.recap(since);
+                self.recap(since, "held back");
             }
             _ => {}
         }
@@ -2716,6 +2725,27 @@ mod tests {
         assert!(i.take_commands().iter().all(|c| !matches!(c, Command::FocusApp { .. })), "does not look for a window");
         run(&mut i, 600);
         assert_eq!(i.current_face(), Face::Notifs);
+    }
+
+    #[test]
+    fn coming_back_after_a_while_shows_what_came_in() {
+        let mut i = Island::new(Config::default());
+        let n = |id: u32, app: &str| Input::Notification(Incoming { id, app: app.into(), summary: format!("m{id}"), ..Default::default() });
+        run(&mut i, 1000);
+        i.push(i.now, n(1, "Telegram"));
+        i.push(i.now, n(2, "Mail"));
+        i.push(i.now, Input::NotificationClosed(1));
+        i.push(i.now, Input::NotificationClosed(2));
+        run(&mut i, 40_000);
+        i.push(i.now, Input::Returned { away_ms: 30_000 });
+        assert!(i.notif.is_none(), "half a minute is a pause, not an absence");
+        i.push(i.now, Input::Returned { away_ms: 120_000 });
+        let card = i.notif.clone().expect("the recap");
+        assert_eq!((card.summary.as_str(), card.body.as_str()), ("2 while you were away", "Mail · Telegram"));
+        i.cfg.away_recap = false;
+        i.notif = None;
+        i.push(i.now, Input::Returned { away_ms: 120_000 });
+        assert!(i.notif.is_none(), "switched off");
     }
 
     #[test]
