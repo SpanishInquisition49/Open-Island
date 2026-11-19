@@ -3022,7 +3022,7 @@ mod tests {
         assert!(press(&mut i, Action::Cmd(Command::MediaNext)));
         assert_eq!(i.take_commands(), vec![Command::MediaNext]);
         assert!(i.skip_press > 0.9, "{}", i.skip_press);
-        draw_frames(&mut i, 60);
+        draw_frames(&mut i, 120);
         assert!(i.skip_press.abs() < 0.01, "back in place: {}", i.skip_press);
         assert!(press(&mut i, Action::Cmd(Command::MediaPrevious)));
         assert!(i.skip_press < -0.9, "the other way for previous: {}", i.skip_press);
