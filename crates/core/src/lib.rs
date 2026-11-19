@@ -7,6 +7,7 @@ pub mod calendar;
 pub mod clipact;
 pub mod codes;
 pub mod color;
+pub mod culprit;
 pub mod duration;
 pub mod face;
 pub mod ics;

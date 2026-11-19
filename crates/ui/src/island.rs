@@ -66,6 +66,8 @@ pub struct Config {
     pub quiet_on_mic: bool,
     /// A card with what came in while the person was away, when they come back.
     pub away_recap: bool,
+    /// A card when one program hogs the CPU or the memory.
+    pub culprit_alerts: bool,
     pub quiet_on_screen_share: bool,
     /// Show notifications as cards (off: they only go to the history).
     pub show_notifications: bool,
@@ -104,6 +106,7 @@ impl Default for Config {
             quiet_in_meetings: true,
             quiet_on_mic: true,
             away_recap: true,
+            culprit_alerts: true,
             quiet_on_screen_share: true,
             show_notifications: true,
             show_osd: true,
@@ -391,6 +394,9 @@ pub struct Island {
     pub(crate) send_files: Vec<String>,
     /// The notification whose code was just copied, and until when the card says so.
     pub(crate) code_copied: Option<(u32, i64)>,
+    /// The program the last culprit card was about, and when.
+    culprit_told: Option<(String, i64)>,
+    culprit_id: u32,
     next_own_id: u32,
     /// Keyboard navigation: the focused control among the drawn ones.
     pub(crate) kb: Option<Kb>,
@@ -504,6 +510,8 @@ impl Island {
             reminders: vec![],
             send_files: vec![],
             code_copied: None,
+            culprit_told: None,
+            culprit_id: 0,
             next_own_id: OWN_ID_BASE,
             kb: None,
             page_stack: vec![],
@@ -1497,6 +1505,11 @@ impl Island {
                     self.pending.extend(Self::open_commands(&n, false));
                 }
             }
+            Action::NotifOpen if self.notif.as_ref().is_some_and(|n| n.id == self.culprit_id && self.culprit_id != 0) => {
+                self.notif = None;
+                self.notif_until = 0;
+                return self.activate(Action::Open(Page::Sys));
+            }
             Action::NotifOpen if self.notif.as_ref().is_some_and(|n| n.id == self.recap_id && self.recap_id != 0) => {
                 self.notif = None;
                 self.notif_until = 0;
@@ -1601,7 +1614,7 @@ impl Island {
         let Some(st) = &self.data.system else { return 1 };
         let mut n = 2; // cpu, cores
         n += st.memory.is_some() as usize + st.gpu.is_some() as usize + self.data.battery.is_some() as usize + st.disk.is_some() as usize;
-        n + self.data.devices.len().min(4) + 1 // devices, network
+        n + self.data.devices.len().min(4) + 1 + self.data.culprit.is_some() as usize + self.data.paused.len().min(3) // devices, network, the program to blame, the paused ones
     }
 
     /// Height of the settings page below its header: four sections and their rows.
@@ -1782,9 +1795,24 @@ impl Island {
         }
     }
 
+    /// One card when a program starts to hog the machine (and again only after ten minutes, or for another program).
+    fn culprit_card(&mut self, now: i64) {
+        let Some(c) = self.data.culprit.clone() else { return };
+        if !self.cfg.culprit_alerts || self.quiet() || self.culprit_told.as_ref().is_some_and(|(n, at)| *n == c.name && now - at < 600_000) {
+            return;
+        }
+        self.culprit_told = Some((c.name.clone(), now));
+        let summary = if c.memory { format!("{} holds {} of memory", c.name, island_core::system::fmt_mb(c.mem_mb as f64)) } else { format!("{} is using {:.1} cores", c.name, c.cores) };
+        self.next_own_id += 1;
+        self.culprit_id = self.next_own_id;
+        let n = Incoming { id: self.culprit_id, app: "open-island".into(), summary, body: if c.protected { "Tap for details".into() } else { "Tap to pause or quit it".into() }, expire_ms: Some(9000), ..Default::default() };
+        self.push(now, Input::Notification(n));
+    }
+
     fn slow_checks(&mut self) {
         let now = self.now;
         self.update_quiet(now);
+        self.culprit_card(now);
         // a device whose battery went back up may warn again next time
         let devs = &self.data.devices;
         self.device_low_told.retain(|id| devs.iter().any(|d| d.id == *id && d.battery.is_some_and(|b| b <= 20)));
@@ -3925,6 +3953,33 @@ mod tests {
         draw_frames(&mut i, 10);
         assert!(press(&mut i, Action::ClipAct(2)));
         assert_eq!(i.take_commands(), vec![Command::OpenUrl("mailto:me@uni.it".into())]);
+    }
+
+    #[test]
+    fn a_program_that_hogs_the_machine_gets_a_card_once_and_buttons_on_the_system_page() {
+        let mut i = Island::new(Config::default());
+        let hog = Culprit { name: "ffmpeg".into(), pids: vec![11, 12], cores: 3.4, mem_mb: 900.0, memory: false, protected: false };
+        run(&mut i, 1000);
+        i.data.culprit = Some(hog.clone());
+        run(&mut i, 6000);
+        let card = i.notif.clone().expect("a card");
+        assert_eq!((card.summary.as_str(), card.body.as_str()), ("ffmpeg is using 3.4 cores", "Tap to pause or quit it"));
+        i.notif = None;
+        run(&mut i, 6000);
+        assert!(i.notif.is_none(), "not again for the same program within ten minutes");
+        i.push(i.now, Input::OpenPage(Page::Sys));
+        i.data.system = Some(SystemStats::default());
+        i.data.paused = vec!["chrome".into()];
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::Cmd(Command::PauseProcs { name: "ffmpeg".into(), pids: vec![11, 12] })));
+        assert!(i.take_commands().contains(&Command::PauseProcs { name: "ffmpeg".into(), pids: vec![11, 12] }));
+        draw_frames(&mut i, 10);
+        assert!(press(&mut i, Action::Cmd(Command::QuitProcs(vec![11, 12]))));
+        draw_frames(&mut i, 10);
+        assert!(press(&mut i, Action::Cmd(Command::ResumeProcs("chrome".into()))), "what was paused can be resumed");
+        i.data.culprit = Some(Culprit { name: "niri".into(), protected: true, ..hog });
+        draw_frames(&mut i, 200);
+        assert!(!i.hits.iter().any(|h| matches!(&h.action, Action::Cmd(Command::QuitProcs(_)))), "the session cannot be quit from here");
     }
 
     #[test]

@@ -301,3 +301,13 @@ After two minutes without the keyboard or the pointer (`ext-idle-notify`, any Wa
 `OPEN_ISLAND_IDLE_SECS` to change the two minutes) and then a touch, a card says what came in meanwhile ("3 while you were
 away: Telegram 2 · Mail") and a click opens the list. It covers a lock screen too, since nobody touches anything there.
 Switch it off with `away_recap` (Options > Alerts > "Recap when back"). Linux (Wayland) only for now.
+
+## Which program is hogging the machine (Linux)
+
+When the CPU stays above 85% for fifteen seconds and one program (all its processes together: a browser is dozens) is using
+at least a core and 40% of what the machine does, or when less than 8% of the memory is left, a card names it ("ffmpeg is using
+9.8 cores"). A click opens the System page, where a row for it has **Pause** (SIGSTOP) and **Quit** (SIGTERM); a paused program
+is listed with **Resume**. The programs the session lives on (the compositor, the shell, PipeWire, systemd...) are named but
+never offered for stopping. A program the island froze and that is still frozen when the island ends is woken again the next
+time the island starts. Switch it off with `culprit_alerts` (Options > Alerts > "Heavy program alerts"). The check reads
+`/proc` every five seconds and does more only while the machine is loaded.

@@ -17,6 +17,8 @@ pub mod devices;
 #[cfg(target_os = "linux")]
 pub mod audio_mixer;
 #[cfg(target_os = "linux")]
+pub mod culprit;
+#[cfg(target_os = "linux")]
 pub mod audio_route;
 pub mod windows_focus;
 pub mod sound;
@@ -146,6 +148,7 @@ pub fn start(tx: Sender<Msg>, waker: Arc<dyn Fn() + Send + Sync>) -> Sender<Comm
         devices::start(rep.clone());
         audio_route::start(rep.clone());
         audio_mixer::start(rep.clone());
+        culprit::start(rep.clone());
         linux::start(rep.clone(), cmd_rx, settings, dnd);
     }
     #[cfg(not(target_os = "linux"))]

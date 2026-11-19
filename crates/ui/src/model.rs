@@ -90,6 +90,20 @@ pub struct Sink {
     pub label: String,
 }
 
+/// A program that is hogging the machine.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Culprit {
+    pub name: String,
+    pub pids: Vec<u32>,
+    /// CPU in cores (1.0 is one core fully busy).
+    pub cores: f32,
+    pub mem_mb: f32,
+    /// True when memory is what runs short, not the CPU.
+    pub memory: bool,
+    /// The session lives on it: it is shown but cannot be stopped from the island.
+    pub protected: bool,
+}
+
 /// An app that is playing sound, with its own volume.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppStream {
@@ -205,6 +219,9 @@ pub struct Data {
     /// Devices that can receive files (LocalSend) and whether the network is still being scanned.
     pub peers: Vec<island_core::localsend::Peer>,
     pub peers_scanning: bool,
+    /// The program hogging the CPU or the memory, and the programs the island paused.
+    pub culprit: Option<Culprit>,
+    pub paused: Vec<String>,
     pub system: Option<SystemStats>,
     pub config: ConfigView,
     /// None when there is no focus script on this machine.
@@ -383,6 +400,11 @@ pub enum Command {
     ToggleStreamMute(u32),
     /// Look for devices to send files to.
     ScanPeers,
+    /// Freeze a program (SIGSTOP); it is remembered by name so it can be resumed.
+    PauseProcs { name: String, pids: Vec<u32> },
+    ResumeProcs(String),
+    /// Ask programs to quit (SIGTERM).
+    QuitProcs(Vec<u32>),
     /// Send these files (paths) to a device.
     SendFiles { peer: island_core::localsend::Peer, paths: Vec<String> },
     /// Re-read the quick-settings state (the page was just opened).

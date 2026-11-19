@@ -1129,7 +1129,33 @@ impl Island {
         if let Some((used, total)) = st.disk {
             let f = if total > 0.0 { used / total } else { 0.0 };
             self.metric_row(p, w, y, "Disk /", Some(f), &format!("{} / {}", island_core::system::fmt_mb(used), island_core::system::fmt_mb(total)), load_color(f));
+            y += 28.0;
         }
+        // the program that hogs the machine, with what can be done about it
+        if let Some(c) = &self.data.culprit {
+            p.stagger(9);
+            let what = if c.memory { island_core::system::fmt_mb(c.mem_mb as f64) } else { format!("{:.1} cores", c.cores) };
+            p.icon("flame", 22.0, y, 14.0, theme::ORANGE);
+            let mut right = w - 14.0;
+            if !c.protected {
+                let (qw, pw) = (p.button_width("Quit"), p.button_width("Pause"));
+                p.button(rect(right - qw, y - 13.0, qw, 26.0), "Quit", Action::Cmd(Command::QuitProcs(c.pids.clone())));
+                right -= qw + 6.0;
+                p.button(rect(right - pw, y - 13.0, pw, 26.0), "Pause", Action::Cmd(Command::PauseProcs { name: c.name.clone(), pids: c.pids.clone() }));
+                right -= pw + 10.0;
+            }
+            p.text(&format!("{} · {what}", c.name), 38.0, y, 12.0, SEMI, theme::FG, Align::Left, (right - 38.0) as f32);
+            y += 28.0;
+        }
+        for name in self.data.paused.iter().take(3) {
+            p.stagger(10);
+            p.icon("player-pause", 22.0, y, 14.0, theme::DIM);
+            let rw = p.button_width("Resume");
+            p.button(rect(w - 14.0 - rw, y - 13.0, rw, 26.0), "Resume", Action::Cmd(Command::ResumeProcs(name.clone())));
+            p.text(&format!("{name} · paused"), 38.0, y, 12.0, REG, theme::DIM, Align::Left, (w - 38.0 - rw - 28.0) as f32);
+            y += 28.0;
+        }
+        let _ = y;
     }
 
     fn face_focus_mini(&self, p: P, w: f64, h: f64) {
