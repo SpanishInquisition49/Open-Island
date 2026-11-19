@@ -91,19 +91,17 @@ pub fn start_battery(rep: Reporter) {
 
 /// Clipboard history by polling the text on the clipboard: newest first, in memory only. Windows and macOS give no
 /// way to tell a password manager's entry from another one (there is no x-kde-passwordManagerHint), so entries a
-/// manager clears quickly may still appear: the history is never written to disk.
+/// manager clears quickly may still appear: only the entries the user pins are written to disk.
 pub fn start_clipboard(rep: Reporter) {
     std::thread::spawn(move || {
         let Ok(mut cb) = arboard::Clipboard::new() else { return };
-        let (mut history, mut last) = (Vec::<String>::new(), String::new());
+        super::clipboard_history::init(&rep);
+        let mut last = String::new();
         loop {
             if let Ok(text) = cb.get_text() {
                 if text != last {
                     last = text.clone();
-                    if super::clipboard_history::push(&mut history, &text) {
-                        let h = history.clone();
-                        rep.patch(move |d| d.clipboard = h);
-                    }
+                    super::clipboard_history::record(&rep, &text);
                 }
             }
             std::thread::sleep(Duration::from_millis(700));

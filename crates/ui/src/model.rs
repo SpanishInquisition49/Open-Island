@@ -195,6 +195,8 @@ pub struct Data {
     pub focus: Option<Focus>,
     /// Text copied recently, newest first (password-manager entries are never in it).
     pub clipboard: Vec<String>,
+    /// The entries the user pinned (they are also in `clipboard`, first).
+    pub clipboard_pinned: Vec<String>,
     /// Lyrics of the current track, as LRC text (the platform layer fetches them).
     pub lyrics_lrc: Option<String>,
     pub utc_offset_secs: i32,
@@ -378,6 +380,10 @@ pub enum Command {
     StopFocus,
     /// Put this text back on the clipboard.
     RestoreClipboard(String),
+    /// Pin a clipboard entry (or unpin it when it is pinned).
+    PinClipboard(String),
+    /// Drop a clipboard entry from the history.
+    ForgetClipboard(String),
     OpenUrl(String),
     InvokeAction { id: u32, key: String },
     /// Bring the window of the app that sent a notification to the front (starting it when it is not open).

@@ -14,11 +14,14 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, _settings: std::sync::Arc
     super::windows::start(rep.clone());
     #[cfg(target_os = "macos")]
     super::macos::start(rep.clone());
+    let rep2 = rep.clone();
     std::thread::spawn(move || {
         for c in cmd_rx {
             match c {
                 Command::OpenUrl(u) if u.starts_with("http://") || u.starts_with("https://") => open_url(&u),
                 Command::RestoreClipboard(t) => super::generic::restore_clipboard(&t),
+                Command::PinClipboard(t) => super::clipboard_history::toggle_pin(&rep2, &t),
+                Command::ForgetClipboard(t) => super::clipboard_history::forget(&rep2, &t),
                 #[cfg(target_os = "windows")]
                 other => super::windows::command(other),
                 #[cfg(target_os = "macos")]

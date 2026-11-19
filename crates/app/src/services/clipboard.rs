@@ -1,7 +1,7 @@
 //! Clipboard history on Wayland (wl-clipboard): text only, newest first, never password-manager entries.
 //! Kept in memory only: copied text is not written to disk.
 
-use super::clipboard_history::push;
+use super::clipboard_history as history;
 use super::Reporter;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -31,7 +31,8 @@ pub fn start(rep: Reporter) {
         let child = Command::new("wl-paste").args(["--type", "text", "--watch", "sh", "-c", "cat; printf '\\0'"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
         let Ok(mut child) = child else { return log::info!("wl-paste not found: no clipboard history") };
         let Some(mut out) = child.stdout.take() else { return };
-        let (mut history, mut buf, mut chunk) = (Vec::<String>::new(), Vec::<u8>::new(), [0u8; 4096]);
+        history::init(&rep);
+        let (mut buf, mut chunk) = (Vec::<u8>::new(), [0u8; 4096]);
         while let Ok(n) = out.read(&mut chunk) {
             if n == 0 {
                 break;
@@ -44,10 +45,7 @@ pub fn start(rep: Reporter) {
                 if is_secret(&types) {
                     continue;
                 }
-                if push(&mut history, &text) {
-                    let h = history.clone();
-                    rep.patch(move |d| d.clipboard = h);
-                }
+                history::record(&rep, &text);
             }
         }
     });

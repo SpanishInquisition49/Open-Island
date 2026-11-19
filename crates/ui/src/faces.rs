@@ -1408,20 +1408,27 @@ impl Island {
 
     fn face_clip(&self, p: P, w: f64, _h: f64) {
         let hy = self.page_header(p, w, "Clipboard");
-        p.text("click to copy", w - 14.0, hy, 11.0, REG, theme::DIM, Align::Right, 120.0);
+        p.text("click to copy, star to keep", w - 14.0, hy, 11.0, REG, theme::DIM, Align::Right, 120.0);
         let mut y = 14.0 + 34.0 + 4.0;
         if self.data.clipboard.is_empty() {
             p.text("Clipboard history is empty", 14.0, y + 14.0, 12.0, REG, theme::DIM, Align::Left, 300.0);
         }
-        for (i, t) in self.data.clipboard.iter().take(5).enumerate() {
+        for (i, t) in self.data.clipboard.iter().take(crate::island::CLIP_ROWS).enumerate() {
             p.stagger(1 + i);
             let row = rect(14.0, y, w - 28.0, 28.0);
             p.rrect(row, 10.0, if p.hovered(row) { theme::HOT_CHIP } else { theme::CHIP });
             let copied = self.copied.is_some_and(|(j, until)| j == i && self.now < until);
+            let pinned = self.data.clipboard_pinned.contains(t);
             p.icon(if copied { "circle-check" } else { "clipboard-text" }, row.x0 + 18.0, y + 14.0, 14.0, if copied { theme::ACCENT } else { theme::DIM });
             let one_line: String = t.split_whitespace().collect::<Vec<_>>().join(" ");
-            p.text(&one_line, row.x0 + 34.0, y + 14.0, 12.0, REG, theme::FG, Align::Left, (row.width() - 46.0) as f32);
+            p.text(&one_line, row.x0 + 34.0, y + 14.0, 12.0, REG, theme::FG, Align::Left, (row.width() - 34.0 - 66.0) as f32);
             p.hit(row, Action::ClipRestore(i));
+            // pin and forget sit on top of the row, so they are registered after it
+            let (pin, del) = (rect(row.x1 - 62.0, y, 30.0, 28.0), rect(row.x1 - 32.0, y, 30.0, 28.0));
+            p.icon(if pinned { "star-filled" } else { "star" }, pin.x0 + 15.0, y + 14.0, 13.0, if pinned { theme::ACCENT } else if p.hovered(pin) { theme::FG } else { theme::DIM });
+            p.hit(pin, Action::ClipPin(i));
+            p.icon("x", del.x0 + 15.0, y + 14.0, 12.0, if p.hovered(del) { theme::FG } else { theme::DIM });
+            p.hit(del, Action::ClipForget(i));
             y += 32.0;
         }
     }

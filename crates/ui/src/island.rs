@@ -111,6 +111,9 @@ impl Default for Config {
 }
 
 /// What a click on a drawn region does.
+/// Rows of the clipboard page.
+pub const CLIP_ROWS: usize = 7;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Cmd(Command),
@@ -161,6 +164,8 @@ pub enum Action {
     /// A click on the notification card: go to the app that sent it.
     NotifOpen,
     ClipRestore(usize),
+    ClipPin(usize),
+    ClipForget(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1480,6 +1485,16 @@ impl Island {
                     return vec![Command::RestoreClipboard(t)];
                 }
             }
+            Action::ClipPin(i) => {
+                if let Some(t) = self.data.clipboard.get(i).cloned() {
+                    return vec![Command::PinClipboard(t)];
+                }
+            }
+            Action::ClipForget(i) => {
+                if let Some(t) = self.data.clipboard.get(i).cloned() {
+                    return vec![Command::ForgetClipboard(t)];
+                }
+            }
             Action::ToggleDnd => {
                 self.data.dnd = !self.data.dnd;
                 self.dnd_sent = self.quiet();
@@ -1509,7 +1524,7 @@ impl Island {
             }
             Face::Notif if self.notif.as_ref().is_some_and(|n| n.progress.is_some()) => h += 14.0,
             Face::Notifs => h = 14.0 + 34.0 + 6.0 + self.history.len().clamp(1, 5) as f64 * 46.0 + if self.history.is_empty() { 20.0 } else { 8.0 },
-            Face::Clip => h = 14.0 + 34.0 + 4.0 + self.data.clipboard.len().clamp(1, 5) as f64 * 32.0 + 10.0,
+            Face::Clip => h = 14.0 + 34.0 + 4.0 + self.data.clipboard.len().clamp(1, CLIP_ROWS) as f64 * 32.0 + 10.0,
             Face::FocusMini => w += self.icon_count(true) as f64 * ICON_W,
             Face::Settings => h = 14.0 + 34.0 + self.settings_content_height() + 14.0,
             Face::Options => h = 14.0 + 34.0 + 40.0 + crate::options::content_height(self.options_tab, self.data.config.filters.len()) + 14.0,
@@ -3686,6 +3701,23 @@ mod tests {
         draw_frames(&mut i, 10);
         assert!(press(&mut i, Action::HistoryRemove(0)));
         assert_eq!(i.history.len(), 1, "and the first one");
+    }
+
+    #[test]
+    fn the_clipboard_page_pins_and_forgets_an_entry() {
+        let mut i = Island::new(Config::default());
+        i.data.clipboard = vec!["one".into(), "two".into(), "three".into()];
+        i.push(T0, Input::OpenPage(Page::Clip));
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::ClipPin(1)), "a star on each row");
+        assert!(i.take_commands().contains(&Command::PinClipboard("two".into())));
+        draw_frames(&mut i, 10);
+        assert!(press(&mut i, Action::ClipForget(2)), "and an x");
+        assert!(i.take_commands().contains(&Command::ForgetClipboard("three".into())));
+        i.data.clipboard = (0..12).map(|n| n.to_string()).collect();
+        draw_frames(&mut i, 200);
+        assert!(i.hits.iter().any(|h| h.action == Action::ClipPin(CLIP_ROWS - 1)));
+        assert!(!i.hits.iter().any(|h| h.action == Action::ClipPin(CLIP_ROWS)), "only the first rows are listed");
     }
 
     #[test]
