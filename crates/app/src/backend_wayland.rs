@@ -14,7 +14,14 @@ use smithay_client_toolkit::{
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    delegate_keyboard,
+    delegate_keyboard, delegate_data_device,
+    data_device_manager::{
+        data_device::{DataDevice, DataDeviceHandler},
+        data_offer::{DataOfferHandler, DragOffer},
+        data_source::DataSourceHandler,
+        WritePipe,
+        DataDeviceManagerState,
+    },
     seat::{
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
         pointer::{PointerEvent, PointerEventKind, PointerHandler},
@@ -30,7 +37,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wayland_client::{
     globals::registry_queue_init,
-    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
+    protocol::{wl_data_device::WlDataDevice, wl_data_source::WlDataSource, wl_data_device_manager::DndAction, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
     Connection, Dispatch, Proxy, QueueHandle,
 };
 use wayland_protocols::wp::{
@@ -41,6 +48,8 @@ use wayland_protocols::wp::{
     viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
 };
 
+/// What a file manager offers when a file is dragged.
+const URI_LIST: &str = "text/uri-list";
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
@@ -55,6 +64,10 @@ struct Wl {
     _fractional: Option<WpFractionalScaleV1>,
     pointer: Option<wl_pointer::WlPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    data_manager: Option<DataDeviceManagerState>,
+    data_device: Option<DataDevice>,
+    /// Paths of files dropped on the island (read on another thread).
+    drop_tx: channel::Sender<Vec<String>>,
     loop_handle: calloop::LoopHandle<'static, Wl>,
     keyboard_on: bool,
     ctrl: bool,
@@ -164,6 +177,10 @@ impl SeatHandler for Wl {
     fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, capability: Capability) {
         if capability == Capability::Pointer && self.pointer.is_none() {
             self.pointer = self.seat_state.get_pointer(qh, &seat).ok();
+            // files dragged onto the island
+            if self.data_device.is_none() {
+                self.data_device = self.data_manager.as_ref().map(|m| m.get_data_device(qh, &seat));
+            }
         }
         if capability == Capability::Keyboard && self.keyboard.is_none() {
             // with key repeat, so holding Backspace deletes
@@ -302,6 +319,49 @@ delegate_pointer!(Wl);
 delegate_keyboard!(Wl);
 delegate_layer!(Wl);
 delegate_registry!(Wl);
+delegate_data_device!(Wl);
+
+impl Wl {
+    /// The file drag now over the island, when it carries files: accepted as a copy.
+    fn drag_over(&mut self) {
+        let Some(offer) = self.data_device.as_ref().and_then(|d| d.data().drag_offer()) else { return };
+        if offer.with_mime_types(|m| m.iter().any(|t| t == URI_LIST)) {
+            offer.set_actions(DndAction::Copy, DndAction::Copy);
+            offer.accept_mime_type(offer.serial, Some(URI_LIST.to_string()));
+            // the pill opens so the drop has a target to see
+            self.app.input(island_ui::model::Input::Peek);
+            self.dirty = true;
+        }
+    }
+}
+
+impl DataDeviceHandler for Wl {
+    fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64, _: &wl_surface::WlSurface) {
+        self.drag_over();
+    }
+    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64) {
+        self.drag_over();
+    }
+    fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+        let Some(offer) = self.data_device.as_ref().and_then(|d| d.data().drag_offer()) else { return };
+        let Ok(mut pipe) = offer.receive(URI_LIST.to_string()) else { return };
+        let tx = self.drop_tx.clone();
+        // the file manager writes the list when it is ready: read it away from the event loop
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = std::io::Read::read_to_string(&mut pipe, &mut text);
+            offer.finish();
+            let _ = tx.send(island_core::localsend::uri_list_paths(&text));
+        });
+    }
+}
+
+impl DataOfferHandler for Wl {
+    fn source_actions(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &mut DragOffer, _: DndAction) {}
+    fn selected_action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &mut DragOffer, _: DndAction) {}
+}
 
 /// Reads the outputs on a queue of its own (the main one has no state to take their events yet) and returns the one
 /// whose connector name is `name` (`eDP-1`); matching is not case sensitive.
@@ -385,6 +445,18 @@ pub fn run() -> Result<(), String> {
         .handle()
         .insert_source(wake_rx, |_, _, state: &mut Wl| state.dirty = true)
         .map_err(|e| e.to_string())?;
+    let (drop_tx, drop_rx) = channel::channel::<Vec<String>>();
+    event_loop
+        .handle()
+        .insert_source(drop_rx, |ev, _, state: &mut Wl| {
+            if let channel::Event::Msg(paths) = ev {
+                if !paths.is_empty() {
+                    state.app.input(island_ui::model::Input::SendFiles(paths));
+                }
+                state.dirty = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
     WaylandSource::new(conn.clone(), event_queue).insert(event_loop.handle()).map_err(|e| e.to_string())?;
 
     let mut gpu = Gpu::new();
@@ -403,6 +475,9 @@ pub fn run() -> Result<(), String> {
         _fractional: fractional,
         pointer: None,
         keyboard: None,
+        data_manager: DataDeviceManagerState::bind(&globals, &qh).ok(),
+        data_device: None,
+        drop_tx,
         loop_handle: event_loop.handle(),
         keyboard_on: false,
         ctrl: false,
@@ -435,4 +510,14 @@ pub fn run() -> Result<(), String> {
             state.render(&qh);
         }
     }
+}
+
+/// The island only receives drags; the trait is needed by the delegate and nothing is ever offered.
+impl DataSourceHandler for Wl {
+    fn accept_mime(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: Option<String>) {}
+    fn send_request(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: String, _: WritePipe) {}
+    fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
 }

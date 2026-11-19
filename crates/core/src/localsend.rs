@@ -95,6 +95,35 @@ pub fn refusal(status: u16) -> &'static str {
     }
 }
 
+/// The files in a `text/uri-list` (what a file manager gives when a file is dropped): `file://` lines, percent-decoded.
+pub fn uri_list_paths(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| {
+            let rest = l.strip_prefix("file://")?;
+            // an optional host (empty or localhost) comes before the path
+            let path = rest.strip_prefix("localhost").unwrap_or(rest);
+            if !path.starts_with('/') {
+                return None;
+            }
+            let (bytes, mut out, mut i) = (path.as_bytes(), Vec::with_capacity(path.len()), 0);
+            while i < bytes.len() {
+                if bytes[i] == b'%' && bytes.len() >= i + 3 {
+                    if let Some(b) = std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                        out.push(b);
+                        i += 3;
+                        continue;
+                    }
+                }
+                out.push(bytes[i]);
+                i += 1;
+            }
+            String::from_utf8(out).ok()
+        })
+        .collect()
+}
+
 /// `1.4 MB`, `812 kB`, `37 B`.
 pub fn size_text(bytes: u64) -> String {
     const U: [&str; 4] = ["B", "kB", "MB", "GB"];
@@ -148,6 +177,15 @@ mod tests {
         assert!(parse_session("{}").is_none());
         assert_eq!(refusal(403), "declined");
         assert_eq!(refusal(500), "failed");
+    }
+
+    #[test]
+    fn a_dropped_uri_list_gives_the_paths() {
+        let t = "# a comment\r\nfile:///home/me/My%20Doc%C3%A8.pdf\r\nfile://localhost/tmp/a.txt\r\nhttps://example.org/x\r\nfile://otherhost/x\r\nfile:///100%25\r\n";
+        assert_eq!(uri_list_paths(t), ["/home/me/My Docè.pdf", "/tmp/a.txt", "/100%"]);
+        assert!(uri_list_paths("").is_empty());
+        assert_eq!(uri_list_paths("file:///bad%zz%"), ["/bad%zz%"], "an escape that is not one stays as it is");
+        assert_eq!(uri_list_paths("file:///a%é.txt"), ["/a%é.txt"], "no cut inside a character");
     }
 
     #[test]

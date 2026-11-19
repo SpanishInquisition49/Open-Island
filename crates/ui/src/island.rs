@@ -3832,10 +3832,7 @@ mod tests {
 
     #[test]
     fn the_pill_reminds_earlier_than_the_card_when_asked() {
-        let mut cfg = Config::default();
-        cfg.meeting_lead_ms = 10 * 60_000;
-        cfg.meeting_pill_ms = 45 * 60_000;
-        let mut i = Island::new(cfg);
+        let mut i = Island::new(Config { meeting_lead_ms: 10 * 60_000, meeting_pill_ms: 45 * 60_000, ..Default::default() });
         i.data.events = vec![Event { id: "e".into(), title: "Seminar".into(), start_ms: T0 + 30 * 60_000, end_ms: T0 + 60 * 60_000, all_day: false, url: None, color: None, calendar: "c".into() }];
         i.push(T0, Input::OpenKeyboard(None));
         i.now = T0;

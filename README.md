@@ -284,4 +284,6 @@ is next and in how long; an event with a link has a join button on its row.
 [LocalSend](https://localsend.org) (phones, other computers; the app must be open there), found by looking at the /24 network
 for its port, and sends the files to the one you click. The progress pill shows it (the other side has to accept first), then a
 card says how it went. It speaks LocalSend's protocol v2 (self-signed HTTPS, which is why the certificate is not checked), so
-nothing else has to be installed on this machine. Not done: dropping a file on the island, and receiving.
+nothing else has to be installed on this machine. On Wayland you can also drag files from a file manager onto the pill: it
+opens, and dropping opens the same page (the drop target is the island's own area, so the pill must be under the pointer).
+Not done: receiving, and dropping on Windows and macOS.

@@ -298,6 +298,14 @@ impl App {
         self.exec(cmds);
     }
 
+    /// Feeds an input from the platform layer (a file dropped on the island).
+    pub fn input(&mut self, i: island_ui::model::Input) {
+        let now = self.now();
+        self.island.push(now, i);
+        let cmds = self.island.take_commands();
+        self.exec(cmds);
+    }
+
     pub fn pointer_left(&mut self) {
         let now = self.now();
         self.island.pointer_left(now);
