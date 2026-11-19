@@ -375,7 +375,10 @@ change): Wi-Fi when the machine has it, else GeoIP, which can be 25 km off; the 
 the location set for the weather is used (the page says so). The trips to events now start from the fix too (a fix of the last
 quarter hour, asked for when there is none), not from the weather location.
 
-Tiles come from CARTO's dark map (OpenStreetMap data, credit drawn on the map), 256 px at a time, kept in
-`~/.cache/open-island/tiles` for two weeks. What leaves the machine when the page is open is the tile addresses, which say
-roughly where you are looking. `map_tile_url` in `config.json` changes the provider (an https URL with `{z}`, `{x}` and `{y}`,
-e.g. `https://tile.openstreetmap.org/{z}/{x}/{y}.png`; mind the provider's usage policy).
+Tiles come from OpenStreetMap's own server (no key; its light style, which the island darkens itself with an invert and a hue
+turn so water stays blue and parks green; `map_dark: false` keeps it light). 256 px at a time, kept in
+`~/.cache/open-island/tiles` for two weeks, as OSM's tile policy asks, with the credit drawn on the map and a User-Agent of
+`open-island`. What leaves the machine when the page is open is the tile addresses, which say roughly where you are looking.
+`map_tile_url` in `config.json` changes the provider (an https URL with `{z}`, `{x}` and `{y}`); most others want an API key,
+and some answer a key-less request with a picture that says so, so check the map after changing it (CARTO's dark map did exactly
+that, which is why it is not the default). OSM's server is meant for light use: heavy use should go to a provider of your own.

@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1 << 40);
 /// A tile to load: zoom, x, y and the URL template.
-type Job = (u8, i64, i64, String);
+type Job = (u8, i64, i64, String, bool);
 static QUEUE: OnceLock<Sender<Job>> = OnceLock::new();
 const KEEP: Duration = Duration::from_secs(14 * 24 * 3600);
 
@@ -27,8 +27,14 @@ pub fn cache_name(template: &str, z: u8, x: i64, y: i64) -> String {
     format!("{style:016x}/{z}/{x}/{y}.png")
 }
 
-fn decode(bytes: &[u8]) -> Option<Image> {
-    let rgba = image::load_from_memory(bytes).ok()?.to_rgba8();
+fn decode(bytes: &[u8], dark: bool) -> Option<Image> {
+    let mut rgba = image::load_from_memory(bytes).ok()?.to_rgba8();
+    if dark {
+        for px in rgba.pixels_mut() {
+            let (r, g, b) = island_core::map::darken(px[0], px[1], px[2]);
+            px.0 = [r, g, b, px[3]];
+        }
+    }
     Some(Image { id: NEXT_ID.fetch_add(1, Ordering::Relaxed), width: rgba.width(), height: rgba.height(), rgba: Arc::new(rgba.into_raw()) })
 }
 
@@ -50,7 +56,7 @@ fn fetch(template: &str, z: u8, x: i64, y: i64) -> Option<Vec<u8>> {
     let mut buf = Vec::new();
     net::agent().get(&url).call().ok()?.body_mut().as_reader().take(2 * 1024 * 1024).read_to_end(&mut buf).ok()?;
     // only a picture is kept
-    decode(&buf)?;
+    decode(&buf, false)?;
     if let Some(f) = file {
         if let Some(dir) = f.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -63,15 +69,15 @@ fn fetch(template: &str, z: u8, x: i64, y: i64) -> Option<Vec<u8>> {
 fn worker(rep: Reporter, rx: Arc<Mutex<Receiver<Job>>>) {
     loop {
         let job = rx.lock().ok().and_then(|r| r.recv().ok());
-        let Some((z, x, y, template)) = job else { return };
-        match fetch(&template, z, x, y).and_then(|b| decode(&b)) {
+        let Some((z, x, y, template, dark)) = job else { return };
+        match fetch(&template, z, x, y).and_then(|b| decode(&b, dark)) {
             Some(image) => rep.input(Input::Tile { z, x, y, image }),
             None => log::debug!("tile {z}/{x}/{y} not loaded"),
         }
     }
 }
 
-pub fn request(rep: &Reporter, z: u8, x: i64, y: i64, template: String) {
+pub fn request(rep: &Reporter, z: u8, x: i64, y: i64, template: String, dark: bool) {
     let tx = QUEUE.get_or_init(|| {
         let (tx, rx) = channel();
         let rx = Arc::new(Mutex::new(rx));
@@ -81,7 +87,7 @@ pub fn request(rep: &Reporter, z: u8, x: i64, y: i64, template: String) {
         }
         tx
     });
-    let _ = tx.send((z, x, y, template));
+    let _ = tx.send((z, x, y, template, dark));
 }
 
 #[cfg(test)]
@@ -101,17 +107,30 @@ mod tests {
     fn a_png_decodes_and_garbage_does_not() {
         let mut png = vec![];
         image::DynamicImage::new_rgba8(4, 4).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
-        let img = decode(&png).unwrap();
+        let img = decode(&png, false).unwrap();
         assert_eq!((img.width, img.height, img.rgba.len()), (4, 4, 64));
-        assert!(decode(b"<html>nope</html>").is_none());
+        assert!(decode(b"<html>nope</html>", false).is_none());
+        let dark = decode(&png, true).unwrap();
+        assert_ne!(dark.rgba[..4], img.rgba[..4], "a dark tile is not the light one");
     }
 
     #[test]
     #[ignore = "needs the network: cargo test -- --ignored live_tile"]
     fn live_tile() {
-        let t = fetch("https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png", 14, 8668, 6017).expect("a tile");
-        let img = decode(&t).unwrap();
+        let t = fetch(island_core::map::DEFAULT_TILES, 14, 8668, 6017).expect("a tile");
+        let img = decode(&t, true).unwrap();
         eprintln!("tile {}x{}", img.width, img.height);
         assert!(img.width == 512 || img.width == 256);
+        // Pisa, as the island would draw it: a 2 x 2 patch written out to look at
+        let (cx, cy) = island_core::map::world_px(43.7228, 10.4017, 15);
+        let (tx, ty) = ((cx / 256.0) as i64, (cy / 256.0) as i64);
+        let mut out = image::RgbaImage::new(512, 512);
+        for (i, (dx, dy)) in [(0, 0), (1, 0), (0, 1), (1, 1)].into_iter().enumerate() {
+            let t = decode(&fetch(island_core::map::DEFAULT_TILES, 15, tx + dx, ty + dy).expect("tile"), true).unwrap();
+            let t = image::RgbaImage::from_raw(t.width, t.height, t.rgba.to_vec()).unwrap();
+            let t = image::imageops::resize(&t, 256, 256, image::imageops::FilterType::Triangle);
+            image::imageops::overlay(&mut out, &t, (i as i64 % 2) * 256, (i as i64 / 2) * 256);
+        }
+        let _ = out.save(std::env::var("OI_TILE_PNG").unwrap_or_else(|_| "/tmp/claude-1000/pisa-dark.png".into()));
     }
 }

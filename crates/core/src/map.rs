@@ -1,7 +1,9 @@
 //! Slippy-map arithmetic (Web Mercator, 256-pixel tiles) and distances. No I/O: the app fetches the tiles.
 
-/// Dark map tiles (CARTO, from OpenStreetMap data), 512 px for a sharp 256 px tile.
-pub const DEFAULT_TILES: &str = "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png";
+/// OpenStreetMap's own tiles: no key, light style (the island darkens them itself). Other providers want a key.
+pub const DEFAULT_TILES: &str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+/// The credit the tile provider asks for.
+pub const CREDIT: &str = "© OpenStreetMap contributors";
 pub const TILE: f64 = 256.0;
 pub const MIN_ZOOM: u8 = 3;
 pub const MAX_ZOOM: u8 = 18;
@@ -91,6 +93,15 @@ pub fn fmt_distance(m: f64) -> String {
 pub fn metres_to_px(metres: f64, lat: f64, zoom: u8) -> f64 {
     let m_per_px = 156_543.033_92 * lat.to_radians().cos() / (1u64 << zoom) as f64;
     metres / m_per_px
+}
+
+/// A light map pixel as a dark one: invert, then turn the hue back half way round so water stays blue and parks stay
+/// green (the CSS `invert(1) hue-rotate(180deg)` trick), a little dimmer so it sits well on the black island.
+pub fn darken(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
+    let (r, g, b) = (255.0 - r as f32, 255.0 - g as f32, 255.0 - b as f32);
+    let m = [[-0.574, 1.430, 0.144], [0.426, 0.430, 0.144], [0.426, 1.430, -0.856]];
+    let out = |row: [f32; 3]| ((row[0] * r + row[1] * g + row[2] * b) * 0.92).clamp(0.0, 255.0).round() as u8;
+    (out(m[0]), out(m[1]), out(m[2]))
 }
 
 /// A tile address filled into a URL template with `{z}`, `{x}`, `{y}`.
@@ -185,6 +196,20 @@ mod tests {
     fn directions_and_the_starting_zoom() {
         assert_eq!(directions_url("foot", (43.7, 10.4), (43.72, 10.4)), "https://www.openstreetmap.org/directions?engine=fossgis_osrm_foot&route=43.700000%2C10.400000%3B43.720000%2C10.400000");
         assert_eq!((zoom_for_accuracy(25_000.0), zoom_for_accuracy(1_120.0), zoom_for_accuracy(30.0)), (10, 14, 16));
+    }
+
+    #[test]
+    fn a_light_map_becomes_a_dark_one_that_keeps_its_colours() {
+        let lum = |(r, g, b): (u8, u8, u8)| 0.3 * r as f32 + 0.59 * g as f32 + 0.11 * b as f32;
+        let land = darken(242, 239, 233); // OSM land
+        let water = darken(170, 211, 223); // OSM water
+        let park = darken(200, 250, 204); // OSM park
+        let road = darken(255, 255, 255);
+        assert!(lum(land) < 40.0, "land is dark: {land:?}");
+        assert!(lum(road) < 12.0, "white becomes black: {road:?}");
+        assert!(water.2 > water.0, "water stays blue: {water:?}");
+        assert!(park.1 > park.0 && park.1 > park.2, "parks stay green: {park:?}");
+        assert!(lum(darken(0, 0, 0)) > 200.0, "black map text becomes light, so it reads on the dark ground");
     }
 
     #[test]

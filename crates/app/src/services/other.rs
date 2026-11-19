@@ -22,7 +22,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, _settings: std::sync::Arc
                 Command::RestoreClipboard(t) => super::generic::restore_clipboard(&t),
                 Command::PlanTrip { .. } => super::travel::command(&rep2, c),
                 Command::RefreshPosition => {}
-                Command::LoadTile { z, x, y, template } => super::tiles::request(&rep2, z, x, y, template),
+                Command::LoadTile { z, x, y, template, dark } => super::tiles::request(&rep2, z, x, y, template, dark),
                 Command::MuteMicStream { .. } => {}
                 Command::ReconnectNetwork => {}
                 Command::PauseProcs { .. } | Command::ResumeProcs(_) | Command::QuitProcs(_) => {}

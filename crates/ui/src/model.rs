@@ -467,7 +467,7 @@ pub enum Command {
     /// Look for where the machine is.
     RefreshPosition,
     /// Fetch a map tile (the template has {z} {x} {y}).
-    LoadTile { z: u8, x: i64, y: i64, template: String },
+    LoadTile { z: u8, x: i64, y: i64, template: String, dark: bool },
     /// Mute or unmute one application's microphone stream.
     MuteMicStream { stream: u32, mute: bool },
     /// Work out how to get to an event that arrives by `start_ms` (the place is sent to public map services).

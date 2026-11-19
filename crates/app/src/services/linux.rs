@@ -58,7 +58,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                 Command::RestoreClipboard(t) => clipboard::restore(&t),
                 Command::PlanTrip { .. } => super::travel::command(&rep, c),
                 Command::RefreshPosition => super::location::refresh(&rep),
-                Command::LoadTile { z, x, y, template } => super::tiles::request(&rep, z, x, y, template),
+                Command::LoadTile { z, x, y, template, dark } => super::tiles::request(&rep, z, x, y, template, dark),
                 Command::MuteMicStream { stream, mute } => {
                     run("pactl", &["set-source-output-mute", &stream.to_string(), if mute { "1" } else { "0" }]);
                 }

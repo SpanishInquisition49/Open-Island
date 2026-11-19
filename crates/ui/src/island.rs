@@ -56,6 +56,8 @@ pub struct Config {
     pub travel_margin_ms: i64,
     /// Where the map tiles come from, with {z} {x} {y}.
     pub map_tile_url: String,
+    /// Darken the (light) tiles to suit the black island.
+    pub map_dark: bool,
     /// Notifications are held after this many minutes in a row on work apps (0: never).
     pub deep_work_minutes: i64,
     /// Names of apps that count as work (part of the name, any case).
@@ -109,6 +111,7 @@ impl Default for Config {
             travel_mode: island_core::travel::Mode::Car,
             travel_margin_ms: 5 * 60_000,
             map_tile_url: island_core::map::DEFAULT_TILES.to_string(),
+            map_dark: true,
             deep_work_minutes: 20,
             deep_work_apps: island_core::activity::DEEP_WORK_APPS.iter().map(|s| s.to_string()).collect(),
             break_minutes: 0,
@@ -2100,7 +2103,7 @@ impl Island {
         for t in island_core::map::tiles(v.center.0, v.center.1, v.zoom, MAP_W, MAP_H) {
             let key = (t.z, t.x, t.y);
             if !self.tiles.contains_key(&key) && self.tiles_asked.insert(key) {
-                self.pending.push(Command::LoadTile { z: t.z, x: t.x, y: t.y, template: self.cfg.map_tile_url.clone() });
+                self.pending.push(Command::LoadTile { z: t.z, x: t.x, y: t.y, template: self.cfg.map_tile_url.clone(), dark: self.cfg.map_dark });
             }
         }
     }

@@ -1603,7 +1603,7 @@ impl Island {
             p.hit(b, Action::MapZoom(d));
         }
         // the credit the tile providers ask for
-        let credit = "© OpenStreetMap © CARTO";
+        let credit = map::CREDIT;
         let cw = p.fonts.measure(credit, 8.5, REG) as f64 + 10.0;
         p.rrect(rect(area.x1 - cw - 4.0, area.y1 - 17.0, cw, 13.0), 6.5, with_alpha(theme::BG, 0.7));
         p.text(credit, area.x1 - cw / 2.0 - 4.0, area.y1 - 10.5, 8.5, REG, theme::DIM, Align::Center, 160.0);

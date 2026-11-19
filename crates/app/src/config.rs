@@ -254,6 +254,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     u.away_recap = b("away_recap", u.away_recap);
     u.culprit_alerts = b("culprit_alerts", u.culprit_alerts);
     u.travel_times = b("travel_times", u.travel_times);
+    u.map_dark = b("map_dark", u.map_dark);
     if let Some(url) = v.get("map_tile_url").and_then(|x| x.as_str()).map(str::trim).filter(|u| u.starts_with("https://") && u.contains("{z}") && u.contains("{x}") && u.contains("{y}")) {
         u.map_tile_url = url.to_string();
     }
@@ -324,7 +325,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
 /// The options of the options page: the keys that are on or off.
 pub const BOOL_OPTIONS: &[&str] = &[
     "show_notifications", "show_osd", "media_auto_expand", "timer_sound", "battery_alerts", "weather", "rain_alerts", "meeting_alerts", "lyrics", "lyrics_in_pill", "art_tint", "status_icons",
-    "clipboard_history", "clock_in_pill", "hide_on_fullscreen", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "away_recap", "culprit_alerts", "travel_times", "quiet_on_screen_share",
+    "clipboard_history", "clock_in_pill", "hide_on_fullscreen", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "away_recap", "culprit_alerts", "travel_times", "map_dark", "quiet_on_screen_share",
 ];
 
 /// The numeric options: key, smallest, largest, and whether it is a whole number.
