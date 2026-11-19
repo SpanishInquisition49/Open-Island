@@ -1343,6 +1343,8 @@ impl Island {
         let mut y = tab_y + 28.0 + 12.0;
         let cell = |i: usize, y: f64| rect(14.0 + (i % 2) as f64 * (col_w + 8.0), y + (i / 2) as f64 * 34.0, col_w, 30.0);
         let mut n = 2;
+        // what the option under the pointer controls, shown under the options
+        let mut help: Option<&str> = None;
         // switches
         if tab == options::RULES_TAB {
             self.options_rules(p, w, y, n);
@@ -1354,6 +1356,9 @@ impl Island {
             let r = cell(i, y);
             let on = options::get_bool(&self.cfg, key);
             p.rrect(r, 10.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
+            if p.hovered(r) {
+                help = Some(options::describe(key));
+            }
             p.text(label, r.x0 + 12.0, r.center().y, 12.0, SEMI, theme::FG, Align::Left, (r.width() - 12.0 - 50.0) as f32);
             let track = rect(r.x1 - 12.0 - 32.0, r.center().y - 9.0, 32.0, 18.0);
             p.rrect(track, 9.0, if on { theme::GREEN } else { theme::TRACK });
@@ -1368,6 +1373,9 @@ impl Island {
             p.stagger(n + i / 2);
             let r = cell(i, y);
             p.rrect(r, 10.0, theme::CHIP);
+            if p.hovered(r) {
+                help = Some(options::describe(key));
+            }
             // from the right: plus, the value in a fixed column, minus
             p.text(label, r.x0 + 12.0, r.center().y, 12.0, SEMI, theme::FG, Align::Left, (r.width() - 12.0 - 118.0) as f32);
             let value = options::fmt_num(options::get_num(&self.cfg, key), unit);
@@ -1385,6 +1393,9 @@ impl Island {
             for (i, (label, value, f, hint)) in [("Timer presets", c.timer_presets.clone(), Field::TimerPresets, "5m, 10m, 25m, 1h30m"), ("Screen", screen, Field::Screen, "A screen name such as eDP-1; empty = the focused one")].into_iter().enumerate() {
                 p.stagger(n + i);
                 let r = rect(14.0, y + i as f64 * 34.0, w - 28.0, 30.0);
+                if p.hovered(r) {
+                    help = Some(options::describe(if f == Field::TimerPresets { "timer_presets" } else { "screen" }));
+                }
                 match editing(f) {
                     Some(e) => self.edit_row(p, r, e, hint),
                     None => {
@@ -1395,6 +1406,17 @@ impl Island {
                         p.hit(r, Action::EditField(f));
                     }
                 }
+            }
+        }
+        // under the last row: the line that explains the option the pointer is on
+        let rows = options::toggles(tab).len().div_ceil(2) + options::steppers(tab).len().div_ceil(2) + options::text_rows(tab);
+        let hy = tab_y + 28.0 + 12.0 + rows as f64 * 34.0 + options::HELP_H / 2.0 - 2.0;
+        match help {
+            Some(t) => {
+                p.text(t, w / 2.0, hy, 11.0, REG, theme::FG, Align::Center, (w - 28.0) as f32);
+            }
+            None => {
+                p.text("Rest on an option to see what it does", w / 2.0, hy, 11.0, REG, theme::DIM, Align::Center, (w - 28.0) as f32);
             }
         }
     }

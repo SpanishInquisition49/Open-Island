@@ -37,6 +37,44 @@ pub fn toggles(tab: usize) -> &'static [(&'static str, &'static str)] {
     }
 }
 
+/// What an option controls, in one line: shown under the options when the pointer rests on one.
+pub fn describe(key: &str) -> &'static str {
+    match key {
+        "clock_in_pill" => "Show the time inside the small pill when nothing else is on",
+        "status_icons" => "Icons in the pill for the microphone, camera, screen share and quiet mode",
+        "clipboard_history" => "Keep a list of what you copy (pinned entries survive restarts)",
+        "hide_on_fullscreen" => "Slide the island away while a window is fullscreen",
+        "weather" => "Forecast, rain alerts and the weather page (needs a location)",
+        "timer_sound" => "Play a sound when a timer ends",
+        "auto_audio_output" => "Switch the sound to headphones when they connect, back when they go",
+        "show_notifications" => "Show incoming notifications as cards on the island",
+        "show_osd" => "Show a bar when the volume or the brightness changes",
+        "battery_alerts" => "Cards for plugging in, unplugging and a low battery",
+        "meeting_alerts" => "Remind of calendar events before they start (card and pill)",
+        "rain_alerts" => "Warn when rain is expected soon",
+        "quiet_in_meetings" => "Hold notifications during a calendar event",
+        "quiet_on_mic" => "Hold notifications while the microphone is in use",
+        "quiet_on_screen_share" => "Hold notifications while you share the screen",
+        "away_recap" => "A card with what came in while you were away, when you are back",
+        "culprit_alerts" => "Name the program that hogs the CPU or the memory",
+        "media_auto_expand" => "Open the island for a moment when a new track starts",
+        "lyrics" => "Show synced lyrics on the music page",
+        "lyrics_in_pill" => "Show the current lyric line in the small pill",
+        "art_tint" => "Tint the island with the colours of the album cover",
+        "notification_seconds" => "How long a notification card stays on screen",
+        "osd_seconds" => "How long the volume and brightness bar stays",
+        "low_battery_percent" => "The battery level that gives the low battery warning",
+        "meeting_lead_minutes" => "How long before an event its card appears",
+        "meeting_pill_minutes" => "How long before an event the pill on the side appears",
+        "timer_presets" => "The quick timers on the timer page, such as 5m, 10m, 1h30m",
+        "screen" => "The screen the island sits on (Wayland): a name like eDP-1, or empty",
+        _ => "",
+    }
+}
+
+/// Height of the line that explains the option under the pointer.
+pub const HELP_H: f64 = 30.0;
+
 /// A number with its step and range: (key, label, unit, step, min, max).
 pub type Stepper = (&'static str, &'static str, &'static str, f64, f64, f64);
 
@@ -46,8 +84,8 @@ pub fn steppers(tab: usize) -> &'static [Stepper] {
             ("notification_seconds", "Card time", "s", 1.0, 2.0, 30.0),
             ("osd_seconds", "Bar time", "s", 0.1, 0.5, 5.0),
             ("low_battery_percent", "Low battery", "%", 1.0, 5.0, 50.0),
-            ("meeting_lead_minutes", "Card before event", "min", 1.0, 1.0, 60.0),
-            ("meeting_pill_minutes", "Pill before event", "min", 1.0, 1.0, 120.0),
+            ("meeting_lead_minutes", "Event card", "min", 1.0, 1.0, 60.0),
+            ("meeting_pill_minutes", "Event pill", "min", 1.0, 1.0, 120.0),
         ],
         _ => &[],
     }
@@ -146,8 +184,9 @@ pub fn content_height(tab: usize, rules: usize) -> f64 {
         return (rules.clamp(1, 4) + 2) as f64 * 34.0;
     }
     let tg = toggles(tab).len().div_ceil(2);
+    let help = HELP_H;
     let st = steppers(tab).len().div_ceil(2);
-    (tg + st + text_rows(tab)) as f64 * 34.0
+    (tg + st + text_rows(tab)) as f64 * 34.0 + help
 }
 
 #[cfg(test)]
@@ -183,6 +222,18 @@ mod tests {
         assert_eq!(TABS[RULES_TAB], "Rules");
         let nums: Vec<&str> = (0..TABS.len()).flat_map(|t| steppers(t).iter().map(|s| s.0)).collect();
         assert_eq!(nums, ["notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes"]);
+    }
+
+    #[test]
+    fn every_option_says_what_it_controls() {
+        let mut keys: Vec<&str> = (0..TABS.len()).flat_map(|t| toggles(t).iter().map(|(k, _)| *k).chain(steppers(t).iter().map(|s| s.0))).collect();
+        keys.extend(["timer_presets", "screen"]);
+        for k in keys {
+            let d = describe(k);
+            assert!(!d.is_empty(), "{k} has no description");
+            assert!(d.chars().count() <= 76, "{k}: one line of the page");
+        }
+        assert_eq!(describe("nonsense"), "");
     }
 
     #[test]
