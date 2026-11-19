@@ -1162,9 +1162,10 @@ impl Island {
                     Field::TimerPresets => self.pending.push(Command::SetOption { key: "timer_presets".into(), value: OptionValue::Text(t) }),
                     Field::Screen => self.pending.push(Command::SetOption { key: "screen".into(), value: OptionValue::Text(t) }),
                     Field::MapTiles => {
-                        let t = t.trim().to_string();
+                        // a preset name stands for its URL
+                        let t = if t.trim().is_empty() { String::new() } else { island_core::map::resolve(&t).unwrap_or_else(|| t.trim().to_string()) };
                         if !t.is_empty() && !island_core::map::valid_template(&t) {
-                            self.note = note("An https URL with {z}, {x} and {y} (and {key} for the API key)");
+                            self.note = note("A preset (esri-dark, osm...) or an https URL with {z}, {x} and {y}");
                             self.edit = Some(Edit { text: t.clone(), cursor: t.chars().count(), ..e });
                         } else {
                             self.cfg.map_tile_url = if t.is_empty() { island_core::map::DEFAULT_TILES.to_string() } else { t.clone() };
@@ -2141,7 +2142,7 @@ impl Island {
         for t in island_core::map::tiles(v.center.0, v.center.1, v.zoom, MAP_W, MAP_H) {
             let key = (t.z, t.x, t.y);
             if !self.tiles.contains_key(&key) && self.tiles_asked.insert(key) {
-                self.pending.push(Command::LoadTile { z: t.z, x: t.x, y: t.y, template: self.cfg.map_tile_url.clone(), dark: self.cfg.map_dark && !self.cfg.map_tile_url.contains("dark") });
+                self.pending.push(Command::LoadTile { z: t.z, x: t.x, y: t.y, template: self.cfg.map_tile_url.clone(), dark: self.cfg.map_dark && !island_core::map::is_dark_style(&self.cfg.map_tile_url) });
             }
         }
     }

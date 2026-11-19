@@ -1417,7 +1417,7 @@ impl Island {
             let c = &self.data.config;
             let editing = |f: Field| self.edit.as_ref().filter(|e| e.field == f);
             let screen = if c.screen == "focused" { "Focused".to_string() } else { c.screen.clone() };
-            for (i, (label, value, f, hint)) in [("Timer presets", c.timer_presets.clone(), Field::TimerPresets, "5m, 10m, 25m, 1h30m"), ("Screen", screen, Field::Screen, "A screen name such as eDP-1; empty = the focused one"), ("Map tiles", if c.map_tile_url.is_empty() { "OpenStreetMap".to_string() } else { c.map_tile_url.clone() }, Field::MapTiles, "https://.../{z}/{x}/{y}.png?key={key}; empty = OpenStreetMap")].into_iter().enumerate() {
+            for (i, (label, value, f, hint)) in [("Timer presets", c.timer_presets.clone(), Field::TimerPresets, "5m, 10m, 25m, 1h30m"), ("Screen", screen, Field::Screen, "A screen name such as eDP-1; empty = the focused one"), ("Map tiles", if c.map_tile_url.is_empty() { "OpenStreetMap".to_string() } else { c.map_tile_url.clone() }, Field::MapTiles, "A preset (esri-dark, osm, carto-dark...) or a URL; empty = OpenStreetMap")].into_iter().enumerate() {
                 p.stagger(n + i);
                 let r = rect(14.0, y + i as f64 * 34.0, w - 28.0, 30.0);
                 if p.hovered(r) {
@@ -1615,7 +1615,7 @@ impl Island {
             p.hit(b, Action::MapZoom(d));
         }
         // the credit the tile providers ask for
-        let credit = map::CREDIT;
+        let credit = map::credit_for(&self.cfg.map_tile_url);
         let cw = p.fonts.measure(credit, 8.5, REG) as f64 + 10.0;
         p.rrect(rect(area.x1 - cw - 4.0, area.y1 - 17.0, cw, 13.0), 6.5, with_alpha(theme::BG, 0.7));
         p.text(credit, area.x1 - cw / 2.0 - 4.0, area.y1 - 10.5, 8.5, REG, theme::DIM, Align::Center, 160.0);

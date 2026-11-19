@@ -121,6 +121,17 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs the network: cargo test -- --ignored live_presets"]
+    fn live_presets() {
+        // every key-less preset answers with a picture for a tile of Pisa
+        for (name, template) in island_core::map::PRESETS.iter().filter(|(_, t)| !island_core::map::needs_key(t)) {
+            let bytes = fetch(template, "", 15, 17330, 11950).unwrap_or_else(|| panic!("{name}: no tile"));
+            let img = decode(&bytes, false).unwrap_or_else(|| panic!("{name}: not a picture"));
+            eprintln!("{name}: {}x{}", img.width, img.height);
+        }
+    }
+
+    #[test]
     #[ignore = "needs the network: cargo test -- --ignored live_tile"]
     fn live_tile() {
         let t = fetch(island_core::map::DEFAULT_TILES, "", 14, 8668, 6017).expect("a tile");

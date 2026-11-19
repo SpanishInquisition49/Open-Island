@@ -258,8 +258,8 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     u.culprit_alerts = b("culprit_alerts", u.culprit_alerts);
     u.travel_times = b("travel_times", u.travel_times);
     u.map_dark = b("map_dark", u.map_dark);
-    if let Some(url) = v.get("map_tile_url").and_then(|x| x.as_str()).map(str::trim).filter(|u| island_core::map::valid_template(u)) {
-        u.map_tile_url = url.to_string();
+    if let Some(url) = v.get("map_tile_url").and_then(|x| x.as_str()).map(str::trim).and_then(island_core::map::resolve) {
+        u.map_tile_url = url;
     }
     if let Some(m) = v.get("deep_work_minutes").and_then(|x| x.as_i64()).filter(|m| (0..=240).contains(m)) {
         u.deep_work_minutes = m;
@@ -388,10 +388,11 @@ pub fn set_option(o: &mut serde_json::Map<String, serde_json::Value>, key: &str,
             let t = t.trim();
             if t.is_empty() {
                 o.remove("map_tile_url"); // back to the default
-            } else if island_core::map::valid_template(t) {
-                o.insert("map_tile_url".into(), json!(t));
+            } else if let Some(url) = island_core::map::resolve(t) {
+                // a preset name is kept as the URL it stands for
+                o.insert("map_tile_url".into(), json!(url));
             } else {
-                return Err("map_tile_url is an https URL with {z}, {x} and {y} (and {key} for the API key)".into());
+                return Err("map_tile_url is a preset (osm, esri-dark, esri-light, esri-street, opentopomap, cyclosm, carto-dark) or an https URL with {z}, {x} and {y}".into());
             }
         }
         Text(t) if key == "map_api_key" => {
@@ -547,8 +548,11 @@ mod tests {
         let mut o = serde_json::Map::new();
         let text = |t: &str| island_ui::model::OptionValue::Text(t.into());
         assert!(set_option(&mut o, "map_tile_url", &text("https://t/{z}/{x}/{y}.png?key={key}")).is_ok());
+        set_option(&mut o, "map_tile_url", &text("esri-dark")).unwrap();
+        assert!(o["map_tile_url"].as_str().unwrap().contains("World_Dark_Gray_Base"));
+        assert_eq!(parse(r#"{"map_tile_url":"esri-street"}"#).unwrap().ui.map_tile_url, island_core::map::PRESETS[3].1);
         assert!(set_option(&mut o, "map_tile_url", &text("http://t/{z}/{x}/{y}")).is_err() && set_option(&mut o, "map_tile_url", &text("https://t/{z}/{x}")).is_err());
-        assert_eq!(o["map_tile_url"], "https://t/{z}/{x}/{y}.png?key={key}", "a bad one leaves the good one");
+        assert!(o["map_tile_url"].as_str().unwrap().contains("World_Dark_Gray_Base"), "a bad one leaves the good one");
         assert!(set_option(&mut o, "map_api_key", &text("  abc123 ")).is_ok() && o["map_api_key"] == "abc123");
         assert!(set_option(&mut o, "map_api_key", &text("two words")).is_err());
         set_option(&mut o, "map_api_key", &text("")).unwrap();

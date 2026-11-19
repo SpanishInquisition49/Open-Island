@@ -109,6 +109,44 @@ pub fn tile_url(template: &str, z: u8, x: i64, y: i64, key: &str) -> String {
     template.replace("{z}", &z.to_string()).replace("{x}", &x.to_string()).replace("{y}", &y.to_string()).replace("{key}", key)
 }
 
+/// Ready-made tile sources by name: (name, template). All were fetched and looked at; only `carto-dark` wants a key.
+pub const PRESETS: &[(&str, &str)] = &[
+    ("osm", DEFAULT_TILES),
+    ("esri-dark", "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"),
+    ("esri-light", "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}"),
+    ("esri-street", "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"),
+    ("opentopomap", "https://tile.opentopomap.org/{z}/{x}/{y}.png"),
+    ("cyclosm", "https://a.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png"),
+    ("carto-dark", "https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png?key={key}"),
+];
+
+/// A preset name or a valid template, as the template to use.
+pub fn resolve(t: &str) -> Option<String> {
+    let t = t.trim();
+    PRESETS.iter().find(|(n, _)| n.eq_ignore_ascii_case(t)).map(|(_, u)| u.to_string()).or_else(|| valid_template(t).then(|| t.to_string()))
+}
+
+/// Whether the provider's tiles are dark already (the island does not darken those again).
+pub fn is_dark_style(template: &str) -> bool {
+    template.to_lowercase().contains("dark")
+}
+
+/// The credit a provider asks for, by the address of its tiles.
+pub fn credit_for(template: &str) -> &'static str {
+    let t = template.to_lowercase();
+    if t.contains("arcgisonline") {
+        "© Esri, HERE, Garmin, OpenStreetMap contributors"
+    } else if t.contains("cartocdn") {
+        "© OpenStreetMap © CARTO"
+    } else if t.contains("opentopomap") {
+        "© OpenStreetMap, SRTM | © OpenTopoMap"
+    } else if t.contains("cyclosm") {
+        "© OpenStreetMap contributors, CyclOSM"
+    } else {
+        CREDIT
+    }
+}
+
 /// Whether a tile URL template wants the API key.
 pub fn needs_key(template: &str) -> bool {
     template.contains("{key}")
@@ -220,6 +258,17 @@ mod tests {
         assert!(water.2 > water.0, "water stays blue: {water:?}");
         assert!(park.1 > park.0 && park.1 > park.2, "parks stay green: {park:?}");
         assert!(lum(darken(0, 0, 0)) > 200.0, "black map text becomes light, so it reads on the dark ground");
+    }
+
+    #[test]
+    fn presets_and_credits() {
+        assert_eq!(resolve("Esri-Dark").unwrap(), PRESETS[1].1);
+        assert_eq!(resolve("https://t/{z}/{x}/{y}.png").unwrap(), "https://t/{z}/{x}/{y}.png");
+        assert!(resolve("nonsense").is_none() && resolve("http://t/{z}/{x}/{y}").is_none());
+        assert!(PRESETS.iter().all(|(_, u)| valid_template(u)));
+        assert_eq!(PRESETS.iter().filter(|(_, u)| needs_key(u)).count(), 1, "only CARTO wants a key");
+        assert!(is_dark_style(PRESETS[1].1) && is_dark_style(PRESETS[6].1) && !is_dark_style(DEFAULT_TILES));
+        assert!(credit_for(PRESETS[1].1).contains("Esri") && credit_for(DEFAULT_TILES) == CREDIT && credit_for(PRESETS[6].1).contains("CARTO"));
     }
 
     #[test]
