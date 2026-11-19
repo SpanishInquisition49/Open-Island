@@ -57,6 +57,15 @@ impl History {
 }
 
 static STATE: Mutex<Option<History>> = Mutex::new(None);
+/// Texts that must never enter the history (a one-time code that was just copied).
+static IGNORED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub fn ignore(text: &str) {
+    if let Ok(mut g) = IGNORED.lock() {
+        g.push(text.to_string());
+        g.truncate(8);
+    }
+}
 
 fn with(f: impl FnOnce(&mut History)) -> Option<(Vec<String>, Vec<String>)> {
     let mut g = STATE.lock().ok()?;
@@ -81,6 +90,9 @@ pub fn init(rep: &Reporter) {
 
 /// A new text on the clipboard.
 pub fn record(rep: &Reporter, text: &str) {
+    if IGNORED.lock().is_ok_and(|g| g.iter().any(|t| t == text)) {
+        return;
+    }
     let mut added = false;
     let r = with(|h| added = h.record(text));
     if added {

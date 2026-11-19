@@ -287,3 +287,9 @@ card says how it went. It speaks LocalSend's protocol v2 (self-signed HTTPS, whi
 nothing else has to be installed on this machine. On Wayland you can also drag files from a file manager onto the pill: it
 opens, and dropping opens the same page (the drop target is the island's own area, so the pill must be under the pointer).
 Not done: receiving, and dropping on Windows and macOS.
+
+## One-time codes
+
+A notification that says it carries a code ("verification code", "codice", "OTP", "PIN"...) next to 4 to 8 digits shows the
+code large; a click copies it. The code is never put in the clipboard history, and it leaves the clipboard after thirty seconds
+if it is still there. Times, amounts, dates and phone numbers are not taken for codes.

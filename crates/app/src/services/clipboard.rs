@@ -22,6 +22,20 @@ pub fn restore(text: &str) {
     }
 }
 
+/// Copies a one-time code and takes it off the clipboard again after thirty seconds, when it is still there.
+pub fn copy_code(code: &str) {
+    super::clipboard_history::ignore(code);
+    restore(code);
+    let code = code.to_string();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        let now = Command::new("wl-paste").args(["--no-newline", "--type", "text"]).stderr(Stdio::null()).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        if now == code {
+            let _ = Command::new("wl-copy").arg("--clear").status();
+        }
+    });
+}
+
 pub fn start(rep: Reporter) {
     if std::env::var_os("WAYLAND_DISPLAY").is_none() {
         return;

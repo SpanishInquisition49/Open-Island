@@ -61,6 +61,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                 Command::SetSink(_) | Command::SetSource(_) | Command::SetStreamVolume { .. } | Command::ToggleStreamMute(_) => {
                     super::audio_mixer::command(&c);
                 }
+                Command::CopyCode(c) => clipboard::copy_code(&c),
                 Command::PinClipboard(t) => super::clipboard_history::toggle_pin(&rep, &t),
                 Command::ForgetClipboard(t) => super::clipboard_history::forget(&rep, &t),
                 // a slider being dragged sends dozens of these a second: only the latest is worth a process

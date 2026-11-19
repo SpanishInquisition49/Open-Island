@@ -409,6 +409,8 @@ pub enum Command {
     RestoreClipboard(String),
     /// Pin a clipboard entry (or unpin it when it is pinned).
     PinClipboard(String),
+    /// Copy a one-time code; it leaves the clipboard (and is never kept in the history) after thirty seconds.
+    CopyCode(String),
     /// Drop a clipboard entry from the history.
     ForgetClipboard(String),
     OpenUrl(String),

@@ -168,6 +168,7 @@ pub enum Action {
     NotifOpen,
     ClipRestore(usize),
     ClipPin(usize),
+    CopyCode(String),
     /// Send the files waiting on the send page to the device at this index.
     SendTo(usize),
     ClipForget(usize),
@@ -383,6 +384,8 @@ pub struct Island {
     pub(crate) reminders: Vec<Reminder>,
     /// Files waiting for a device to be picked (the send page).
     pub(crate) send_files: Vec<String>,
+    /// The notification whose code was just copied, and until when the card says so.
+    pub(crate) code_copied: Option<(u32, i64)>,
     next_own_id: u32,
     /// Keyboard navigation: the focused control among the drawn ones.
     pub(crate) kb: Option<Kb>,
@@ -495,6 +498,7 @@ impl Island {
             skip_press: 0.0,
             reminders: vec![],
             send_files: vec![],
+            code_copied: None,
             next_own_id: OWN_ID_BASE,
             kb: None,
             page_stack: vec![],
@@ -1512,6 +1516,11 @@ impl Island {
                     return out;
                 }
             }
+            Action::CopyCode(code) => {
+                self.code_copied = self.notif.as_ref().map(|n| (n.id, now + 2500));
+                self.notif_until = self.notif_until.max(now + 2500);
+                return vec![Command::CopyCode(code)];
+            }
             Action::ClipPin(i) => {
                 if let Some(t) = self.data.clipboard.get(i).cloned() {
                     return vec![Command::PinClipboard(t)];
@@ -2139,6 +2148,14 @@ fn side_page(s: Side) -> Page {
         Side::Media => Page::Media,
         Side::Op => Page::Op,
     }
+}
+
+/// The one-time code in a notification (not in the island's own cards).
+pub(crate) fn notif_code(n: &Incoming) -> Option<String> {
+    if is_own(n) {
+        return None;
+    }
+    island_core::codes::extract(&format!("{} {}", n.summary, n.body))
 }
 
 /// Faces that are pages: they carry the dock at the bottom.
@@ -3840,6 +3857,22 @@ mod tests {
         assert!(i.announcer.new_heads_up(&i.data.events, T0, i.cfg.meeting_lead_ms).is_none(), "but outside the 10 min of the card");
         i.cfg.meeting_pill_ms = 20 * 60_000;
         assert!(i.soon().is_none(), "a shorter pill lead hides it");
+    }
+
+    #[test]
+    fn a_card_with_a_one_time_code_copies_it_on_a_click() {
+        let mut i = Island::new(Config::default());
+        let n = |id: u32, summary: &str| Input::Notification(Incoming { id, app: "Bank".into(), summary: summary.into(), body: "Do not share it".into(), ..Default::default() });
+        i.push(T0, n(1, "Your verification code is 482913"));
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::CopyCode("482913".into())), "the whole card is the button");
+        assert_eq!(i.take_commands(), vec![Command::CopyCode("482913".into())]);
+        assert!(i.code_copied.is_some(), "the card says it is copied");
+        i.push(i.now, Input::NotificationClosed(1));
+        i.push(i.now, n(2, "Meeting at 10:30"));
+        draw_frames(&mut i, 200);
+        assert!(!press(&mut i, Action::CopyCode("1030".into())));
+        assert!(press(&mut i, Action::NotifOpen), "a card without a code still opens its sender");
     }
 
     #[test]

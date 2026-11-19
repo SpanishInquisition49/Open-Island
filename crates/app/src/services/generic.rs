@@ -109,6 +109,21 @@ pub fn start_clipboard(rep: Reporter) {
     });
 }
 
+/// Copies a one-time code and clears the clipboard after thirty seconds when it still holds it.
+pub fn copy_code(code: &str) {
+    super::clipboard_history::ignore(code);
+    restore_clipboard(code);
+    let code = code.to_string();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(30));
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            if cb.get_text().is_ok_and(|t| t == code) {
+                let _ = cb.clear();
+            }
+        }
+    });
+}
+
 pub fn restore_clipboard(text: &str) {
     if let Ok(mut cb) = arboard::Clipboard::new() {
         let _ = cb.set_text(text.to_string());

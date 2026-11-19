@@ -227,6 +227,9 @@ fn main() {
             d.peers_scanning = true;
             i.push(NOW, Input::SendFiles(vec!["/tmp/preview-report.pdf".into()]));
         })),
+        ("notif-code", Box::new(|i, _| {
+            i.push(NOW, Input::Notification(island_ui::model::Incoming { id: 1, app: "Poste Italiane".into(), summary: "Your verification code".into(), body: "482913 is your code. Do not share it.".into(), ..Default::default() }));
+        })),
         ("page-audio", Box::new(|i, d| {
             let sink = |n: &str, l: &str| island_ui::model::Sink { name: n.into(), label: l.into() };
             d.sinks = vec![sink("speaker", "Built-in Speakers"), sink("bluez_output.x", "WH-1000XM5")];

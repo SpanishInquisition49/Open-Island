@@ -443,7 +443,17 @@ impl Island {
         }
         p.text(&app, tx, top - 19.0, 11.0, REG, theme::DIM, Align::Left, tmax);
         p.text(&n.summary, tx, top - 2.0, 14.0, SEMI, theme::FG, Align::Left, tmax);
-        p.text(&n.body, tx, top + 16.0, 12.0, REG, theme::DIM, Align::Left, tmax);
+        let code = super::island::notif_code(n);
+        match &code {
+            Some(c) => {
+                p.text(&island_core::codes::display(c), tx, top + 18.0, 19.0, SEMI, theme::ACCENT, Align::Left, tmax);
+                let copied = self.code_copied.is_some_and(|(id, until)| id == n.id && self.now < until);
+                p.text(if copied { "Copied" } else { "tap to copy" }, w - 14.0, top + 18.0, 10.0, REG, if copied { theme::ACCENT } else { theme::DIM }, Align::Right, 80.0);
+            }
+            None => {
+                p.text(&n.body, tx, top + 16.0, 12.0, REG, theme::DIM, Align::Left, tmax);
+            }
+        }
         if let (Some(pr), false) = (n.progress, actions) {
             p.bar(rect(tx, h - 18.0, tmax as f64, 5.0), pr as f64 / 100.0, theme::FG, theme::TRACK);
         }
@@ -473,7 +483,7 @@ impl Island {
             }
         }
         // a click on the card body goes to the app that sent it
-        p.hit(rect(0.0, 0.0, w, h - if actions { 50.0 } else { 0.0 }), Action::NotifOpen);
+        p.hit(rect(0.0, 0.0, w, h - if actions { 50.0 } else { 0.0 }), code.map_or(Action::NotifOpen, Action::CopyCode));
     }
 
     fn face_reply(&self, p: P, w: f64, h: f64) {
