@@ -2440,7 +2440,7 @@ impl Island {
         self.slow_checks();
         self.sync_lyrics();
         // notifications: expiry and the next waiting one
-        if self.edit.as_ref().is_some_and(|e| now > e.until) || (self.edit.is_some() && self.page != Some(Page::Settings)) {
+        if self.edit.as_ref().is_some_and(|e| now > e.until) || (self.edit.is_some() && !matches!(self.page, Some(Page::Settings | Page::Options))) {
             self.edit = None;
             self.icloud_user = None;
         }
@@ -4727,6 +4727,28 @@ mod tests {
         i.edit.as_mut().unwrap().text = "two words".into();
         i.push(i.now, Input::Key(KeyInput::Enter));
         assert!(i.edit.is_some(), "a key with a space is refused");
+    }
+
+    #[test]
+    fn the_text_rows_of_the_options_page_can_be_edited() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenPage(Page::Options));
+        draw_frames(&mut i, 200);
+        for (field, key, typed, value) in [
+            (Field::Screen, "screen", "eDP-1", "eDP-1"),
+            (Field::TimerPresets, "timer_presets", "5m, 20m", "5m, 20m"),
+            (Field::MapTiles, "map_tile_url", "esri-dark", "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"),
+        ] {
+            assert!(press(&mut i, Action::EditField(field)), "{key}: the row is a button");
+            // time passes with the field open: it must stay open on this page
+            run(&mut i, 600);
+            assert!(i.edit.is_some(), "{key}: the field stays open on the options page");
+            type_text(&mut i, typed);
+            i.push(i.now, Input::Key(KeyInput::Enter));
+            assert!(i.take_commands().contains(&Command::SetOption { key: key.into(), value: OptionValue::Text(value.into()) }), "{key}");
+            assert!(i.edit.is_none());
+            draw_frames(&mut i, 20);
+        }
     }
 
     #[test]
