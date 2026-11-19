@@ -2906,7 +2906,7 @@ mod tests {
         i.activate(Action::EditField(Field::RuleHide));
         i.push(i.now, Input::Key(KeyInput::Enter));
         assert!(i.take_commands().is_empty());
-        assert_eq!(i.face_size(Face::Options).1, 14.0 + 34.0 + 40.0 + 4.0 * 34.0 + 14.0, "two rules and two add rows");
+        assert_eq!(i.face_size(Face::Options).1, 14.0 + 34.0 + 40.0 + 4.0 * 34.0 + 14.0 + DOCK_H, "two rules and two add rows, and the dock");
     }
 
     #[test]
