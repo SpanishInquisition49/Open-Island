@@ -27,6 +27,7 @@ struct Shell {
     mods: ModifiersState,
     shape: Vec<(i32, i32, i32, i32, i32)>,
     last_redraw: Instant,
+    perf: crate::perf::Perf,
 }
 
 /// Under a fullscreen window the island is out of sight. Under a maximized one it is too, while it rests, unless
@@ -97,6 +98,7 @@ impl Shell {
         if let Err(e) = self.gpu.draw(&mut self.app.island, &self.app.fonts, self.surface_logical, scale) {
             log::error!("{e}");
         }
+        self.perf.frame(f.animating, self.gpu.last_work);
         self.last_redraw = Instant::now();
         // cut the window to the island's outline before it is shown, so no rectangle flashes
         self.cut_to_shape(&window);
@@ -332,7 +334,7 @@ pub fn run() {
         let _ = proxy.send_event(Wake);
     });
     let app = App::new(waker);
-    let mut shell = Shell { app, gpu: Gpu::new(), window: None, surface_logical: (0.0, 0.0), animating: true, next_ms: 0, keyboard_on: false, hidden: false, mods: ModifiersState::empty(), shape: vec![], last_redraw: Instant::now() };
+    let mut shell = Shell { app, gpu: Gpu::new(), window: None, surface_logical: (0.0, 0.0), animating: true, next_ms: 0, keyboard_on: false, hidden: false, mods: ModifiersState::empty(), shape: vec![], last_redraw: Instant::now(), perf: crate::perf::Perf::from_env() };
     let _ = (TOP_MARGIN, LogicalPosition::new(0.0, 0.0));
     event_loop.set_control_flow(ControlFlow::Wait);
     if let Err(e) = event_loop.run_app(&mut shell) {

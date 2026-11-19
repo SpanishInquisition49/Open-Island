@@ -43,6 +43,8 @@ pub struct App {
     start: Instant,
     epoch_at_start: i64,
     last_tick: Instant,
+    /// The previous frame asked for another one at once (an animation is under way).
+    was_animating: bool,
     pub quit: bool,
     persist_history: bool,
     /// The focused window covers the whole screen (the island hides under it).
@@ -52,6 +54,18 @@ pub struct App {
     pub maximized: bool,
     pub pointer_near: bool,
     last_pointer: (f64, f64),
+}
+
+/// How far the island's motion advances in a frame: the time since the last frame, except for the first frame of an
+/// animation that starts from rest. The last frame was drawn long ago then (a second, for the clock), and the
+/// springs would leap by their whole step limit in that one frame, a visible jump at the start of every
+/// animation; a normal frame's worth is used instead.
+pub fn frame_dt(gap_ms: f64, was_animating: bool) -> f64 {
+    const FIRST_FRAME_MS: f64 = 10.0;
+    if !gap_ms.is_finite() || gap_ms < 0.0 {
+        return FIRST_FRAME_MS;
+    }
+    if was_animating { gap_ms } else { gap_ms.min(FIRST_FRAME_MS) }
 }
 
 impl App {
@@ -75,7 +89,7 @@ impl App {
             island.restore_history(services::load_history());
         }
         island.data.config = config_view_of(&fonts);
-        Self { island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, quit: false, persist_history: crate::config::load().persist_history, fullscreen: false, maximized: false, pointer_near: false, last_pointer: (0.0, 0.0) }
+        Self { island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, was_animating: false, quit: false, persist_history: crate::config::load().persist_history, fullscreen: false, maximized: false, pointer_near: false, last_pointer: (0.0, 0.0) }
     }
 
     /// Epoch milliseconds, monotonic (not affected by clock changes while running).
@@ -111,10 +125,11 @@ impl App {
     /// Advances the island; returns the surface size it needs and whether another frame is wanted.
     pub fn tick(&mut self) -> island_ui::Frame {
         self.pump();
-        let dt = self.last_tick.elapsed().as_secs_f64() * 1000.0;
+        let dt = frame_dt(self.last_tick.elapsed().as_secs_f64() * 1000.0, self.was_animating);
         self.last_tick = Instant::now();
         let now = self.now();
         let frame = self.island.tick(now, dt);
+        self.was_animating = frame.animating;
         let cmds = self.island.take_commands();
         self.exec(cmds);
         {
@@ -280,5 +295,20 @@ impl App {
         let now = self.now();
         let cmds = self.island.scroll(now, dx, dy);
         self.exec(cmds);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::frame_dt;
+
+    #[test]
+    fn the_first_frame_of_an_animation_does_not_leap() {
+        assert_eq!(frame_dt(1000.0, false), 10.0, "a second of rest is one ordinary frame of motion");
+        assert_eq!(frame_dt(4.0, false), 4.0, "a short gap is kept");
+        assert_eq!(frame_dt(8.3, true), 8.3, "inside an animation the real time counts");
+        assert_eq!(frame_dt(40.0, true), 40.0, "so does a dropped frame, or the motion would lag behind the clock");
+        assert_eq!(frame_dt(f64::NAN, true), 10.0);
+        assert_eq!(frame_dt(-3.0, false), 10.0);
     }
 }

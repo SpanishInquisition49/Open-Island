@@ -1784,7 +1784,7 @@ impl Island {
         let next_ms: u32 = if moving {
             0
         } else if equalizer {
-            33
+            16 // sixty bars a second: the bars follow the music, and a slower step shows on a fast display
         } else if expiring {
             120
         } else if self.timer.is_some() || self.ops.op.is_some_and_running() {

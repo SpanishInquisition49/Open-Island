@@ -15,11 +15,13 @@ pub struct Gpu {
     scene: Scene,
     /// The surface really is transparent (otherwise the window must be cut to the island's shape).
     pub transparent: bool,
+    /// What the last frame cost without waiting for the display (the scene, the render and the submit).
+    pub last_work: std::time::Duration,
 }
 
 impl Gpu {
     pub fn new() -> Self {
-        Self { ctx: RenderContext::new(), renderer: None, surface: None, scene: Scene::new(), transparent: false }
+        Self { ctx: RenderContext::new(), renderer: None, surface: None, scene: Scene::new(), transparent: false, last_work: Default::default() }
     }
 
     /// Attaches the window surface. `target` is anything wgpu can make a surface of (a winit window).
@@ -79,6 +81,7 @@ impl Gpu {
     /// Draws the island into the surface at `scale` (physical pixels per logical pixel).
     pub fn draw(&mut self, island: &mut Island, fonts: &Fonts, logical: (f64, f64), scale: f64) -> Result<(), String> {
         let (Some(surface), Some(renderer)) = (self.surface.as_mut(), self.renderer.as_mut()) else { return Ok(()) };
+        let started = std::time::Instant::now();
         self.scene.reset();
         island.draw(&mut self.scene, fonts, logical, scale);
         let (w, h) = (surface.config.width, surface.config.height);
@@ -92,6 +95,7 @@ impl Gpu {
                 &RenderParams { base_color: Color::from_rgba8(0, 0, 0, 0), width: w, height: h, antialiasing_method: AaConfig::Area },
             )
             .map_err(|e| format!("render failed: {e}"))?;
+        self.last_work = started.elapsed();
         let frame = match surface.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {

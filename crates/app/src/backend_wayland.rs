@@ -72,6 +72,7 @@ struct Wl {
     on_top_layer: bool,
     /// OPEN_ISLAND_NO_POINTER=1: the surface takes no pointer input (screenshots and tests)
     no_pointer: bool,
+    perf: crate::perf::Perf,
 }
 
 impl Wl {
@@ -116,6 +117,7 @@ impl Wl {
         if let Err(e) = self.gpu.draw(&mut self.app.island, &self.app.fonts, (lw as f64, lh as f64), self.scale) {
             log::error!("{e}");
         }
+        self.perf.frame(f.animating, self.gpu.last_work);
         self.animating = f.animating;
         self.next_ms = f.next_ms;
         self.dirty = false;
@@ -370,6 +372,7 @@ pub fn run() -> Result<(), String> {
         input_rect: None,
         on_top_layer: false,
         no_pointer: std::env::var_os("OPEN_ISLAND_NO_POINTER").is_some(),
+        perf: crate::perf::Perf::from_env(),
     };
     log::info!("layer-shell surface created");
     loop {

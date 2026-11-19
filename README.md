@@ -217,3 +217,10 @@ On Windows (and anywhere the island is a plain window) it hides while a maximize
 the pointer touches the top edge near the middle of the screen; a notification, a timer or the volume still show over it.
 Windows draws through DirectX 12 into a transparent DirectComposition surface; `OPEN_ISLAND_OPAQUE=1` falls back to
 cutting the window to the island's shape.
+
+## Smoothness
+
+`OPEN_ISLAND_PERF=1 open-island` logs one line per animation: frames, the interval between them (8.3 ms is a steady
+120 Hz), the slowest one, how many took over 20 ms, and what drawing cost. The island asks for the low-power GPU
+(`WGPU_POWER_PREF=low`, change it in the environment); on a laptop with a discrete GPU, installing the integrated GPU's
+Vulkan driver (`vulkan-radeon`, `vulkan-intel`) lets it run there instead of keeping the big GPU awake.

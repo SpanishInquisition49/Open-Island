@@ -7,6 +7,7 @@ mod app;
 mod cli;
 mod doctor;
 mod hook;
+mod perf;
 mod backend_winit;
 #[cfg(target_os = "linux")]
 mod backend_wayland;
@@ -49,6 +50,10 @@ fn windows_graphics_setup() {
 fn main() {
     #[cfg(windows)]
     windows_graphics_setup();
+    // a small overlay has no business on the power-hungry GPU of a hybrid laptop (it keeps it awake)
+    if std::env::var_os("WGPU_POWER_PREF").is_none() {
+        std::env::set_var("WGPU_POWER_PREF", "low");
+    }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,zbus=warn,wgpu=warn,naga=warn")).init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
