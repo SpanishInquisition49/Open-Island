@@ -105,8 +105,18 @@ pub fn darken(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
 }
 
 /// A tile address filled into a URL template with `{z}`, `{x}`, `{y}`.
-pub fn tile_url(template: &str, z: u8, x: i64, y: i64) -> String {
-    template.replace("{z}", &z.to_string()).replace("{x}", &x.to_string()).replace("{y}", &y.to_string())
+pub fn tile_url(template: &str, z: u8, x: i64, y: i64, key: &str) -> String {
+    template.replace("{z}", &z.to_string()).replace("{x}", &x.to_string()).replace("{y}", &y.to_string()).replace("{key}", key)
+}
+
+/// Whether a tile URL template wants the API key.
+pub fn needs_key(template: &str) -> bool {
+    template.contains("{key}")
+}
+
+/// A template the island accepts: https, with the three tile fields.
+pub fn valid_template(t: &str) -> bool {
+    t.starts_with("https://") && t.contains("{z}") && t.contains("{x}") && t.contains("{y}")
 }
 
 /// OpenStreetMap's directions page between two points; `engine` is `car`, `foot` or `bike`.
@@ -214,7 +224,10 @@ mod tests {
 
     #[test]
     fn urls_are_filled_in() {
-        assert_eq!(tile_url("https://t/{z}/{x}/{y}.png", 3, 4, 5), "https://t/3/4/5.png");
+        assert_eq!(tile_url("https://t/{z}/{x}/{y}.png", 3, 4, 5, ""), "https://t/3/4/5.png");
+        assert_eq!(tile_url("https://t/{z}/{x}/{y}.png?key={key}", 3, 4, 5, "abc"), "https://t/3/4/5.png?key=abc");
+        assert!(needs_key("https://t/{z}/{x}/{y}.png?key={key}") && !needs_key(DEFAULT_TILES));
+        assert!(valid_template(DEFAULT_TILES) && !valid_template("http://t/{z}/{x}/{y}") && !valid_template("https://t/{z}/{x}"));
         assert!(osm_url(43.7, 10.4, 15).ends_with("#map=15/43.700000/10.400000"));
     }
 }

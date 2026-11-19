@@ -57,7 +57,7 @@ fn parse_command(line: &str) -> Option<island_ui::model::Command> {
                 })
             } else if crate::config::NUM_OPTIONS.iter().any(|(k, ..)| *k == key) {
                 OptionValue::Num(value.parse().ok()?)
-            } else if matches!(key, "timer_presets" | "screen" | "travel_mode") {
+            } else if matches!(key, "timer_presets" | "screen" | "travel_mode" | "map_tile_url" | "map_api_key") {
                 OptionValue::Text(value.to_string())
             } else {
                 return None;

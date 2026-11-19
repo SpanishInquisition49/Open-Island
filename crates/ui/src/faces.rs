@@ -1342,6 +1342,10 @@ impl Island {
         let sound = if c.notification_sound.is_empty() { "None".to_string() } else { c.notification_sound.rsplit('/').next().unwrap_or("").to_string() };
         kv(p, y, "Sound", &sound, Field::Sound, "Path of a sound file; empty = silent", n + 8);
         y += 34.0;
+        section(p, y, "Map", n + 9);
+        y += 22.0;
+        kv(p, y, "API key", if c.map_key_set { "set" } else { "not set" }, Field::MapKey, "The key of the tile provider, for {key} in the tile URL; empty = remove it", n + 10);
+        y += 34.0;
         if let Some((t, _)) = &self.note {
             p.text(t, w / 2.0, y + 8.0, 11.0, SEMI, theme::ORANGE, Align::Center, (w - 28.0) as f32);
         }
@@ -1413,11 +1417,15 @@ impl Island {
             let c = &self.data.config;
             let editing = |f: Field| self.edit.as_ref().filter(|e| e.field == f);
             let screen = if c.screen == "focused" { "Focused".to_string() } else { c.screen.clone() };
-            for (i, (label, value, f, hint)) in [("Timer presets", c.timer_presets.clone(), Field::TimerPresets, "5m, 10m, 25m, 1h30m"), ("Screen", screen, Field::Screen, "A screen name such as eDP-1; empty = the focused one")].into_iter().enumerate() {
+            for (i, (label, value, f, hint)) in [("Timer presets", c.timer_presets.clone(), Field::TimerPresets, "5m, 10m, 25m, 1h30m"), ("Screen", screen, Field::Screen, "A screen name such as eDP-1; empty = the focused one"), ("Map tiles", if c.map_tile_url.is_empty() { "OpenStreetMap".to_string() } else { c.map_tile_url.clone() }, Field::MapTiles, "https://.../{z}/{x}/{y}.png?key={key}; empty = OpenStreetMap")].into_iter().enumerate() {
                 p.stagger(n + i);
                 let r = rect(14.0, y + i as f64 * 34.0, w - 28.0, 30.0);
                 if p.hovered(r) {
-                    help = Some(options::describe(if f == Field::TimerPresets { "timer_presets" } else { "screen" }));
+                    help = Some(options::describe(match f {
+                        Field::TimerPresets => "timer_presets",
+                        Field::MapTiles => "map_tile_url",
+                        _ => "screen",
+                    }));
                 }
                 match editing(f) {
                     Some(e) => self.edit_row(p, r, e, hint),
@@ -1556,6 +1564,10 @@ impl Island {
                 Some(img) => draw_tile(p, img, x, y, map::TILE),
                 None => p.rrect(rect(x + 1.0, y + 1.0, map::TILE - 2.0, map::TILE - 2.0), 0.0, with_alpha(theme::FG, 0.04)),
             }
+        }
+        if map::needs_key(&self.cfg.map_tile_url) && !self.data.config.map_key_set {
+            p.text("This map needs an API key", area.center().x, area.y1 - 56.0, 12.0, SEMI, theme::FG, Align::Center, 300.0);
+            p.text("Settings > Map > API key", area.center().x, area.y1 - 38.0, 10.5, REG, theme::DIM, Align::Center, 300.0);
         }
         let at = |lat: f64, lon: f64| {
             let (px, py) = map::project(v.center, v.zoom, MAP_W, MAP_H, lat, lon);

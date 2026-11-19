@@ -152,6 +152,8 @@ pub struct Settings {
     pub font: String,
     /// "focused", or the name of the screen to pin the island to.
     pub screen: String,
+    /// The key for map tile providers that want one (`{key}` in the tile URL).
+    pub map_api_key: String,
 }
 
 impl Default for Settings {
@@ -170,6 +172,7 @@ impl Default for Settings {
             take_over_notifications: true,
             font: String::new(),
             screen: "focused".into(),
+            map_api_key: String::new(),
         }
     }
 }
@@ -255,7 +258,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     u.culprit_alerts = b("culprit_alerts", u.culprit_alerts);
     u.travel_times = b("travel_times", u.travel_times);
     u.map_dark = b("map_dark", u.map_dark);
-    if let Some(url) = v.get("map_tile_url").and_then(|x| x.as_str()).map(str::trim).filter(|u| u.starts_with("https://") && u.contains("{z}") && u.contains("{x}") && u.contains("{y}")) {
+    if let Some(url) = v.get("map_tile_url").and_then(|x| x.as_str()).map(str::trim).filter(|u| island_core::map::valid_template(u)) {
         u.map_tile_url = url.to_string();
     }
     if let Some(m) = v.get("deep_work_minutes").and_then(|x| x.as_i64()).filter(|m| (0..=240).contains(m)) {
@@ -303,6 +306,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     if let Some(f) = v.get("timer_sound_file").and_then(|x| x.as_str()).filter(|f| !f.trim().is_empty()) {
         s.timer_sound = Some(expand_home(f));
     }
+    s.map_api_key = v.get("map_api_key").and_then(|x| x.as_str()).map(str::trim).unwrap_or("").to_string();
     s.screen = v.get("screen").and_then(|x| x.as_str()).map(str::trim).filter(|x| !x.is_empty()).unwrap_or("focused").to_string();
     if let Some(sec) = v.get("osd_seconds").and_then(|x| x.as_f64()).filter(|s| (0.5..=5.0).contains(s)) {
         u.osd_ms = (sec * 1000.0).round() as i64;
@@ -379,6 +383,26 @@ pub fn set_option(o: &mut serde_json::Map<String, serde_json::Value>, key: &str,
         Text(t) if key == "travel_mode" => {
             let m = island_core::travel::Mode::parse(t).ok_or("travel_mode is car, walk or transit")?;
             o.insert("travel_mode".into(), json!(m.name()));
+        }
+        Text(t) if key == "map_tile_url" => {
+            let t = t.trim();
+            if t.is_empty() {
+                o.remove("map_tile_url"); // back to the default
+            } else if island_core::map::valid_template(t) {
+                o.insert("map_tile_url".into(), json!(t));
+            } else {
+                return Err("map_tile_url is an https URL with {z}, {x} and {y} (and {key} for the API key)".into());
+            }
+        }
+        Text(t) if key == "map_api_key" => {
+            let t = t.trim();
+            if t.is_empty() {
+                o.remove("map_api_key");
+            } else if t.chars().any(char::is_whitespace) || t.len() > 200 {
+                return Err("an API key has no spaces".into());
+            } else {
+                o.insert("map_api_key".into(), json!(t));
+            }
         }
         Text(t) if key == "screen" => {
             let t = t.trim();
@@ -520,6 +544,17 @@ mod tests {
         assert_eq!(parse(r#"{"deep_work_minutes":999,"deep_work_apps":[]}"#).unwrap().ui.deep_work_minutes, UiConfig::default().deep_work_minutes);
         assert_eq!(parse(r#"{"map_tile_url":"https://tile.openstreetmap.org/{z}/{x}/{y}.png"}"#).unwrap().ui.map_tile_url, "https://tile.openstreetmap.org/{z}/{x}/{y}.png");
         assert_eq!(parse(r#"{"map_tile_url":"http://x/{z}/{x}/{y}"}"#).unwrap().ui.map_tile_url, UiConfig::default().map_tile_url, "https only, with the three fields");
+        let mut o = serde_json::Map::new();
+        let text = |t: &str| island_ui::model::OptionValue::Text(t.into());
+        assert!(set_option(&mut o, "map_tile_url", &text("https://t/{z}/{x}/{y}.png?key={key}")).is_ok());
+        assert!(set_option(&mut o, "map_tile_url", &text("http://t/{z}/{x}/{y}")).is_err() && set_option(&mut o, "map_tile_url", &text("https://t/{z}/{x}")).is_err());
+        assert_eq!(o["map_tile_url"], "https://t/{z}/{x}/{y}.png?key={key}", "a bad one leaves the good one");
+        assert!(set_option(&mut o, "map_api_key", &text("  abc123 ")).is_ok() && o["map_api_key"] == "abc123");
+        assert!(set_option(&mut o, "map_api_key", &text("two words")).is_err());
+        set_option(&mut o, "map_api_key", &text("")).unwrap();
+        set_option(&mut o, "map_tile_url", &text("")).unwrap();
+        assert!(o.is_empty(), "empty means back to the default");
+        assert_eq!(parse(r#"{"map_api_key":" k "}"#).unwrap().map_api_key, "k");
         let t = parse(r#"{"travel_mode":"Transit","travel_margin_minutes":10,"travel_times":false}"#).unwrap();
         assert_eq!((t.ui.travel_mode, t.ui.travel_margin_ms, t.ui.travel_times), (island_core::travel::Mode::Transit, 600_000, false));
         assert_eq!(parse(r#"{"travel_mode":"rocket"}"#).unwrap().ui.travel_mode, island_core::travel::Mode::Car);

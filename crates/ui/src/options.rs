@@ -72,6 +72,7 @@ pub fn describe(key: &str) -> &'static str {
         "break_minutes" => "A card after this long on one app without a break (0: off)",
         "travel_times" => "Time the way to events with a place (sends the place to map services)",
         "timer_presets" => "The quick timers on the timer page, such as 5m, 10m, 1h30m",
+        "map_tile_url" => "Tile URL with {z} {x} {y} and {key} for the API key (empty: OpenStreetMap)",
         "screen" => "The screen the island sits on (Wayland): a name like eDP-1, or empty",
         _ => "",
     }
@@ -101,7 +102,7 @@ pub fn steppers(tab: usize) -> &'static [Stepper] {
 
 /// Rows of text fields a tab has (timer presets and the screen live on the first).
 pub fn text_rows(tab: usize) -> usize {
-    if tab == 0 { 2 } else { 0 }
+    if tab == 0 { 3 } else { 0 }
 }
 
 pub fn get_bool(c: &Config, key: &str) -> bool {
@@ -243,7 +244,7 @@ mod tests {
     #[test]
     fn every_option_says_what_it_controls() {
         let mut keys: Vec<&str> = (0..TABS.len()).flat_map(|t| toggles(t).iter().map(|(k, _)| *k).chain(steppers(t).iter().map(|s| s.0))).collect();
-        keys.extend(["timer_presets", "screen"]);
+        keys.extend(["timer_presets", "screen", "map_tile_url"]);
         for k in keys {
             let d = describe(k);
             assert!(!d.is_empty(), "{k} has no description");

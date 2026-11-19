@@ -336,6 +336,10 @@ pub enum Field {
     Sound,
     TimerPresets,
     Screen,
+    /// The map tile URL (empty: OpenStreetMap's).
+    MapTiles,
+    /// The API key of the map tile provider (kept in the config file, never shown).
+    MapKey,
     /// An app (or a word) whose notifications are hidden.
     RuleHide,
     /// An app (or a word) whose notifications lose their sound.
@@ -353,7 +357,7 @@ pub struct Edit {
 impl Edit {
     /// The text is drawn as dots (a password).
     pub fn secret(&self) -> bool {
-        self.field == Field::ICloudPassword
+        matches!(self.field, Field::ICloudPassword | Field::MapKey)
     }
 }
 
@@ -1079,6 +1083,12 @@ impl Island {
         self.hits.iter().enumerate().filter(|(_, hit)| !(hit.rect.width() > w * 0.9 && hit.rect.height() > h * 0.5)).map(|(i, _)| i).collect()
     }
 
+    /// A new tile provider or key: the tiles in memory are of the old one.
+    fn forget_tiles(&mut self) {
+        self.tiles.clear();
+        self.tiles_asked.clear();
+    }
+
     fn start_edit(&mut self, field: Field) {
         let c = &self.data.config;
         let text = match field {
@@ -1091,6 +1101,8 @@ impl Island {
             Field::RuleHide | Field::RuleSilence => String::new(),
             Field::TimerPresets => c.timer_presets.clone(),
             Field::Screen => if c.screen == "focused" { String::new() } else { c.screen.clone() },
+            Field::MapTiles => c.map_tile_url.clone(),
+            Field::MapKey => String::new(),
         };
         let cursor = text.chars().count();
         self.edit = Some(Edit { field, text, cursor, until: self.now + EDIT_IDLE_MS });
@@ -1149,6 +1161,29 @@ impl Island {
                     }
                     Field::TimerPresets => self.pending.push(Command::SetOption { key: "timer_presets".into(), value: OptionValue::Text(t) }),
                     Field::Screen => self.pending.push(Command::SetOption { key: "screen".into(), value: OptionValue::Text(t) }),
+                    Field::MapTiles => {
+                        let t = t.trim().to_string();
+                        if !t.is_empty() && !island_core::map::valid_template(&t) {
+                            self.note = note("An https URL with {z}, {x} and {y} (and {key} for the API key)");
+                            self.edit = Some(Edit { text: t.clone(), cursor: t.chars().count(), ..e });
+                        } else {
+                            self.cfg.map_tile_url = if t.is_empty() { island_core::map::DEFAULT_TILES.to_string() } else { t.clone() };
+                            self.data.config.map_tile_url = t.clone();
+                            self.forget_tiles();
+                            self.pending.push(Command::SetOption { key: "map_tile_url".into(), value: OptionValue::Text(t) });
+                        }
+                    }
+                    Field::MapKey => {
+                        let t = t.trim().to_string();
+                        if t.chars().any(char::is_whitespace) {
+                            self.note = note("An API key has no spaces");
+                            self.edit = Some(Edit { text: t.clone(), cursor: t.chars().count(), ..e });
+                        } else {
+                            self.data.config.map_key_set = !t.is_empty();
+                            self.forget_tiles();
+                            self.pending.push(Command::SetOption { key: "map_api_key".into(), value: OptionValue::Text(t) });
+                        }
+                    }
                     Field::Latitude | Field::Longitude => {
                         let (range, lat) = if e.field == Field::Latitude { (-90.0..=90.0, true) } else { (-180.0..=180.0, false) };
                         match t.replace(',', ".").parse::<f64>() {
@@ -1818,8 +1853,8 @@ impl Island {
     /// Height of the settings page below its header: four sections and their rows.
     pub(crate) fn settings_content_height(&self) -> f64 {
         let cals = self.data.config.calendars.len().min(4) as f64;
-        // section titles (4 x 22), calendar rows, the two add rows, latitude, longitude, font, sound, the note line
-        4.0 * 22.0 + (cals + 2.0 + 2.0 + 1.0 + 1.0) * 34.0 + 20.0
+        // section titles (5 x 22), calendar rows, the two add rows, latitude, longitude, font, sound, map key, the note line
+        5.0 * 22.0 + (cals + 2.0 + 2.0 + 1.0 + 1.0 + 1.0) * 34.0 + 20.0
     }
 
     pub(crate) fn day_events(&self) -> Vec<&calendar::Event> {
@@ -2099,11 +2134,14 @@ impl Island {
             self.map_asked_at = now;
             self.pending.push(Command::RefreshPosition);
         }
+        if island_core::map::needs_key(&self.cfg.map_tile_url) && !self.data.config.map_key_set {
+            return;
+        }
         let Some(v) = self.map_view() else { return };
         for t in island_core::map::tiles(v.center.0, v.center.1, v.zoom, MAP_W, MAP_H) {
             let key = (t.z, t.x, t.y);
             if !self.tiles.contains_key(&key) && self.tiles_asked.insert(key) {
-                self.pending.push(Command::LoadTile { z: t.z, x: t.x, y: t.y, template: self.cfg.map_tile_url.clone(), dark: self.cfg.map_dark });
+                self.pending.push(Command::LoadTile { z: t.z, x: t.x, y: t.y, template: self.cfg.map_tile_url.clone(), dark: self.cfg.map_dark && !self.cfg.map_tile_url.contains("dark") });
             }
         }
     }
@@ -4649,6 +4687,45 @@ mod tests {
         assert!(press(&mut i, Action::MapRoute));
         assert!(i.take_commands().iter().any(|c| matches!(c, Command::OpenUrl(u) if u.contains("directions?engine=fossgis_osrm_car"))));
         assert!(i.pages().windows(2).any(|w| w == [Page::Today, Page::Map]), "the dock has it after Today");
+    }
+
+    #[test]
+    fn the_map_provider_and_its_key_are_set_from_the_island_and_the_key_stays_out_of_sight() {
+        let mut i = Island::new(Config::default());
+        i.data.position = Some(Position { lat: 43.7, lon: 10.4, accuracy_m: 100.0, at_ms: T0, source: PosSource::Geoclue });
+        i.push(T0, Input::OpenPage(Page::Settings));
+        draw_frames(&mut i, 100);
+        i.activate(Action::EditField(Field::MapTiles));
+        assert!(i.edit.is_some_and(|e| !e.secret()), "the URL is shown");
+        i.edit = None;
+        // a URL that is no tile URL is refused, with a word on it
+        i.activate(Action::EditField(Field::MapTiles));
+        i.edit.as_mut().unwrap().text = "http://x/{z}".into();
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert!(i.edit.is_some() && i.cfg.map_tile_url == island_core::map::DEFAULT_TILES, "refused, still editing");
+        i.edit.as_mut().unwrap().text = "https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png?key={key}".into();
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert!(i.cfg.map_tile_url.contains("?key={key}"));
+        assert!(i.take_commands().iter().any(|c| matches!(c, Command::SetOption { key, value: OptionValue::Text(t) } if key == "map_tile_url" && t.contains("{key}"))));
+        // no key yet: no tile is asked for, and the page says why
+        i.push(i.now, Input::OpenPage(Page::Map));
+        run(&mut i, 500);
+        assert!(!i.take_commands().iter().any(|c| matches!(c, Command::LoadTile { .. })), "a key is needed first");
+        i.activate(Action::EditField(Field::MapKey));
+        assert!(i.edit.as_ref().is_some_and(|e| e.secret()), "the key is drawn as dots");
+        i.edit.as_mut().unwrap().text = "abc123".into();
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        let cmds = i.take_commands();
+        assert!(cmds.contains(&Command::SetOption { key: "map_api_key".into(), value: OptionValue::Text("abc123".into()) }));
+        assert!(i.data.config.map_key_set);
+        i.push(i.now, Input::OpenPage(Page::Map));
+        run(&mut i, 500);
+        assert!(i.take_commands().iter().any(|c| matches!(c, Command::LoadTile { template, .. } if template.contains("{key}"))), "with the key, tiles are asked for (the key is added where the tiles are fetched)");
+        draw_frames(&mut i, 100);
+        i.activate(Action::EditField(Field::MapKey));
+        i.edit.as_mut().unwrap().text = "two words".into();
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert!(i.edit.is_some(), "a key with a space is refused");
     }
 
     #[test]

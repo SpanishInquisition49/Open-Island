@@ -218,6 +218,9 @@ pub struct ConfigView {
     pub timer_presets: String,
     /// "focused", or the name of the screen the island is pinned to.
     pub screen: String,
+    /// The map tile URL as set (empty: the default), and whether an API key is stored (the key itself never leaves the app).
+    pub map_tile_url: String,
+    pub map_key_set: bool,
 }
 
 /// The study mode (`~/.local/bin/focus`): sites blocked and notifications silenced until `end_epoch`.

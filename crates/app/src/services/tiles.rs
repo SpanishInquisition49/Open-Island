@@ -22,8 +22,9 @@ fn cache_dir() -> Option<PathBuf> {
 }
 
 /// A cache file name for a tile of a template: different map styles do not mix.
-pub fn cache_name(template: &str, z: u8, x: i64, y: i64) -> String {
-    let style: u64 = template.bytes().fold(1469598103934665603, |h, b| (h ^ b as u64).wrapping_mul(1099511628211));
+pub fn cache_name(template: &str, key: &str, z: u8, x: i64, y: i64) -> String {
+    // the key is part of the style: a tile fetched without the key (a watermark) is not the one fetched with it
+    let style: u64 = template.bytes().chain(std::iter::once(0)).chain(key.bytes()).fold(1469598103934665603, |h, b| (h ^ b as u64).wrapping_mul(1099511628211));
     format!("{style:016x}/{z}/{x}/{y}.png")
 }
 
@@ -38,8 +39,11 @@ fn decode(bytes: &[u8], dark: bool) -> Option<Image> {
     Some(Image { id: NEXT_ID.fetch_add(1, Ordering::Relaxed), width: rgba.width(), height: rgba.height(), rgba: Arc::new(rgba.into_raw()) })
 }
 
-fn fetch(template: &str, z: u8, x: i64, y: i64) -> Option<Vec<u8>> {
-    let file = cache_dir().map(|d| d.join(cache_name(template, z, x, y)));
+fn fetch(template: &str, key: &str, z: u8, x: i64, y: i64) -> Option<Vec<u8>> {
+    if island_core::map::needs_key(template) && key.is_empty() {
+        return None;
+    }
+    let file = cache_dir().map(|d| d.join(cache_name(template, key, z, x, y)));
     if let Some(f) = &file {
         if let Ok(meta) = std::fs::metadata(f) {
             if meta.modified().ok().and_then(|m| SystemTime::now().duration_since(m).ok()).is_some_and(|age| age < KEEP) {
@@ -49,7 +53,7 @@ fn fetch(template: &str, z: u8, x: i64, y: i64) -> Option<Vec<u8>> {
             }
         }
     }
-    let url = island_core::map::tile_url(template, z, x, y);
+    let url = island_core::map::tile_url(template, z, x, y, key);
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return None;
     }
@@ -70,7 +74,8 @@ fn worker(rep: Reporter, rx: Arc<Mutex<Receiver<Job>>>) {
     loop {
         let job = rx.lock().ok().and_then(|r| r.recv().ok());
         let Some((z, x, y, template, dark)) = job else { return };
-        match fetch(&template, z, x, y).and_then(|b| decode(&b, dark)) {
+        let key = crate::config::load().map_api_key;
+        match fetch(&template, &key, z, x, y).and_then(|b| decode(&b, dark)) {
             Some(image) => rep.input(Input::Tile { z, x, y, image }),
             None => log::debug!("tile {z}/{x}/{y} not loaded"),
         }
@@ -96,11 +101,12 @@ mod tests {
 
     #[test]
     fn styles_have_their_own_cache_and_tiles_their_own_files() {
-        let a = cache_name("https://a/{z}/{x}/{y}.png", 14, 8, 9);
-        let b = cache_name("https://b/{z}/{x}/{y}.png", 14, 8, 9);
+        let a = cache_name("https://a/{z}/{x}/{y}.png", "", 14, 8, 9);
+        let b = cache_name("https://b/{z}/{x}/{y}.png", "", 14, 8, 9);
         assert_ne!(a.split('/').next(), b.split('/').next());
         assert!(a.ends_with("/14/8/9.png"));
-        assert_eq!(a, cache_name("https://a/{z}/{x}/{y}.png", 14, 8, 9));
+        assert_eq!(a, cache_name("https://a/{z}/{x}/{y}.png", "", 14, 8, 9));
+        assert_ne!(a.split('/').next(), cache_name("https://a/{z}/{x}/{y}.png", "k1", 14, 8, 9).split('/').next(), "another key, another cache");
     }
 
     #[test]
@@ -117,7 +123,7 @@ mod tests {
     #[test]
     #[ignore = "needs the network: cargo test -- --ignored live_tile"]
     fn live_tile() {
-        let t = fetch(island_core::map::DEFAULT_TILES, 14, 8668, 6017).expect("a tile");
+        let t = fetch(island_core::map::DEFAULT_TILES, "", 14, 8668, 6017).expect("a tile");
         let img = decode(&t, true).unwrap();
         eprintln!("tile {}x{}", img.width, img.height);
         assert!(img.width == 512 || img.width == 256);
@@ -126,7 +132,7 @@ mod tests {
         let (tx, ty) = ((cx / 256.0) as i64, (cy / 256.0) as i64);
         let mut out = image::RgbaImage::new(512, 512);
         for (i, (dx, dy)) in [(0, 0), (1, 0), (0, 1), (1, 1)].into_iter().enumerate() {
-            let t = decode(&fetch(island_core::map::DEFAULT_TILES, 15, tx + dx, ty + dy).expect("tile"), true).unwrap();
+            let t = decode(&fetch(island_core::map::DEFAULT_TILES, "", 15, tx + dx, ty + dy).expect("tile"), true).unwrap();
             let t = image::RgbaImage::from_raw(t.width, t.height, t.rgba.to_vec()).unwrap();
             let t = image::imageops::resize(&t, 256, 256, image::imageops::FilterType::Triangle);
             image::imageops::overlay(&mut out, &t, (i as i64 % 2) * 256, (i as i64 / 2) * 256);

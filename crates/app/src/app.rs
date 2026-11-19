@@ -35,6 +35,8 @@ pub fn config_view_of(fonts: &Fonts) -> island_ui::model::ConfigView {
         filters: s.filters.iter().map(|f| island_ui::model::FilterView { app: f.app.clone(), content: f.content.clone(), show: f.show, sound: f.sound }).collect(),
         timer_presets: s.ui.timer_presets.iter().map(|p| island_core::duration::preset_label(*p)).collect::<Vec<_>>().join(", "),
         screen: s.screen,
+        map_tile_url: if s.ui.map_tile_url == island_core::map::DEFAULT_TILES { String::new() } else { s.ui.map_tile_url.clone() },
+        map_key_set: !s.map_api_key.is_empty(),
     }
 }
 

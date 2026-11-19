@@ -379,6 +379,10 @@ Tiles come from OpenStreetMap's own server (no key; its light style, which the i
 turn so water stays blue and parks green; `map_dark: false` keeps it light). 256 px at a time, kept in
 `~/.cache/open-island/tiles` for two weeks, as OSM's tile policy asks, with the credit drawn on the map and a User-Agent of
 `open-island`. What leaves the machine when the page is open is the tile addresses, which say roughly where you are looking.
-`map_tile_url` in `config.json` changes the provider (an https URL with `{z}`, `{x}` and `{y}`); most others want an API key,
+`map_tile_url` (Options > Island > "Map tiles", or `open-island msg set map_tile_url <url>`) changes the provider: an https URL with
+`{z}`, `{x}` and `{y}`, and `{key}` where the provider wants its API key, which goes in Settings > Map > "API key" (`map_api_key`;
+stored in `config.json` like the iCloud password, drawn as dots, never sent anywhere but to the tile server in that URL). For
+CARTO's dark map: `https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png?key={key}` (a URL with "dark" in it is not
+darkened again). Most providers want an API key,
 and some answer a key-less request with a picture that says so, so check the map after changing it (CARTO's dark map did exactly
 that, which is why it is not the default). OSM's server is meant for light use: heavy use should go to a provider of your own.
