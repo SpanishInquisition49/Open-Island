@@ -27,7 +27,9 @@ pub fn tools() -> Vec<(&'static str, &'static str)> {
             ("wlsunset", "night light"),
             ("systemd-inhibit", "keep awake"),
             ("pw-play", "notification sounds (or paplay / ffplay)"),
-            ("niri", "hiding under fullscreen windows (niri only)"),
+            ("niri", "hiding under fullscreen windows, and the activity page (niri only)"),
+            ("ping", "the router check of the network warning"),
+            ("xdg-open", "opening links, mail and the map in the browser"),
         ]
     } else if cfg!(windows) {
         vec![("powershell", "the brightness slider (laptops and tablets only)")]
@@ -79,6 +81,8 @@ pub fn run() {
             println!("  {} {t:<16} {why}", ok(tool_in_path(t, &path)));
         }
     }
+    #[cfg(target_os = "linux")]
+    println!("  {} {:<16} where you are, for the map, the weather and the trips (else the settings location)", ok(Path::new("/usr/lib/geoclue-2.0/demos/where-am-i").is_file()), "geoclue");
     #[cfg(target_os = "linux")]
     notification_owner();
     #[cfg(windows)]

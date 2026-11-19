@@ -3,15 +3,18 @@
 A macOS-style **dynamic island** for any desktop, in Rust. A black pill at the top of the screen that
 morphs between the clock, music (cover, progress, synced lyrics), notifications (with actions), volume and
 brightness, charging, timers (countdown, Pomodoro, stopwatch), weather and rain heads-up, calendar meetings,
-long-running operations (a progress bar your scripts can drive) and privacy indicators.
+long-running operations (a progress bar your scripts can drive) and privacy indicators. Around that it grew pages of its own: a map
+that knows where you are, a day timeline with the way to your events, a sound mixer, a clipboard with pins, an activity
+ledger, file sending to other devices, and cards for what needs attention (a one-time code, a program hogging the CPU, a
+network that broke, rain before you leave).
 
 It is a port of a Noctalia (Luau) plugin to a standalone program: one look (the macOS one), no shell
 dependency.
 
 ```
-crates/core   pure logic, no OS access: faces, shape springs, timers, lyrics, weather, iCal, notifications  (40 tests)
-crates/ui     the state machine and the vello renderer, no windowing: draws every face, headless-testable
-crates/app    window backends (Wayland layer-shell, winit), the OS services, the `open-island` binary
+crates/core   pure logic, no OS access: faces, springs, timers, lyrics, weather, iCal, bar, map and route maths, activity ledger  (about 130 tests)
+crates/ui     the state machine and the vello renderer, no windowing: draws every face, headless-testable  (about 125 tests)
+crates/app    window backends (Wayland layer-shell, winit), the OS services, the `open-island` binary  (about 100 tests)
 ```
 
 ## Status
@@ -31,6 +34,10 @@ crates/app    window backends (Wayland layer-shell, winit), the OS services, the
 | clipboard history | wl-clipboard | arboard polling (built) | arboard polling (built) | **not yet** |
 | keep awake, night light | systemd-inhibit, wlsunset | SetThreadExecutionState; no night light | **not yet** | yes |
 | hide under fullscreen windows | niri | shell notification state (built) | **not yet** | **not yet** |
+| map and position, trips to events, place search and routes | GeoClue + OpenStreetMap, OSRM, Transitous | the same services, **no position** (the settings location) | the same, **no position** | the same as Linux |
+| sound page, audio follows headphones, heavy-program card, network card, mic and camera users | pactl, /proc, nmcli | **not yet** | **not yet** | yes |
+| activity page, auto focus, away recap | niri focus events, `ext-idle-notify` | **not yet** | **not yet** | **not yet** |
+| LocalSend (send files), one-time codes, clipboard actions | yes (drag a file onto the pill on Wayland) | sending yes, drag no | sending yes, drag no | sending yes |
 
 "built" means it type-checks for `x86_64-pc-windows-msvc` / `aarch64-apple-darwin` in `cargo check`; none of it has been
 run on those systems. The update-check card of the Luau original is not ported (it was specific to Noctalia). Complex
@@ -95,7 +102,8 @@ notification sound. It writes the file below, keeping the keys it does not know,
   "notification_seconds": 5, "font": "Inter", "low_battery_percent": 15, "lyrics": true,
   "notification_sound": "~/Music/uwu.ogg", "app_sounds": {"telegram": "~/Music/t.ogg"},
   "volume_sound": "~/Music/bloop.mp3", "timer_sound": "~/Music/bloop.mp3",
-  "notification_filters": [{"app": "zen browser", "content": "unseen", "show": false}] }
+  "notification_filters": [{"app": "zen browser", "content": "unseen", "show": false}],
+  "follow_position": true, "travel_mode": "car", "map_tile_url": "osm", "deep_work_minutes": 20 }
 ```
 
 Calendars: a feed (`.ics` / `webcal://`, public or secret address) or a CalDAV account. **iCloud** needs the Apple ID and an
@@ -104,12 +112,14 @@ calendar of the account is read with its own name and colour. Each calendar can 
 old `calendar_urls` list still works and is migrated). `password_cmd` prints the password (a password manager) instead of
 keeping it in the file, which is owner-only anyway.
 
-Weather needs a location: the island never guesses one and calls out to nothing you did not configure.
+The weather, the map and the trips use where the machine is (GeoClue, see "Following your position"); the latitude and longitude
+above are the fallback, and the whole answer when `follow_position` is off. The island calls out only to the services a feature
+needs: see "What leaves the machine" at the end.
 
 ## Moving between pages
 
 Every page carries a row of page icons at the bottom (media and timer first when active, then home, calendar, quick settings,
-system, clipboard, settings): click one to jump straight to it. A horizontal swipe, Tab / Shift+Tab (keyboard mode) and
+system, activity, clipboard, options, settings; the map and today right after home): click one to jump straight to it. A horizontal swipe, Tab / Shift+Tab (keyboard mode) and
 `open-island msg page next|prev` step through the same list, and the content slides the way the pages are ordered. The back arrow
 returns to the page that led there.
 
@@ -125,8 +135,8 @@ claiming notifications (undo with `... true`). Any other owner is left alone and
 ## Controlling it
 
 `open-island msg <event> [payload]`: `peek`, `open [page]` (keyboard navigation: arrows move a focus ring, Enter
-activates, Tab / Shift+Tab change page, Escape closes), `page next|prev`, `page <home|cal|qs|sys|notifs|media|timer|clip|focus>`, `dnd on|off`, `timer 25m`,
-`pomodoro`, `stopwatch`, `timer-cancel`, `reply` (reply to the notification on screen: bind it to a key), and for long operations `open-island progress run [-l label] -- command...` (runs the command on a pseudo-terminal, so rsync, curl, pacman... still draw
+activates, Tab / Shift+Tab change page, Escape closes), `page next|prev`, `page <home|today|map|cal|qs|sys|activity|audio|send|notifs|media|timer|clip|focus|settings>`, `dnd on|off`, `timer 25m`,
+`pomodoro`, `stopwatch`, `timer-cancel`, `reply` (reply to the notification on screen: bind it to a key), `send <file>...` (see LocalSend below), and for long operations `open-island progress run [-l label] -- command...` (runs the command on a pseudo-terminal, so rsync, curl, pacman... still draw
 their own progress, and shows the last `NN%` they print; not for commands that ask questions: `sudo -v` first), or by hand `progress <percent|?> <label>`,
 `progress-done [label]`, `progress-fail [label]`, `progress-clear`: a card for 3 s, then a `64%` bubble
 beside the pill, then a card again when it ends (red when it failed).
@@ -207,7 +217,7 @@ A Weather page (after the calendar in the dock, or click the weather on the home
 with a glyph and temperature each (hours already gone are dimmed, the current block is lit), the chance of rain hour by
 hour, and one line saying when it rains next ("Rain in 40 min", "Rain around 18:00 · in 3 h", "Raining · clears in 25
 min", or that none is expected in the next 24 hours). When rain is due within six hours, or it is raining, the home page
-shows that line in place of today's high and low. Needs the latitude and longitude (settings page). Data: Open-Meteo.
+shows that line in place of today's high and low. It is for where you are (see "Following your position"), or for the coordinates of the settings page. Data: Open-Meteo.
 
 ## Building with `just`
 
@@ -230,15 +240,17 @@ Vulkan driver (`vulkan-radeon`, `vulkan-intel`) lets it run there instead of kee
 
 ## Options
 
-The same settings as the Noctalia island plugin, on the Options page (the toggle icon in the dock: tabs Island, Alerts, Music)
+The same settings as the Noctalia island plugin, on the Options page (the toggle icon in the dock: tabs Island, Alerts, Music, Rules; resting the pointer on an option says what it does)
 or in `config.json`, or from a script with `open-island msg set <option> <value>`:
 
 | tab | option | default |
 |---|---|---|
-| Island | `clock_in_pill`, `status_icons`, `clipboard_history`, `hide_on_fullscreen`, `weather`, `timer_sound` | on |
-| Island | `timer_presets` (`["5m","10m","25m"]`), `screen` (`focused` or a name such as `eDP-1`; pinning by connector name, on Wayland too; an unknown name is logged and the compositor chooses), `timer_sound_file` | |
+| Island | `clock_in_pill`, `status_icons`, `clipboard_history`, `hide_on_fullscreen`, `weather`, `timer_sound`, `auto_audio_output`, `follow_position` | on |
+| Island | `map_tile_url` (a preset name or a URL; see the map), `map_dark`, `map_api_key` (Settings page), `travel_mode` (`car`, `walk`, `transit`: on the Today page and the map) | OpenStreetMap, on, none, car |
+| Island | `timer_presets` (["5m","10m","25m"]), `screen` (`focused` or a name such as `eDP-1`; pinning by connector name, on Wayland too; an unknown name is logged and the compositor chooses), `timer_sound_file` | |
 | Alerts | `show_notifications`, `show_osd`, `battery_alerts`, `meeting_alerts`, `rain_alerts` | on |
-| Alerts | `quiet_in_meetings`, `quiet_on_mic`, `quiet_on_screen_share` (extras of this island) | on |
+| Alerts | `quiet_in_meetings`, `quiet_on_mic`, `quiet_on_screen_share`, `away_recap`, `culprit_alerts`, `travel_times` (extras of this island) | on |
+| Alerts | `travel_margin_minutes` (0-30, 5), `deep_work_minutes` (0-120, 20: auto focus), `break_minutes` (0-240, 0: off), `deep_work_apps` (a list in `config.json`) | |
 | Alerts | `notification_seconds` (2-30, 5), `osd_seconds` (0.5-5, 1.6), `low_battery_percent` (5-50, 15), `meeting_lead_minutes` (1-60, 10: the card), `meeting_pill_minutes` (1-120, 10: the pill on the side) | |
 | Music | `media_auto_expand`, `lyrics`, `lyrics_in_pill` (off), `art_tint` | on |
 
@@ -404,3 +416,20 @@ and every ten minutes (and when the map page opens), and the weather is read aga
 kilometres. Until the first fix, and when GeoClue gives none (or only a guess wider than 50 km), the location set in the settings
 is used. To pin the coordinates instead, as before, switch off **Options > Island > "Follow my position"**
 (`follow_position`): the map, the trips and the weather then all use Settings > Weather location.
+
+## What leaves the machine
+
+Nothing is sent unless a feature that needs it is in use, and each can be switched off:
+
+| feature | goes to | what | off with |
+|---|---|---|---|
+| weather | Open-Meteo | the coordinates | `weather` |
+| calendars, lyrics, cover art | the feed you configured, LRCLIB, the player's art URL | the feed address; a track and artist; an image URL | remove the feed, `lyrics` |
+| trips, search and routes on the map | Nominatim, OSRM (demo server), Transitous | the event's place or the words you searched, and the two points | `travel_times` (the map search is yours to use or not) |
+| map tiles | the tile provider (OpenStreetMap by default) | the tile addresses, which say roughly where you look; your API key, if the provider wants one | do not open the map |
+| position | GeoClue, which asks its own sources (Wi-Fi, GeoIP) | what GeoClue sends; the island calls no location service itself | `follow_position` |
+| sending files | the device you pick, on your network | the files | do not send |
+| network check | NetworkManager's own connectivity probe, a ping to your router | nothing of yours | `nmcli` absent |
+
+The clipboard history is in memory (only pinned entries are written, mode 0600), one-time codes are never kept, and the activity
+page keeps only today's totals per app in the state directory. Nothing is sent to an account or an analytics service.
