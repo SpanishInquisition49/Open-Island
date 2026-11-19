@@ -158,6 +158,7 @@ impl Island {
             Face::Audio => self.face_audio(p, w, h),
             Face::Today => self.face_today(p, w, h),
             Face::Send => self.face_send(p, w, h),
+            Face::Activity => self.face_activity(p, w, h),
             Face::Bar => self.face_bar(p, w, h),
             Face::Osd => self.face_osd(p, w, h),
             Face::Power => self.face_power(p, w, h),
@@ -1509,6 +1510,87 @@ impl Island {
         }
     }
 
+    /// Where the attention went today, and the last half hour.
+    fn face_activity(&self, p: P, w: f64, _h: f64) {
+        let hy = self.page_header(p, w, "Activity");
+        // two tabs on the right of the header
+        for (n, name) in ["Today", "Rewind"].into_iter().enumerate() {
+            let tw = p.button_width(name);
+            let x1 = w - 14.0 - if n == 0 { p.button_width("Rewind") + 6.0 } else { 0.0 };
+            let r = rect(x1 - tw, hy - 14.0, tw, 28.0);
+            let on = self.activity_tab == n;
+            p.rrect(r, 14.0, if on { theme::ACCENT } else if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
+            p.text(name, r.center().x, r.center().y, 12.0, SEMI, if on { theme::ON_ACCENT } else { theme::FG }, Align::Center, (tw - 8.0) as f32);
+            p.hit(r, Action::ActivityTab(n));
+        }
+        let top = 14.0 + 34.0 + 8.0;
+        if self.activity_tab == 0 {
+            self.attention_tab(p, w, top);
+        } else {
+            self.rewind_tab(p, w, top);
+        }
+    }
+
+    fn attention_tab(&self, p: P, w: f64, top: f64) {
+        let ds = {
+            let off = self.data.utc_offset_secs;
+            let t = clock::civil(self.now, off);
+            clock::midnight_ms(t.year, t.month, t.day, off)
+        };
+        let apps = self.ledger.today(self.now, ds);
+        if apps.is_empty() {
+            p.stagger(1);
+            p.text("Nothing recorded yet", w / 2.0, top + 40.0, 12.0, REG, theme::DIM, Align::Center, 260.0);
+            p.text("It follows the focused window (niri)", w / 2.0, top + 60.0, 10.0, REG, theme::DIM, Align::Center, 300.0);
+            return;
+        }
+        let total: i64 = apps.iter().map(|(_, ms)| ms).sum();
+        let biggest = apps[0].1.max(1);
+        for (n, (app, ms)) in apps.iter().take(5).enumerate() {
+            p.stagger(1 + n);
+            let y = top + n as f64 * 30.0 + 15.0;
+            p.text(app, 20.0, y, 12.0, SEMI, theme::FG, Align::Left, 110.0);
+            p.text(&format!("{}%", (*ms as f64 / total as f64 * 100.0).round() as i64), 188.0, y, 10.0, REG, theme::DIM, Align::Right, 34.0);
+            p.bar(rect(196.0, y - 3.0, w - 196.0 - 78.0, 6.0), *ms as f64 / biggest as f64, theme::ACCENT, theme::TRACK);
+            p.text(&duration::fmt_took(*ms), w - 20.0, y, 11.0, REG, theme::FG, Align::Right, 64.0);
+        }
+        let y = top + 5.0 * 30.0 + 15.0;
+        p.stagger(7);
+        let current = self.ledger.current().map(|(a, _, _)| a.to_string());
+        let streak = current.as_ref().map_or(0, |c| self.ledger.streak(self.now, 60_000, |a| a == c));
+        let line = match (&current, streak >= 5 * 60_000) {
+            (Some(c), true) => format!("Active today {} · {} min on {c} now", duration::fmt_took(total), streak / 60_000),
+            _ => format!("Active today {}", duration::fmt_took(total)),
+        };
+        p.text(&line, 20.0, y, 11.0, REG, theme::DIM, Align::Left, (w - 40.0) as f32);
+    }
+
+    fn rewind_tab(&self, p: P, w: f64, top: f64) {
+        let rows = self.rewind_rows();
+        if rows.is_empty() {
+            p.stagger(1);
+            p.text("Nothing in the last half hour", w / 2.0, top + 40.0, 12.0, REG, theme::DIM, Align::Center, 260.0);
+            return;
+        }
+        let off = self.data.utc_offset_secs;
+        for (n, r) in rows.iter().enumerate() {
+            p.stagger(1 + n);
+            let row = rect(8.0, top + n as f64 * 30.0, w - 16.0, 28.0);
+            let clickable = r.copy.is_some();
+            if clickable && p.hovered(row) {
+                p.rrect(row, 8.0, theme::CHIP);
+            }
+            let cy = row.center().y;
+            p.text(&clock::civil(r.at_ms, off).hhmm(), 20.0, cy, 11.0, REG, theme::DIM, Align::Left, 44.0);
+            p.icon(r.icon, 82.0, cy, 14.0, theme::DIM);
+            let text: String = r.text.split_whitespace().collect::<Vec<_>>().join(" ");
+            p.text(&text, 100.0, cy, 12.0, REG, theme::FG, Align::Left, (w - 100.0 - 24.0) as f32);
+            if clickable {
+                p.hit(row, Action::RewindCopy(n));
+            }
+        }
+    }
+
     const SEND_ROWS: usize = 5;
 
     pub(crate) fn send_height(&self) -> f64 {
@@ -1839,6 +1921,7 @@ fn page_icon(p: Page) -> &'static str {
         Page::Audio => "volume",
         Page::Today => "clock",
         Page::Send => "send",
+        Page::Activity => "chart-donut",
     }
 }
 

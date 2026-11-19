@@ -68,6 +68,8 @@ pub fn describe(key: &str) -> &'static str {
         "meeting_lead_minutes" => "How long before an event its card appears",
         "meeting_pill_minutes" => "How long before an event the pill on the side appears",
         "travel_margin_minutes" => "How much earlier than needed to be told to leave for an event",
+        "deep_work_minutes" => "Hold notifications after this long on work apps in a row (0: off)",
+        "break_minutes" => "A card after this long on one app without a break (0: off)",
         "travel_times" => "Time the way to events with a place (sends the place to map services)",
         "timer_presets" => "The quick timers on the timer page, such as 5m, 10m, 1h30m",
         "screen" => "The screen the island sits on (Wayland): a name like eDP-1, or empty",
@@ -90,6 +92,8 @@ pub fn steppers(tab: usize) -> &'static [Stepper] {
             ("meeting_lead_minutes", "Event card", "min", 1.0, 1.0, 60.0),
             ("meeting_pill_minutes", "Event pill", "min", 1.0, 1.0, 120.0),
             ("travel_margin_minutes", "Leave early", "min", 1.0, 0.0, 30.0),
+            ("deep_work_minutes", "Auto focus", "min", 5.0, 0.0, 120.0),
+            ("break_minutes", "Break nudge", "min", 15.0, 0.0, 240.0),
         ],
         _ => &[],
     }
@@ -164,6 +168,8 @@ pub fn get_num(c: &Config, key: &str) -> f64 {
         "meeting_lead_minutes" => c.meeting_lead_ms as f64 / 60_000.0,
         "meeting_pill_minutes" => c.meeting_pill_ms as f64 / 60_000.0,
         "travel_margin_minutes" => c.travel_margin_ms as f64 / 60_000.0,
+        "deep_work_minutes" => c.deep_work_minutes as f64,
+        "break_minutes" => c.break_minutes as f64,
         _ => 0.0,
     }
 }
@@ -176,6 +182,8 @@ pub fn set_num(c: &mut Config, key: &str, v: f64) {
         "meeting_lead_minutes" => c.meeting_lead_ms = (v * 60_000.0).round() as i64,
         "meeting_pill_minutes" => c.meeting_pill_ms = (v * 60_000.0).round() as i64,
         "travel_margin_minutes" => c.travel_margin_ms = (v * 60_000.0).round() as i64,
+        "deep_work_minutes" => c.deep_work_minutes = v.round() as i64,
+        "break_minutes" => c.break_minutes = v.round() as i64,
         _ => {}
     }
 }
@@ -229,7 +237,7 @@ mod tests {
         assert_eq!(page.len(), 22, "no option on two tabs");
         assert_eq!(TABS[RULES_TAB], "Rules");
         let nums: Vec<&str> = (0..TABS.len()).flat_map(|t| steppers(t).iter().map(|s| s.0)).collect();
-        assert_eq!(nums, ["notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes", "travel_margin_minutes"]);
+        assert_eq!(nums, ["notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes", "travel_margin_minutes", "deep_work_minutes", "break_minutes"]);
     }
 
     #[test]

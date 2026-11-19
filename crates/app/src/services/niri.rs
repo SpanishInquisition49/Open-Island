@@ -30,6 +30,12 @@ impl State {
         sw >= ow - 1.0 && sh >= oh - 1.0
     }
 
+    /// The focused window: its app id and title.
+    pub fn focused_window(&self) -> Option<(String, String)> {
+        let w = self.focused.and_then(|id| self.windows.get(&id))?;
+        Some((w.get("app_id").and_then(Value::as_str).unwrap_or("").to_string(), w.get("title").and_then(Value::as_str).unwrap_or("").to_string()))
+    }
+
     pub fn apply(&mut self, event: &Value) {
         let Some((kind, body)) = event.as_object().and_then(|o| o.iter().next()) else { return };
         match kind.as_str() {
@@ -108,10 +114,19 @@ pub fn start(rep: Reporter) {
         let Some(stdout) = child.stdout.take() else { return };
         let mut state = State::default();
         state.refresh_outputs();
-        let mut last = None;
+        let (mut last, mut last_focus) = (None, None);
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let Ok(ev) = serde_json::from_str::<Value>(&line) else { continue };
             state.apply(&ev);
+            // where the attention is (for the activity page)
+            let focus = state.focused_window();
+            if focus != last_focus {
+                if let Some((app, title)) = focus.clone() {
+                    log::debug!("focus: {app} / {title}");
+                    rep.input(island_ui::model::Input::Focused { app, title });
+                }
+                last_focus = focus;
+            }
             let now = state.fullscreen();
             if last != Some(now) {
                 last = Some(now);

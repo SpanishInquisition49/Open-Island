@@ -237,6 +237,26 @@ fn main() {
             d.trips = vec![island_ui::model::TripInfo { event_id: "Studio di gruppo".into(), mode: island_core::travel::Mode::Car, trip: Some(island_core::travel::Trip { secs: 840, meters: Some(5200), leave_ms: Some(day + (16 * 60 + 41) * 60_000), transfers: None }), error: None, at_ms: NOW }];
             i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
         })),
+        ("page-activity", Box::new(|i, d| {
+            d.utc_offset_secs = 3600;
+            i.data.utc_offset_secs = 3600;
+            let day = NOW / 86_400_000 * 86_400_000;
+            let t = |m: i64| day + m * 60_000;
+            let ds = day - 3_600_000; // local midnight: the preview's offset is +1 h
+            i.restore_attention(ds, vec![("Code".into(), 3 * 3_600_000 + 12 * 60_000), ("Zen".into(), 95 * 60_000), ("Telegram".into(), 22 * 60_000), ("Spotify".into(), 9 * 60_000)]);
+            i.push(NOW - 25 * 60_000, Input::Focused { app: "code".into(), title: "island.rs".into() });
+            let _ = t;
+            i.push(NOW - 9 * 60_000, Input::Notification(island_ui::model::Incoming { id: 1, app: "Telegram".into(), summary: "Lunch?".into(), ..Default::default() }));
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Activity));
+        })),
+        ("page-rewind", Box::new(|i, _| {
+            i.push(NOW - 20 * 60_000, Input::Focused { app: "code".into(), title: "island.rs".into() });
+            i.push(NOW - 12 * 60_000, Input::Focused { app: "zen".into(), title: "Nominatim usage policy".into() });
+            i.push(NOW - 9 * 60_000, Input::Notification(island_ui::model::Incoming { id: 1, app: "Telegram".into(), summary: "Lunch?".into(), ..Default::default() }));
+            i.push(NOW - 3 * 60_000, Input::Focused { app: "kitty".into(), title: "cargo test".into() });
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Activity));
+            i.show_activity_tab(1);
+        })),
         ("page-audio", Box::new(|i, d| {
             let sink = |n: &str, l: &str| island_ui::model::Sink { name: n.into(), label: l.into() };
             d.sinks = vec![sink("speaker", "Built-in Speakers"), sink("bluez_output.x", "WH-1000XM5")];

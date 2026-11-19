@@ -54,6 +54,12 @@ pub struct Config {
     pub travel_mode: island_core::travel::Mode,
     /// How much earlier than needed to leave.
     pub travel_margin_ms: i64,
+    /// Notifications are held after this many minutes in a row on work apps (0: never).
+    pub deep_work_minutes: i64,
+    /// Names of apps that count as work (part of the name, any case).
+    pub deep_work_apps: Vec<String>,
+    /// A card after this many minutes on the same app without a break (0: never).
+    pub break_minutes: i64,
     pub meeting_alerts: bool,
     pub rain_alerts: bool,
     pub battery_alerts: bool,
@@ -100,6 +106,9 @@ impl Default for Config {
             travel_times: true,
             travel_mode: island_core::travel::Mode::Car,
             travel_margin_ms: 5 * 60_000,
+            deep_work_minutes: 20,
+            deep_work_apps: island_core::activity::DEEP_WORK_APPS.iter().map(|s| s.to_string()).collect(),
+            break_minutes: 0,
             meeting_alerts: true,
             rain_alerts: true,
             battery_alerts: true,
@@ -182,6 +191,9 @@ pub enum Action {
     NotifOpen,
     ClipRestore(usize),
     ClipPin(usize),
+    ActivityTab(usize),
+    /// Put a line of the rewind page back on the clipboard.
+    RewindCopy(usize),
     /// How to get to the next event with a place.
     TravelMode(island_core::travel::Mode),
     /// The action of a clipboard entry (open the link, write the mail, show the place).
@@ -244,6 +256,31 @@ pub struct Bar {
     pub text: String,
     pub cursor: usize,
     pub until: i64,
+}
+
+/// Something that happened, for the rewind page.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LogEntry {
+    pub at_ms: i64,
+    pub kind: LogKind,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogKind {
+    Notification,
+    Track,
+    Copy,
+}
+
+/// A line of the rewind page.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RewindRow {
+    pub at_ms: i64,
+    pub icon: &'static str,
+    pub text: String,
+    /// The text to put back on the clipboard when the row is clicked.
+    pub copy: Option<String>,
 }
 
 /// A reminder set from the command bar.
@@ -407,6 +444,12 @@ pub struct Island {
     /// The program the last culprit card was about, and when.
     culprit_told: Option<(String, i64)>,
     culprit_id: u32,
+    pub(crate) ledger: island_core::activity::Ledger,
+    log: std::collections::VecDeque<LogEntry>,
+    log_track: String,
+    last_copy: String,
+    pub(crate) activity_tab: usize,
+    break_told: Option<i64>,
     /// Trips already asked for (event, way) and when; events already told to leave for.
     trip_asked: std::collections::HashMap<(String, island_core::travel::Mode), i64>,
     leave_told: std::collections::HashSet<String>,
@@ -529,6 +572,12 @@ impl Island {
             code_copied: None,
             culprit_told: None,
             culprit_id: 0,
+            ledger: Default::default(),
+            log: Default::default(),
+            log_track: String::new(),
+            last_copy: String::new(),
+            activity_tab: 0,
+            break_told: None,
             trip_asked: Default::default(),
             leave_told: Default::default(),
             headsup_told: Default::default(),
@@ -640,7 +689,17 @@ impl Island {
                 self.hover_page = self.page;
                 self.expand_until = now + KB_IDLE_MS;
             }
+            Input::Focused { app, title } => {
+                let ds = self.day_start(now);
+                self.ledger.focus(now, ds, &island_core::activity::pretty_app(&app), &title);
+            }
+            Input::Idled { after_ms } => {
+                let ds = self.day_start(now);
+                self.ledger.idle(now - after_ms, ds);
+            }
             Input::Returned { away_ms } => {
+                let ds = self.day_start(now);
+                self.ledger.resume(now, ds);
                 // a short pause is not an absence
                 if self.cfg.away_recap && away_ms >= 60_000 {
                     self.recap(now - away_ms, "while you were away");
@@ -737,6 +796,10 @@ impl Island {
         if !(is_own(&n) && n.app == "open-island") {
             self.history.insert(0, (n.clone(), self.now));
             self.history.truncate(30);
+            if !is_own(&n) {
+                let text = if n.summary.is_empty() { n.app.clone() } else { format!("{}: {}", n.app, n.summary) };
+                self.log_event(LogKind::Notification, text);
+            }
         }
         if (self.quiet() || !self.cfg.show_notifications) && !n.critical && !is_own(&n) {
             return;
@@ -925,6 +988,11 @@ impl Island {
     /// Opens a tab of the options page (0 Island, 1 Alerts, 2 Music).
     pub fn show_options_tab(&mut self, tab: usize) {
         self.options_tab = tab.min(crate::options::TABS.len() - 1);
+    }
+
+    /// Opens a tab of the activity page (0 today, 1 rewind).
+    pub fn show_activity_tab(&mut self, tab: usize) {
+        self.activity_tab = tab.min(1);
     }
 
     pub fn history(&self) -> &[(Incoming, i64)] {
@@ -1334,6 +1402,9 @@ impl Island {
         if self.cfg.clipboard_history {
             v.push(Page::Clip);
         }
+        if let Some(at) = v.iter().position(|p| *p == Page::Sys) {
+            v.insert(at + 1, Page::Activity);
+        }
         v.push(Page::Options);
         v.push(Page::Settings);
         v
@@ -1583,6 +1654,12 @@ impl Island {
                 self.trip_asked.retain(|(_, mode), _| *mode == m);
                 return vec![Command::SetOption { key: "travel_mode".into(), value: OptionValue::Text(m.name().into()) }];
             }
+            Action::ActivityTab(t) => self.activity_tab = t.min(1),
+            Action::RewindCopy(i) => {
+                if let Some(t) = self.rewind_rows().get(i).and_then(|r| r.copy.clone()) {
+                    return vec![Command::RestoreClipboard(t)];
+                }
+            }
             Action::ClipPin(i) => {
                 if let Some(t) = self.data.clipboard.get(i).cloned() {
                     return vec![Command::PinClipboard(t)];
@@ -1630,6 +1707,7 @@ impl Island {
             Face::Audio => h = self.audio_height(),
             Face::Today => h = self.today_height(),
             Face::Send => h = self.send_height(),
+            Face::Activity => h = 14.0 + 34.0 + 8.0 + 6.0 * 30.0 + 10.0,
             Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
             Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
             Face::MediaMini | Face::TimerMini | Face::MeetMini => w += self.icon_count(true) as f64 * ICON_W,
@@ -1810,6 +1888,8 @@ impl Island {
             Some("microphone")
         } else if self.data.focus.as_ref().is_some_and(|f| f.active) {
             Some("focus")
+        } else if self.deep_work(now) {
+            Some("deep work")
         } else {
             None
         };
@@ -1826,6 +1906,84 @@ impl Island {
             self.dnd_sent = self.quiet();
             self.pending.push(Command::SetDnd(self.dnd_sent));
         }
+    }
+
+    fn day_start(&self, now: i64) -> i64 {
+        let off = self.data.utc_offset_secs;
+        let t = crate::clock::civil(now, off);
+        crate::clock::midnight_ms(t.year, t.month, t.day, off)
+    }
+
+    fn log_event(&mut self, kind: LogKind, text: String) {
+        self.log.push_front(LogEntry { at_ms: self.now, kind, text });
+        self.log.truncate(120);
+    }
+
+    /// Today's attention per app, to be kept between runs.
+    pub fn attention_export(&self) -> (i64, Vec<(String, i64)>) {
+        let ds = self.day_start(self.now);
+        self.ledger.export(self.now, ds)
+    }
+
+    pub fn restore_attention(&mut self, day_start: i64, totals: Vec<(String, i64)>) {
+        self.ledger.restore(day_start, totals);
+    }
+
+    /// The last half hour in one list, newest first: where the attention was, what came in, what played, what was copied.
+    pub(crate) fn rewind_rows(&self) -> Vec<RewindRow> {
+        const WINDOW: i64 = 30 * 60_000;
+        let now = self.now;
+        let mut rows: Vec<RewindRow> = vec![];
+        // a window that had the focus for less than ten seconds is a pass-through, not a place
+        for s in self.ledger.recent(now, WINDOW).into_iter().filter(|s| s.end_ms - s.start_ms >= 10_000) {
+            let text = if s.title.is_empty() { s.app.clone() } else { format!("{}: {}", s.app, s.title) };
+            rows.push(RewindRow { at_ms: s.start_ms, icon: "device-desktop", text, copy: None });
+        }
+        for e in self.log.iter().filter(|e| now - e.at_ms <= WINDOW) {
+            let (icon, copy) = match e.kind {
+                LogKind::Notification => ("bell", None),
+                LogKind::Track => ("music", None),
+                LogKind::Copy => ("clipboard-text", Some(e.text.clone())),
+            };
+            rows.push(RewindRow { at_ms: e.at_ms, icon, text: e.text.clone(), copy });
+        }
+        rows.sort_by_key(|r| std::cmp::Reverse(r.at_ms));
+        rows.truncate(6);
+        rows
+    }
+
+    /// Whether the person has been on work apps long enough for the notifications to wait.
+    fn deep_work(&self, now: i64) -> bool {
+        let mins = self.cfg.deep_work_minutes;
+        if mins <= 0 || self.cfg.deep_work_apps.is_empty() {
+            return false;
+        }
+        let apps: Vec<String> = self.cfg.deep_work_apps.iter().map(|a| a.to_lowercase()).collect();
+        self.ledger.streak(now, 60_000, |app| {
+            let a = app.to_lowercase();
+            apps.iter().any(|w| a.contains(w.as_str()))
+        }) >= mins * 60_000
+    }
+
+    /// A card when the person has been on one app for a long stretch: a break may be due.
+    fn break_card(&mut self, now: i64) {
+        let mins = self.cfg.break_minutes;
+        let Some((app, _, _)) = self.ledger.current().map(|(a, t, s)| (a.to_string(), t.to_string(), s)) else { return };
+        if mins <= 0 {
+            return;
+        }
+        let streak = self.ledger.streak(now, 60_000, |a| a == app);
+        if streak < mins * 60_000 {
+            return;
+        }
+        // told again only after another full period
+        if self.break_told.is_some_and(|t| now - t < mins * 60_000) {
+            return;
+        }
+        self.break_told = Some(now);
+        self.next_own_id += 1;
+        let n = Incoming { id: self.next_own_id, app: "open-island".into(), summary: format!("{} minutes on {app}", streak / 60_000), body: "A short break?".into(), expire_ms: Some(8000), ..Default::default() };
+        self.push(now, Input::Notification(n));
     }
 
     /// One card when a program starts to hog the machine (and again only after ten minutes, or for another program).
@@ -1943,8 +2101,30 @@ impl Island {
         self.auto_quiet.is_some_and(|r| r != "meeting")
     }
 
+    /// What played and what was copied, for the rewind page.
+    fn note_changes(&mut self) {
+        let track = self.data.media.as_ref().map(|m| if m.artist.is_empty() { m.title.clone() } else { format!("{} · {}", m.title, m.artist) }).unwrap_or_default();
+        if track != self.log_track {
+            if !track.is_empty() && !self.log_track.is_empty() {
+                self.log_event(LogKind::Track, track.clone());
+            }
+            self.log_track = track;
+        }
+        let copy = self.data.clipboard.first().cloned().unwrap_or_default();
+        if copy != self.last_copy {
+            if !copy.is_empty() && !self.last_copy.is_empty() {
+                let one_line: String = copy.split_whitespace().collect::<Vec<_>>().join(" ");
+                let _ = one_line;
+                self.log_event(LogKind::Copy, copy.clone());
+            }
+            self.last_copy = copy;
+        }
+    }
+
     fn slow_checks(&mut self) {
         let now = self.now;
+        self.note_changes();
+        self.break_card(now);
         self.update_quiet(now);
         self.trips(now);
         self.heads_up(now);
@@ -2341,7 +2521,7 @@ pub(crate) fn notif_code(n: &Incoming) -> Option<String> {
 
 /// Faces that are pages: they carry the dock at the bottom.
 pub(crate) fn has_dock(f: Face) -> bool {
-    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options | Face::Audio | Face::Today | Face::Send)
+    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options | Face::Audio | Face::Today | Face::Send | Face::Activity)
 }
 
 pub(crate) fn page_of(f: Face) -> Option<Page> {
@@ -2362,6 +2542,7 @@ pub(crate) fn page_of(f: Face) -> Option<Page> {
         Face::Audio => Page::Audio,
         Face::Today => Page::Today,
         Face::Send => Page::Send,
+        Face::Activity => Page::Activity,
         Face::FocusFull => Page::Focus,
         _ => return None,
     })
@@ -3550,7 +3731,7 @@ mod tests {
         i.push(T0, Input::OpenPage(Page::Qs));
         draw_frames(&mut i, 200);
         let gotos: Vec<Page> = i.hits.iter().filter_map(|h| if let Action::Goto(p) = h.action { Some(p) } else { None }).collect();
-        assert_eq!(gotos, vec![Page::Home, Page::Today, Page::Cal, Page::Qs, Page::Sys, Page::Clip, Page::Options, Page::Settings], "no media, timer, notifications or forecast yet");
+        assert_eq!(gotos, vec![Page::Home, Page::Today, Page::Cal, Page::Qs, Page::Sys, Page::Activity, Page::Clip, Page::Options, Page::Settings], "no media, timer, notifications or forecast yet");
         let home = i.hits.iter().find(|h| h.action == Action::Goto(Page::Sys)).unwrap().rect;
         i.pointer_down(i.now, home.center().x + i.pill_origin.0, home.center().y + i.pill_origin.1);
         assert_eq!(i.page, Some(Page::Sys));
@@ -4190,6 +4371,77 @@ mod tests {
         j.data.battery = Some(Battery { percent: 90.0, charging: false, on_ac: false });
         run(&mut j, 2000);
         assert!(j.notif.is_none(), "nothing to say, nothing said");
+    }
+
+    #[test]
+    fn twenty_minutes_on_work_apps_hold_the_notifications_until_the_person_leaves() {
+        let mut i = Island::new(Config::default());
+        let n = |id: u32| Input::Notification(Incoming { id, app: "Telegram".into(), summary: format!("m{id}"), ..Default::default() });
+        run(&mut i, 1000);
+        i.push(i.now, Input::Focused { app: "code".into(), title: "main.rs".into() });
+        run(&mut i, 10 * 60_000);
+        i.push(i.now, Input::Focused { app: "org.gnome.Evince".into(), title: "paper.pdf".into() });
+        run(&mut i, 5 * 60_000);
+        i.push(i.now, n(1));
+        assert!(i.notif.is_some(), "fifteen minutes is not yet deep work");
+        i.notif = None;
+        run(&mut i, 6 * 60_000);
+        assert_eq!(i.auto_quiet_reason(), Some("deep work"));
+        i.push(i.now, n(2));
+        assert!(i.notif.is_none(), "held");
+        i.push(i.now, Input::Focused { app: "zen".into(), title: "news".into() });
+        run(&mut i, 64_000);
+        assert_eq!(i.auto_quiet_reason(), None, "a long detour ends it");
+        assert!(i.notif.as_ref().is_some_and(|c| c.summary.contains("held back")), "and the recap comes");
+        i.cfg.deep_work_minutes = 0;
+        i.notif = None;
+        i.push(i.now, Input::Focused { app: "code".into(), title: "x".into() });
+        run(&mut i, 30 * 60_000);
+        assert_eq!(i.auto_quiet_reason(), None, "switched off");
+    }
+
+    #[test]
+    fn a_long_stretch_on_one_app_gets_a_break_nudge_once_per_period() {
+        let mut i = Island::new(Config { break_minutes: 30, ..Default::default() });
+        run(&mut i, 1000);
+        i.push(i.now, Input::Focused { app: "zen".into(), title: "x".into() });
+        run(&mut i, 29 * 60_000);
+        assert!(i.notif.is_none());
+        run(&mut i, 63_000);
+        let card = i.notif.clone().expect("a nudge");
+        assert!(card.summary.starts_with("30 minutes on Zen") || card.summary.starts_with("31 minutes on Zen"), "{}", card.summary);
+        i.notif = None;
+        run(&mut i, 10 * 60_000);
+        assert!(i.notif.is_none(), "not again within the period");
+    }
+
+    #[test]
+    fn the_activity_page_shows_the_day_and_the_last_half_hour() {
+        let mut i = Island::new(Config::default());
+        run(&mut i, 1000);
+        i.push(i.now, Input::Focused { app: "code".into(), title: "main.rs".into() });
+        run(&mut i, 4 * 60_000);
+        i.push(i.now, Input::Notification(Incoming { id: 1, app: "Telegram".into(), summary: "Hi".into(), ..Default::default() }));
+        i.push(i.now, Input::Focused { app: "zen".into(), title: "Docs".into() });
+        run(&mut i, 60_000);
+        i.data.clipboard = vec!["first".into()];
+        run(&mut i, 3000);
+        i.data.clipboard = vec!["second thing".into(), "first".into()];
+        run(&mut i, 3000);
+        let rows = i.rewind_rows();
+        assert_eq!(rows[0].text, "second thing");
+        assert_eq!(rows[0].copy.as_deref(), Some("second thing"));
+        assert!(rows.iter().any(|r| r.text == "Telegram: Hi") && rows.iter().any(|r| r.text == "Code: main.rs") && rows.iter().any(|r| r.text == "Zen: Docs"));
+        i.push(i.now, Input::OpenPage(Page::Activity));
+        draw_frames(&mut i, 200);
+        assert_eq!(i.current_face(), Face::Activity);
+        assert!(press(&mut i, Action::ActivityTab(1)));
+        draw_frames(&mut i, 50);
+        assert!(press(&mut i, Action::RewindCopy(0)));
+        assert!(i.take_commands().contains(&Command::RestoreClipboard("second thing".into())));
+        let (day, totals) = i.attention_export();
+        assert!(day > 0 && totals.iter().any(|(a, ms)| a == "Code" && *ms >= 4 * 60_000));
+        assert!(i.pages().windows(2).any(|w| w == [Page::Sys, Page::Activity]), "the dock shows it after the system page");
     }
 
     #[test]

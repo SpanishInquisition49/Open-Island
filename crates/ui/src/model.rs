@@ -347,6 +347,10 @@ pub enum Input {
     OpenBar,
     /// The person is back after this many milliseconds without touching the keyboard or the pointer.
     Returned { away_ms: i64 },
+    /// No keyboard or pointer input for this long (the person is probably away).
+    Idled { after_ms: i64 },
+    /// The window with the focus changed (app id and title).
+    Focused { app: String, title: String },
     /// Files to send: opens the page that lists the devices (from `open-island send`, or a file dropped on the island).
     SendFiles(Vec<String>),
     /// A shell started a command: it becomes a progress pill when it runs longer than `after_secs`.

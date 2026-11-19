@@ -198,6 +198,19 @@ pub fn save_dnd(on: bool) {
     }
 }
 
+/// Today's attention per app, kept between runs (day start in epoch ms, then app and milliseconds).
+pub fn load_attention() -> Option<(i64, Vec<(String, i64)>)> {
+    let v: serde_json::Value = serde_json::from_str(&state_file("attention.json").and_then(|p| std::fs::read_to_string(p).ok())?).ok()?;
+    let day = v.get("day")?.as_i64()?;
+    let apps = v.get("apps")?.as_array()?.iter().filter_map(|a| Some((a.get(0)?.as_str()?.to_string(), a.get(1)?.as_i64()?))).collect();
+    Some((day, apps))
+}
+
+pub fn save_attention(day: i64, apps: &[(String, i64)]) {
+    let Some(p) = state_file("attention.json") else { return };
+    let _ = std::fs::write(p, serde_json::json!({"day": day, "apps": apps}).to_string());
+}
+
 /// The reminders set from the command bar, kept between runs.
 pub fn load_reminders() -> Vec<island_ui::island::Reminder> {
     let Some(text) = state_file("reminders.json").and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };

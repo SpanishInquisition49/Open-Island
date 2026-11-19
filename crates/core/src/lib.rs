@@ -2,6 +2,7 @@
 //! or the clock: every function is a function of its arguments, so all of it is unit-tested.
 
 pub mod bluetooth;
+pub mod activity;
 pub mod bar;
 pub mod calendar;
 pub mod clipact;

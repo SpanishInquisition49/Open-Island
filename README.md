@@ -342,3 +342,21 @@ Forty minutes before an event, if there is something worth knowing about it, one
 take an umbrella · battery 21%, bring the charger". It stays silent when there is nothing to say. When the event has a place and
 a way to get there (see above), the same notes are added to the "Leave in ..." card instead. The rain comes from the forecast
 used for the weather (rain that falls or starts before you would arrive); the battery matters below 30% and unplugged.
+
+## Activity: where the attention goes, rewind, auto focus (niri)
+
+The island follows the focused window (niri's event stream) and stops counting when nobody has touched the keyboard or the
+pointer for two minutes. Nothing leaves the machine; only today's totals per app are written to the state directory
+(`attention.json`), once a minute.
+
+- **Activity page** (dock, after the system page; `open-island msg page activity`). *Today*: the five apps that held the
+  attention, with share and time, and how long you have been on the current one. *Rewind*: the last half hour in one list, newest
+  first: windows (an app that had the focus for less than ten seconds is left out), notifications, tracks, and what you copied
+  (a click puts it back on the clipboard).
+- **Auto focus**: after `deep_work_minutes` (default 20, Options > Alerts "Auto focus", 0 = off) in a row on work apps (editors,
+  terminals, PDF and note readers: `deep_work_apps` in `config.json` replaces the list; a detour shorter than a minute does not
+  break it) notifications are held like in a meeting, a bell-off icon shows in the pill, and a recap card comes when you leave.
+  Reminders and critical notifications still get through.
+- **Break nudge**: `break_minutes` (default 0 = off) gives a card after that long on one app, then again after another period.
+
+Other compositors than niri give no focus events yet, so the page stays empty there (the options still apply).

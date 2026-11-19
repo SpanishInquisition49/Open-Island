@@ -39,6 +39,7 @@ pub fn config_view_of(fonts: &Fonts) -> island_ui::model::ConfigView {
 }
 
 pub struct App {
+    attention_saved_at: i64,
     pub island: Island,
     pub fonts: Fonts,
     rx: Receiver<Msg>,
@@ -100,11 +101,14 @@ impl App {
         let mut island = Island::new(Config::default());
         island.restore_announced(services::load_announced());
         island.restore_reminders(services::load_reminders());
+        if let Some((day, apps)) = services::load_attention() {
+            island.restore_attention(day, apps);
+        }
         if crate::config::load().persist_history {
             island.restore_history(services::load_history());
         }
         island.data.config = config_view_of(&fonts);
-        Self { island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, was_animating: false, quit: false, persist_history: crate::config::load().persist_history, fullscreen: false, maximized: false, pointer_near: false, last_pointer: (0.0, 0.0) }
+        Self { attention_saved_at: 0, island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, was_animating: false, quit: false, persist_history: crate::config::load().persist_history, fullscreen: false, maximized: false, pointer_near: false, last_pointer: (0.0, 0.0) }
     }
 
     /// Epoch milliseconds: the monotonic clock since the start, so a clock that is adjusted a little does not make
@@ -176,6 +180,15 @@ impl App {
             }
         }
         services::save_reminders_if_changed(self.island.reminders());
+        // today's attention: written at most once a minute
+        let now_s = self.now() / 1000;
+        if now_s - self.attention_saved_at >= 60 {
+            self.attention_saved_at = now_s;
+            let (day, apps) = self.island.attention_export();
+            if !apps.is_empty() {
+                services::save_attention(day, &apps);
+            }
+        }
         let keys = self.island.announced_keys();
         services::save_announced_if_changed(&keys);
         if self.persist_history {

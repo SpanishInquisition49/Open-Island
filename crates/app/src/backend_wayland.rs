@@ -331,6 +331,7 @@ impl Dispatch<ExtIdleNotificationV1, ()> for Wl {
             ext_idle_notification_v1::Event::Idled => {
                 log::debug!("idle");
                 state.idle_since = Some(Instant::now());
+                state.app.input(island_ui::model::Input::Idled { after_ms: state.idle_secs as i64 * 1000 });
             }
             ext_idle_notification_v1::Event::Resumed => {
                 if let Some(since) = state.idle_since.take() {
