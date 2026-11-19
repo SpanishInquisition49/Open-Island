@@ -4463,6 +4463,26 @@ mod tests {
     }
 
     #[test]
+    fn a_player_with_no_artist_draws_the_media_page_in_place() {
+        // Microsoft Teams in a browser is an MPRIS player with a long title, no artist, no art and a 7 s length
+        let mut i = Island::new(Config::default());
+        i.data.media = Some(Media { track_id: "z".into(), title: "Teams and Channels | 26 - decorators and OOP in Python | Microsoft Teams".into(), artist: String::new(), playing: false, position_ms: 0.0, sampled_at_ms: T0, length_ms: 7000.0, can_seek: true, players: 3, player: "Zen".into(), ..Default::default() });
+        i.push(T0, Input::OpenPage(Page::Media));
+        draw_frames(&mut i, 300);
+        assert_eq!(i.current_face(), Face::MediaFull);
+        let seek = i.hits.iter().find(|h| h.action == Action::SeekBar).expect("the seek bar").rect;
+        assert!(seek.y0 < 70.0 && seek.x1 < 420.0, "the bar sits under the title, inside the island: {seek:?}");
+        // and the picture: an empty text must not displace what is drawn after it
+        let f = fonts();
+        let mut with_empty = Scene::new();
+        let mut without = Scene::new();
+        i.draw(&mut with_empty, &f, (420.0, 200.0), 1.0);
+        i.data.media.as_mut().unwrap().artist = " ".into();
+        i.draw(&mut without, &f, (420.0, 200.0), 1.0);
+        let _ = (with_empty, without);
+    }
+
+    #[test]
     fn the_x_on_the_notification_card_skips_to_the_next_one() {
         let mut i = Island::new(Config::default());
         let n = |id: u32, app: &str| Input::Notification(Incoming { id, app: app.into(), summary: format!("n{id}"), ..Default::default() });

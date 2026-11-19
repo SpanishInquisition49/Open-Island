@@ -97,6 +97,10 @@ impl<A: Clone> Painter<'_, A> {
 
     fn fonts_draw(&mut self, s: &str, x: f64, y: f64, size: f32, w: Weight, color: Color) {
         // Fonts::draw takes absolute coordinates; compose the painter transform by drawing into a child scene.
+        // vello's `append` of a scene with nothing in it (an empty artist) leaves what is drawn afterwards displaced
+        if s.is_empty() {
+            return;
+        }
         let mut child = Scene::new();
         self.fonts.draw(&mut child, s, x, y, size, w, color);
         self.scene.append(&child, Some(self.transform));

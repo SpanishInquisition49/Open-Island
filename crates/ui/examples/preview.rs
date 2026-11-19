@@ -257,6 +257,14 @@ fn main() {
             i.push(NOW, Input::OpenPage(island_core::face::Page::Activity));
             i.show_activity_tab(1);
         })),
+        ("media-teams", Box::new(|i, d| {
+            d.media = Some(Media { track_id: "z|/org/mpris/MediaPlayer2/firefox|Teams|".into(), title: "Teams and Channels | 26 - decorators and OOP in Python | Microsoft Teams".into(), artist: String::new(), playing: false, position_ms: 0.0, sampled_at_ms: NOW, length_ms: 7000.0, art: None, can_seek: true, players: 3, player: "Zen".into() });
+            d.lyrics_lrc = None;
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Media));
+        })),
+        ("media-teams-mini", Box::new(|_, d| {
+            d.media = Some(Media { track_id: "z".into(), title: "Teams and Channels | 26 - decorators and OOP in Python | Microsoft Teams".into(), artist: String::new(), playing: true, position_ms: 9000.0, sampled_at_ms: NOW, length_ms: 7000.0, art: None, can_seek: true, players: 3, player: "Zen".into() });
+        })),
         ("page-audio", Box::new(|i, d| {
             let sink = |n: &str, l: &str| island_ui::model::Sink { name: n.into(), label: l.into() };
             d.sinks = vec![sink("speaker", "Built-in Speakers"), sink("bluez_output.x", "WH-1000XM5")];
