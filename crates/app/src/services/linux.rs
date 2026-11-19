@@ -57,6 +57,9 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                 Command::AddFilter { .. } | Command::RemoveFilter(_) | Command::SetOption { .. } | Command::AddCalendar(_) | Command::AddICloud { .. } | Command::RenameCalendar { .. } | Command::SetCalendarColor { .. } | Command::RemoveCalendar(_) | Command::SetFont(_) | Command::SetLatitude(_) | Command::SetLongitude(_) | Command::SetNotificationSound(_) => {}
                 Command::RestoreClipboard(t) => clipboard::restore(&t),
                 Command::PlanTrip { .. } => super::travel::command(&rep, c),
+                Command::MuteMicStream { stream, mute } => {
+                    run("pactl", &["set-source-output-mute", &stream.to_string(), if mute { "1" } else { "0" }]);
+                }
                 Command::ReconnectNetwork => {
                     std::thread::spawn(super::netwatch::reconnect);
                 }
@@ -282,6 +285,22 @@ fn audio_and_brightness(rep: Reporter, settings: Arc<Settings>) {
 
 // ---- privacy indicators -------------------------------------------------------------------------
 
+/// Programs that have a camera open: name and pids.
+pub fn camera_users() -> Vec<(String, Vec<u32>)> {
+    let Ok(procs) = std::fs::read_dir("/proc") else { return vec![] };
+    let mut by_name: std::collections::BTreeMap<String, Vec<u32>> = Default::default();
+    for p in procs.flatten() {
+        let Some(pid) = p.file_name().to_string_lossy().parse::<u32>().ok() else { continue };
+        let Ok(fds) = std::fs::read_dir(p.path().join("fd")) else { continue };
+        let opens = fds.flatten().filter_map(|fd| std::fs::read_link(fd.path()).ok()).any(|t| t.to_string_lossy().starts_with("/dev/video"));
+        if opens {
+            let name = std::fs::read_to_string(p.path().join("comm")).map(|c| c.trim().to_string()).unwrap_or_default();
+            by_name.entry(if name.is_empty() { "An app".into() } else { name }).or_default().push(pid);
+        }
+    }
+    by_name.into_iter().collect()
+}
+
 fn camera_in_use() -> bool {
     let Ok(procs) = std::fs::read_dir("/proc") else { return false };
     for p in procs.flatten() {
@@ -302,10 +321,10 @@ fn camera_in_use() -> bool {
     false
 }
 
-/// True when an application is really recording from a microphone. Streams that capture what the speakers
-/// play (the equalizer of a shell, a visualiser, this island's own spectrum) are not the microphone, nor are
-/// paused streams or this program's own.
-pub fn mic_streams_active(source_outputs_json: &str, sources_json: &str) -> bool {
+/// The applications really recording from a microphone. Streams that capture what the speakers play (the equalizer
+/// of a shell, a visualiser, this island's own spectrum) are not the microphone, nor are paused streams or this
+/// program's own.
+pub fn mic_users(source_outputs_json: &str, sources_json: &str) -> Vec<island_ui::model::MicUser> {
     use serde_json::Value;
     let outputs: Vec<Value> = serde_json::from_str(source_outputs_json).unwrap_or_default();
     let sources: Vec<Value> = serde_json::from_str(sources_json).unwrap_or_default();
@@ -315,14 +334,25 @@ pub fn mic_streams_active(source_outputs_json: &str, sources_json: &str) -> bool
                 && (s.get("monitor_of_sink").is_some_and(|m| !m.is_null()) || s.get("name").and_then(Value::as_str).is_some_and(|n| n.ends_with(".monitor")))
         })
     };
-    outputs.iter().any(|o| {
-        let props = o.get("properties");
-        let prop = |k: &str| props.and_then(|p| p.get(k)).and_then(Value::as_str).unwrap_or("");
-        let corked = o.get("corked").and_then(Value::as_bool).unwrap_or(false);
-        let captures_a_sink = prop("stream.capture.sink") == "true" || is_monitor_source(o.get("source").and_then(Value::as_u64));
-        let ours = ["open-island", "open_island"].iter().any(|n| prop("application.name").contains(n) || prop("application.process.binary").contains(n) || prop("node.name").contains(n));
-        !corked && !captures_a_sink && !ours
-    })
+    outputs
+        .iter()
+        .filter_map(|o| {
+            let props = o.get("properties");
+            let prop = |k: &str| props.and_then(|p| p.get(k)).and_then(Value::as_str).unwrap_or("");
+            let corked = o.get("corked").and_then(Value::as_bool).unwrap_or(false);
+            let captures_a_sink = prop("stream.capture.sink") == "true" || is_monitor_source(o.get("source").and_then(Value::as_u64));
+            let ours = ["open-island", "open_island"].iter().any(|n| prop("application.name").contains(n) || prop("application.process.binary").contains(n) || prop("node.name").contains(n));
+            if corked || captures_a_sink || ours {
+                return None;
+            }
+            let name = [prop("application.name"), prop("application.process.binary"), prop("node.name")].into_iter().find(|n| !n.is_empty()).unwrap_or("An app").to_string();
+            Some(island_ui::model::MicUser { stream: o.get("index")?.as_u64()? as u32, name, pid: prop("application.process.id").parse().ok(), muted: o.get("mute").and_then(Value::as_bool).unwrap_or(false) })
+        })
+        .collect()
+}
+
+pub fn mic_streams_active(source_outputs_json: &str, sources_json: &str) -> bool {
+    !mic_users(source_outputs_json, sources_json).is_empty()
 }
 
 fn mic_in_use() -> bool {
@@ -602,6 +632,17 @@ mod tests {
     const SOURCES: &str = r#"[
       {"index": 53, "name": "alsa_output.pci.Speaker__sink.monitor", "monitor_of_sink": 1},
       {"index": 54, "name": "alsa_input.pci.Mic2__source", "monitor_of_sink": null}]"#;
+
+    #[test]
+    fn the_microphone_users_have_names_and_streams() {
+        let outs = r#"[{"index":9,"source":1,"mute":true,"corked":false,"properties":{"application.name":"Zen","application.process.id":"7147"}},
+                       {"index":10,"source":2,"corked":false,"properties":{"application.name":"cava"}},
+                       {"index":11,"source":1,"corked":true,"properties":{"application.name":"paused"}}]"#;
+        let srcs = r#"[{"index":1,"name":"alsa_input.mic","monitor_of_sink":null},{"index":2,"name":"alsa_output.x.monitor","monitor_of_sink":"x"}]"#;
+        let users = mic_users(outs, srcs);
+        assert_eq!(users, vec![island_ui::model::MicUser { stream: 9, name: "Zen".into(), pid: Some(7147), muted: true }]);
+        assert!(mic_streams_active(outs, srcs) && !mic_streams_active("[]", srcs));
+    }
 
     #[test]
     fn a_running_video_producer_is_a_screen_share() {

@@ -1725,7 +1725,7 @@ impl Island {
         let Some(st) = &self.data.system else { return 1 };
         let mut n = 2; // cpu, cores
         n += st.memory.is_some() as usize + st.gpu.is_some() as usize + self.data.battery.is_some() as usize + st.disk.is_some() as usize;
-        n + self.data.devices.len().min(4) + 1 + self.data.culprit.is_some() as usize + self.data.paused.len().min(3) // devices, network, the program to blame, the paused ones
+        n + self.data.devices.len().min(4) + 1 + self.data.culprit.is_some() as usize + self.data.paused.len().min(3) + self.data.mic_users.len().min(2) + self.data.camera_users.len().min(2) // devices, network, the program to blame, the paused ones
     }
 
     /// Height of the settings page below its header: four sections and their rows.
@@ -4442,6 +4442,24 @@ mod tests {
         let (day, totals) = i.attention_export();
         assert!(day > 0 && totals.iter().any(|(a, ms)| a == "Code" && *ms >= 4 * 60_000));
         assert!(i.pages().windows(2).any(|w| w == [Page::Sys, Page::Activity]), "the dock shows it after the system page");
+    }
+
+    #[test]
+    fn the_system_page_lists_who_uses_the_microphone_and_the_camera() {
+        let mut i = Island::new(Config::default());
+        i.data.system = Some(SystemStats::default());
+        i.data.mic_users = vec![MicUser { stream: 7, name: "Zen".into(), pid: Some(100), muted: false }];
+        i.data.camera_users = vec![("zoom".into(), vec![200, 201]), ("pipewire".into(), vec![5])];
+        i.push(T0, Input::OpenPage(Page::Sys));
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::Cmd(Command::MuteMicStream { stream: 7, mute: true })));
+        assert!(i.take_commands().contains(&Command::MuteMicStream { stream: 7, mute: true }));
+        draw_frames(&mut i, 10);
+        assert!(press(&mut i, Action::Cmd(Command::QuitProcs(vec![200, 201]))), "the camera's program can be quit");
+        assert!(!i.hits.iter().any(|h| h.action == Action::Cmd(Command::QuitProcs(vec![5]))), "the session cannot");
+        i.data.mic_users[0].muted = true;
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::Cmd(Command::MuteMicStream { stream: 7, mute: false })), "and it can be unmuted");
     }
 
     #[test]

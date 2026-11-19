@@ -101,6 +101,16 @@ pub struct TripInfo {
     pub at_ms: i64,
 }
 
+/// An application recording from the microphone.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MicUser {
+    /// The PipeWire/PulseAudio stream (source output) index.
+    pub stream: u32,
+    pub name: String,
+    pub pid: Option<u32>,
+    pub muted: bool,
+}
+
 /// A program that is hogging the machine.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Culprit {
@@ -238,6 +248,9 @@ pub struct Data {
     pub vpn: bool,
     /// Trips to events with a place, as the service worked them out.
     pub trips: Vec<TripInfo>,
+    /// Who is using the microphone and the camera right now (read while the system page is open).
+    pub mic_users: Vec<MicUser>,
+    pub camera_users: Vec<(String, Vec<u32>)>,
     pub system: Option<SystemStats>,
     pub config: ConfigView,
     /// None when there is no focus script on this machine.
@@ -427,6 +440,8 @@ pub enum Command {
     QuitProcs(Vec<u32>),
     /// Switch the connection off and on again.
     ReconnectNetwork,
+    /// Mute or unmute one application's microphone stream.
+    MuteMicStream { stream: u32, mute: bool },
     /// Work out how to get to an event that arrives by `start_ms` (the place is sent to public map services).
     PlanTrip { event_id: String, location: String, start_ms: i64, mode: island_core::travel::Mode, margin_secs: i64 },
     /// Send these files (paths) to a device.

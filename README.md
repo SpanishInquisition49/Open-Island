@@ -308,7 +308,8 @@ When the CPU stays above 85% for fifteen seconds and one program (all its proces
 at least a core and 40% of what the machine does, or when less than 8% of the memory is left, a card names it ("ffmpeg is using
 9.8 cores"). A click opens the System page, where a row for it has **Pause** (SIGSTOP) and **Quit** (SIGTERM); a paused program
 is listed with **Resume**. The programs the session lives on (the compositor, the shell, PipeWire, systemd...) are named but
-never offered for stopping. A program the island froze and that is still frozen when the island ends is woken again the next
+never offered for stopping. The same page lists who is using the microphone (with **Mute** / **Unmute** for that app's stream, through
+`pactl set-source-output-mute`) and who has the camera open (with **Quit**), read every two seconds while the page is open. A program the island froze and that is still frozen when the island ends is woken again the next
 time the island starts. Switch it off with `culprit_alerts` (Options > Alerts > "Heavy program alerts"). The check reads
 `/proc` every five seconds and does more only while the machine is loaded.
 

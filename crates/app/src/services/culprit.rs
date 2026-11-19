@@ -129,7 +129,32 @@ pub fn blame(before: &[Proc], now: &[Proc], secs: f64, cpu_frac: f64, ncpu: f64,
     (top.cores >= 1.0 && top.cores >= 0.4 * cpu_frac * ncpu).then(|| Culprit { protected: c::is_protected(&top.name), name: top.name, pids: top.pids, cores: top.cores as f32, mem_mb: top.rss_mb as f32, memory: false })
 }
 
+/// Who is using the microphone and the camera, read every two seconds while the system page is open.
+fn watch_privacy(rep: Reporter) {
+    std::thread::spawn(move || {
+        let (mut last_mic, mut last_cam) = (Vec::new(), Vec::new());
+        loop {
+            if !super::SYSTEM_WANTED.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(700));
+                continue;
+            }
+            let run = |a: &[&str]| std::process::Command::new("pactl").args(a).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+            let mic = super::linux::mic_users(&run(&["-f", "json", "list", "source-outputs"]), &run(&["-f", "json", "list", "sources"]));
+            let cam = super::linux::camera_users();
+            if mic != last_mic || cam != last_cam {
+                (last_mic, last_cam) = (mic.clone(), cam.clone());
+                rep.patch(move |d| {
+                    d.mic_users = mic;
+                    d.camera_users = cam;
+                });
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    });
+}
+
 pub fn start(rep: Reporter) {
+    watch_privacy(rep.clone());
     restore();
     std::thread::spawn(move || {
         let ncpu = cores();

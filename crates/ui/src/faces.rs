@@ -1156,6 +1156,27 @@ impl Island {
             p.text(&format!("{name} · paused"), 38.0, y, 12.0, REG, theme::DIM, Align::Left, (w - 38.0 - rw - 28.0) as f32);
             y += 28.0;
         }
+        // who is using the microphone and the camera
+        for u in self.data.mic_users.iter().take(2) {
+            p.stagger(11);
+            p.icon("microphone", 22.0, y, 14.0, theme::ORANGE);
+            let label = if u.muted { "Unmute" } else { "Mute" };
+            let bw = p.button_width(label);
+            p.button(rect(w - 14.0 - bw, y - 13.0, bw, 26.0), label, Action::Cmd(Command::MuteMicStream { stream: u.stream, mute: !u.muted }));
+            p.text(&format!("{} · {}", u.name, if u.muted { "microphone muted" } else { "uses the microphone" }), 38.0, y, 12.0, REG, theme::FG, Align::Left, (w - 38.0 - bw - 28.0) as f32);
+            y += 28.0;
+        }
+        for (name, pids) in self.data.camera_users.iter().take(2) {
+            p.stagger(12);
+            p.icon("video", 22.0, y, 14.0, theme::GREEN);
+            let protected = island_core::culprit::is_protected(name);
+            let bw = if protected { 0.0 } else { p.button_width("Quit") };
+            if !protected {
+                p.button(rect(w - 14.0 - bw, y - 13.0, bw, 26.0), "Quit", Action::Cmd(Command::QuitProcs(pids.clone())));
+            }
+            p.text(&format!("{name} · uses the camera"), 38.0, y, 12.0, REG, theme::FG, Align::Left, (w - 38.0 - bw - 28.0) as f32);
+            y += 28.0;
+        }
         let _ = y;
     }
 
