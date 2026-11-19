@@ -24,6 +24,7 @@ fn page(name: &str) -> Option<island_core::face::Page> {
         "notifs" | "notifications" => Page::Notifs,
         "media" => Page::Media,
         "clip" | "clipboard" => Page::Clip,
+        "audio" | "sound" => Page::Audio,
         "focus" => Page::Focus,
         "settings" | "config" => Page::Settings,
         "timer" => Page::Timer,

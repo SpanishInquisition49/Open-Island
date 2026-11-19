@@ -56,6 +56,9 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                 // the app itself writes the configuration for these
                 Command::AddFilter { .. } | Command::RemoveFilter(_) | Command::SetOption { .. } | Command::AddCalendar(_) | Command::AddICloud { .. } | Command::RenameCalendar { .. } | Command::SetCalendarColor { .. } | Command::RemoveCalendar(_) | Command::SetFont(_) | Command::SetLatitude(_) | Command::SetLongitude(_) | Command::SetNotificationSound(_) => {}
                 Command::RestoreClipboard(t) => clipboard::restore(&t),
+                Command::SetSink(_) | Command::SetSource(_) | Command::SetStreamVolume { .. } | Command::ToggleStreamMute(_) => {
+                    super::audio_mixer::command(&c);
+                }
                 Command::PinClipboard(t) => super::clipboard_history::toggle_pin(&rep, &t),
                 Command::ForgetClipboard(t) => super::clipboard_history::forget(&rep, &t),
                 // a slider being dragged sends dozens of these a second: only the latest is worth a process

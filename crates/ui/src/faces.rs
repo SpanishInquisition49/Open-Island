@@ -154,6 +154,7 @@ impl Island {
             Face::Device => self.face_device(p, w, h),
             Face::Weather => self.face_weather(p, w, h),
             Face::Options => self.face_options(p, w, h),
+            Face::Audio => self.face_audio(p, w, h),
             Face::Bar => self.face_bar(p, w, h),
             Face::Osd => self.face_osd(p, w, h),
             Face::Power => self.face_power(p, w, h),
@@ -993,10 +994,10 @@ impl Island {
             p.rrect(r, 12.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
             p.icon(if headphones { "headphones" } else { "device-speaker" }, r.x0 + 18.0, r.center().y, 16.0, theme::FG);
             p.text(out.map_or("Output", |s| s.label.as_str()), r.x0 + 34.0, r.center().y, 12.0, SEMI, theme::FG, Align::Left, (r.width() - 120.0) as f32);
-            if d.sinks.len() > 1 {
-                p.text("switch", r.x1 - 12.0, r.center().y, 11.0, REG, theme::DIM, Align::Right, 60.0);
+            if d.sinks.len() > 1 || !d.streams.is_empty() {
+                p.text("mixer", r.x1 - 12.0, r.center().y, 11.0, REG, theme::DIM, Align::Right, 60.0);
             }
-            p.hit(r, Action::Cmd(Command::NextSink));
+            p.hit(r, Action::Open(Page::Audio));
         }
         // connected Bluetooth devices with their battery, in the same quiet rows
         if let Some(top) = l.dev_top {
@@ -1433,6 +1434,76 @@ impl Island {
         }
     }
 
+    /// Rows of each section of the audio page.
+    fn audio_sections(&self) -> (usize, usize, usize) {
+        (self.data.sinks.len().min(4), self.data.sources.len().min(3), self.data.streams.len().min(4))
+    }
+
+    pub(crate) fn audio_height(&self) -> f64 {
+        let (o, i, a) = self.audio_sections();
+        let sections = [o, i, a].iter().filter(|n| **n > 0).count().max(1) as f64;
+        14.0 + 34.0 + sections * 22.0 + (o + i + a).max(1) as f64 * 34.0 + 10.0
+    }
+
+    fn face_audio(&self, p: P, w: f64, _h: f64) {
+        self.page_header(p, w, "Sound");
+        let d = &self.data;
+        let mut y = 14.0 + 34.0;
+        let mut n = 1;
+        if d.sinks.is_empty() && d.sources.is_empty() && d.streams.is_empty() {
+            p.text("No audio devices", w / 2.0, y + 24.0, 12.0, REG, theme::DIM, Align::Center, 200.0);
+        }
+        let mut section = |p: P, y: &mut f64, title: &str| {
+            p.stagger(n);
+            n += 1;
+            p.text(title, 20.0, *y + 12.0, 10.0, SEMI, theme::DIM, Align::Left, 200.0);
+            *y += 22.0;
+        };
+        let device = |p: P, y: f64, dev: &Sink, current: bool, icon: &str, action: Action| {
+            let r = rect(14.0, y, w - 28.0, 30.0);
+            p.rrect(r, 11.0, if current { with_alpha(theme::ACCENT, 0.16) } else if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
+            p.icon(icon, r.x0 + 18.0, r.center().y, 15.0, if current { theme::ACCENT } else { theme::FG });
+            p.text(&dev.label, r.x0 + 34.0, r.center().y, 12.0, if current { SEMI } else { REG }, theme::FG, Align::Left, (r.width() - 70.0) as f32);
+            if current {
+                p.icon("check", r.x1 - 18.0, r.center().y, 14.0, theme::ACCENT);
+            }
+            p.hit(r, action);
+        };
+        if !d.sinks.is_empty() {
+            section(p, &mut y, "OUTPUT");
+            for s in d.sinks.iter().take(4) {
+                let bt = s.name.contains("bluez") || s.name.contains("usb");
+                device(p, y, s, d.sink.as_ref() == Some(&s.name), if bt { "headphones" } else { "device-speaker" }, Action::Cmd(Command::SetSink(s.name.clone())));
+                y += 34.0;
+            }
+        }
+        if !d.sources.is_empty() {
+            section(p, &mut y, "INPUT");
+            for s in d.sources.iter().take(3) {
+                device(p, y, s, d.source.as_ref() == Some(&s.name), "microphone", Action::Cmd(Command::SetSource(s.name.clone())));
+                y += 34.0;
+            }
+        }
+        if !d.streams.is_empty() {
+            section(p, &mut y, "APPS");
+            for a in d.streams.iter().take(4) {
+                let r = rect(14.0, y, w - 28.0, 30.0);
+                p.rrect(r, 11.0, theme::CHIP);
+                let mute = rect(r.x0, y, 34.0, 30.0);
+                p.icon(if a.muted { "volume-3" } else { "volume-2" }, r.x0 + 18.0, r.center().y, 15.0, if a.muted { theme::DIM } else { theme::FG });
+                p.hit(mute, Action::Cmd(Command::ToggleStreamMute(a.id)));
+                p.text(&a.name, r.x0 + 34.0, r.center().y, 12.0, REG, if a.muted { theme::DIM } else { theme::FG }, Align::Left, (r.width() - 34.0 - 112.0) as f32);
+                let (minus, plus) = (rect(r.x1 - 104.0, y, 30.0, 30.0), rect(r.x1 - 32.0, y, 30.0, 30.0));
+                p.icon("minus", minus.center().x, r.center().y, 13.0, if p.hovered(minus) { theme::FG } else { theme::DIM });
+                p.hit(minus, Action::Cmd(Command::SetStreamVolume { id: a.id, percent: (a.volume as u32).saturating_sub(10) }));
+                p.text(&format!("{}%", a.volume), r.x1 - 53.0, r.center().y, 11.0, REG, theme::FG, Align::Center, 40.0);
+                p.icon("plus", plus.center().x, r.center().y, 13.0, if p.hovered(plus) { theme::FG } else { theme::DIM });
+                p.hit(plus, Action::Cmd(Command::SetStreamVolume { id: a.id, percent: a.volume as u32 + 10 }));
+                y += 34.0;
+            }
+        }
+    }
+
     fn face_notifs(&self, p: P, w: f64, _h: f64) {
         let hy = self.page_header(p, w, "Notifications");
         let clear = p.button_width("Clear");
@@ -1530,6 +1601,7 @@ fn page_icon(p: Page) -> &'static str {
         Page::Settings => "settings",
         Page::Weather => "cloud-sun",
         Page::Options => "toggle-right",
+        Page::Audio => "volume",
     }
 }
 

@@ -214,6 +214,15 @@ fn main() {
         ("rain", Box::new(|_, d| { d.weather.as_mut().unwrap().rain_slots[1].mm = 0.6; })),
         ("home", Box::new(|i, _| { i.push(NOW, Input::Peek); })),
         ("page-cal", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Cal)))),
+        ("page-audio", Box::new(|i, d| {
+            let sink = |n: &str, l: &str| island_ui::model::Sink { name: n.into(), label: l.into() };
+            d.sinks = vec![sink("speaker", "Built-in Speakers"), sink("bluez_output.x", "WH-1000XM5")];
+            d.sink = Some("bluez_output.x".into());
+            d.sources = vec![sink("mic", "Internal Microphone")];
+            d.source = Some("mic".into());
+            d.streams = vec![island_ui::model::AppStream { id: 1, name: "Spotify".into(), volume: 62, muted: false }, island_ui::model::AppStream { id: 2, name: "Zen".into(), volume: 100, muted: true }];
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Audio));
+        })),
         ("page-clip", Box::new(|i, d| { d.clipboard = vec!["cargo test --workspace".into(), "https://example.org/a/very/long/link/that/needs/an/ellipsis?with=query&and=more".into(), "Reti di calcolatori\n  lezione 12".into()]; i.push(NOW, Input::OpenPage(island_core::face::Page::Clip)); })),
         ("focus-mini", Box::new(|_, d| d.focus = Some(Focus { active: true, end_epoch: Some(NOW / 1000 + 23 * 60) }))),
         ("focus-full", Box::new(|i, d| { d.focus = Some(Focus { active: true, end_epoch: Some(NOW / 1000 + 23 * 60) }); i.push(NOW, Input::OpenPage(island_core::face::Page::Focus)); })),

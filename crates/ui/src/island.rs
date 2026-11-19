@@ -1529,6 +1529,7 @@ impl Island {
             Face::Settings => h = 14.0 + 34.0 + self.settings_content_height() + 14.0,
             Face::Options => h = 14.0 + 34.0 + 40.0 + crate::options::content_height(self.options_tab, self.data.config.filters.len()) + 14.0,
             Face::Qs => h = self.qs_layout().height,
+            Face::Audio => h = self.audio_height(),
             Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
             Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
             Face::MediaMini | Face::TimerMini | Face::MeetMini => w += self.icon_count(true) as f64 * ICON_W,
@@ -2113,7 +2114,7 @@ fn side_page(s: Side) -> Page {
 
 /// Faces that are pages: they carry the dock at the bottom.
 pub(crate) fn has_dock(f: Face) -> bool {
-    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options)
+    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options | Face::Audio)
 }
 
 pub(crate) fn page_of(f: Face) -> Option<Page> {
@@ -2131,6 +2132,7 @@ pub(crate) fn page_of(f: Face) -> Option<Page> {
         Face::Settings => Page::Settings,
         Face::Weather => Page::Weather,
         Face::Options => Page::Options,
+        Face::Audio => Page::Audio,
         Face::FocusFull => Page::Focus,
         _ => return None,
     })
@@ -3718,6 +3720,42 @@ mod tests {
         draw_frames(&mut i, 200);
         assert!(i.hits.iter().any(|h| h.action == Action::ClipPin(CLIP_ROWS - 1)));
         assert!(!i.hits.iter().any(|h| h.action == Action::ClipPin(CLIP_ROWS)), "only the first rows are listed");
+    }
+
+    #[test]
+    fn the_sound_page_picks_devices_and_sets_the_volume_of_an_app() {
+        let mut i = Island::new(Config::default());
+        let sink = |n: &str| Sink { name: n.into(), label: n.into() };
+        i.data.sinks = vec![sink("speaker"), sink("bluez_output.x")];
+        i.data.sink = Some("speaker".into());
+        i.data.sources = vec![sink("mic")];
+        i.data.source = Some("mic".into());
+        i.data.streams = vec![AppStream { id: 7, name: "Spotify".into(), volume: 60, muted: false }];
+        i.push(T0, Input::OpenPage(Page::Audio));
+        draw_frames(&mut i, 200);
+        assert_eq!(i.current_face(), Face::Audio);
+        assert!(press(&mut i, Action::Cmd(Command::SetSink("bluez_output.x".into()))), "an output row");
+        assert!(i.take_commands().contains(&Command::SetSink("bluez_output.x".into())));
+        draw_frames(&mut i, 10);
+        assert!(press(&mut i, Action::Cmd(Command::SetStreamVolume { id: 7, percent: 70 })), "plus raises by ten");
+        draw_frames(&mut i, 10);
+        assert!(press(&mut i, Action::Cmd(Command::SetStreamVolume { id: 7, percent: 50 })), "minus lowers by ten");
+        draw_frames(&mut i, 10);
+        assert!(press(&mut i, Action::Cmd(Command::ToggleStreamMute(7))));
+        let (_, h) = draw_frames(&mut i, 200);
+        assert!(h >= i.audio_height(), "the page is as tall as its rows");
+    }
+
+    #[test]
+    fn the_output_row_of_quick_settings_opens_the_sound_page() {
+        let mut i = Island::new(Config::default());
+        i.data.sinks = vec![Sink { name: "a".into(), label: "A".into() }, Sink { name: "b".into(), label: "B".into() }];
+        i.data.sink = Some("a".into());
+        i.push(T0, Input::OpenPage(Page::Qs));
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::Open(Page::Audio)));
+        draw_frames(&mut i, 200);
+        assert_eq!(i.current_face(), Face::Audio);
     }
 
     #[test]

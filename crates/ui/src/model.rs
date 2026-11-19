@@ -90,6 +90,15 @@ pub struct Sink {
     pub label: String,
 }
 
+/// An app that is playing sound, with its own volume.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AppStream {
+    pub id: u32,
+    pub name: String,
+    pub volume: u8,
+    pub muted: bool,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Gpu {
     pub pstate: String,
@@ -189,6 +198,10 @@ pub struct Data {
     pub profile: Option<String>,
     pub sinks: Vec<Sink>,
     pub sink: Option<String>,
+    /// Audio inputs, the default one, and the apps that are playing (the audio page).
+    pub sources: Vec<Sink>,
+    pub source: Option<String>,
+    pub streams: Vec<AppStream>,
     pub system: Option<SystemStats>,
     pub config: ConfigView,
     /// None when there is no focus script on this machine.
@@ -356,6 +369,11 @@ pub enum Command {
     ToggleNightLight,
     NextProfile,
     NextSink,
+    /// Make this output (a sink name) the default.
+    SetSink(String),
+    SetSource(String),
+    SetStreamVolume { id: u32, percent: u32 },
+    ToggleStreamMute(u32),
     /// Re-read the quick-settings state (the page was just opened).
     RefreshQuick,
     /// Read the calendars again now.

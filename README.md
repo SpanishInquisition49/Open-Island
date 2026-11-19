@@ -265,3 +265,9 @@ a short "Audio output" card; when they go, the output falls back to the best one
 something pins a default output (the sink button of the quick settings, or a mixer, stores it as
 `default.configured.audio.sink`), and from then on new headphones are ignored: that is what this works around. Switch it off with
 `auto_audio_output` (Options > Island > "Audio to headphones").
+
+## The sound page (Linux)
+
+The output row of the quick settings opens it (`open-island msg page audio`): every output and input to pick from, and each
+app that is playing with its own volume (minus / plus by ten, the speaker icon mutes just that app). It reads `pactl` when
+PipeWire reports a change, so it follows headphones coming and going.
