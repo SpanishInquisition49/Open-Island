@@ -1297,7 +1297,7 @@ impl Island {
                 return vec![Command::SetOption { key: key.into(), value: OptionValue::Bool(on) }];
             }
             Action::Step(key, dir) => {
-                if let Some((_, _, _, step, min, max)) = (0..crate::options::TABS.len()).flat_map(|t| crate::options::steppers(t)).find(|s| s.0 == key) {
+                if let Some((_, _, _, step, min, max)) = (0..crate::options::TABS.len()).flat_map(crate::options::steppers).find(|s| s.0 == key) {
                     let v = ((crate::options::get_num(&self.cfg, key) + dir as f64 * step).clamp(*min, *max) * 10.0).round() / 10.0;
                     crate::options::set_num(&mut self.cfg, key, v);
                     return vec![Command::SetOption { key: key.into(), value: OptionValue::Num(v) }];
