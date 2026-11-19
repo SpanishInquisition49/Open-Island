@@ -47,6 +47,10 @@ pub struct App {
     persist_history: bool,
     /// The focused window covers the whole screen (the island hides under it).
     pub fullscreen: bool,
+    /// A maximized window covers the screen the island is on; the island stays out of sight unless something needs
+    /// it or the pointer asks for it at the top edge.
+    pub maximized: bool,
+    pub pointer_near: bool,
     last_pointer: (f64, f64),
 }
 
@@ -71,7 +75,7 @@ impl App {
             island.restore_history(services::load_history());
         }
         island.data.config = config_view_of(&fonts);
-        Self { island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, quit: false, persist_history: crate::config::load().persist_history, fullscreen: false, last_pointer: (0.0, 0.0) }
+        Self { island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, quit: false, persist_history: crate::config::load().persist_history, fullscreen: false, maximized: false, pointer_near: false, last_pointer: (0.0, 0.0) }
     }
 
     /// Epoch milliseconds, monotonic (not affected by clock changes while running).
@@ -96,6 +100,10 @@ impl App {
                 Msg::Exec(c) => self.exec(vec![c]),
                 Msg::Quit => self.quit = true,
                 Msg::Fullscreen(f) => self.fullscreen = f,
+                Msg::Cover { maximized, pointer_near } => {
+                    self.maximized = maximized;
+                    self.pointer_near = pointer_near;
+                }
             }
         }
     }

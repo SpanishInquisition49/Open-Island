@@ -31,7 +31,24 @@ fn usage() {
     );
 }
 
+/// Windows: draw through DirectX 12 into a DirectComposition swap chain, the one kind that can be transparent
+/// (the plain window swap chain is opaque, which meant cutting the window to shape on every frame: slow and
+/// jagged). `OPEN_ISLAND_OPAQUE=1` keeps the old way; a setting already made in the environment is respected.
+#[cfg(windows)]
+fn windows_graphics_setup() {
+    if std::env::var_os("OPEN_ISLAND_OPAQUE").is_some() {
+        return;
+    }
+    for (k, v) in [("WGPU_BACKEND", "dx12"), ("WGPU_DX12_PRESENTATION_SYSTEM", "DxgiFromVisual")] {
+        if std::env::var_os(k).is_none() {
+            std::env::set_var(k, v);
+        }
+    }
+}
+
 fn main() {
+    #[cfg(windows)]
+    windows_graphics_setup();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,zbus=warn,wgpu=warn,naga=warn")).init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {

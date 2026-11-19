@@ -27,3 +27,9 @@ no desktop notifications from other apps to click anyway), the audio equalizer (
 If nothing appears: run it from a terminal (PowerShell) as `$env:RUST_LOG="debug"; .\open-island.exe` and send the output;
 the lines "window created", "showing the island" and "hiding the island (fullscreen window: ...)" say how far it got. Windows
 surfaces are opaque, so the line "the window surface is opaque" is normal: the window is cut to the island's shape.
+
+Smoothness and the edge: on Windows the island draws through DirectX 12 into a transparent DirectComposition surface
+(log line "transparent surface"). If that misbehaves (black rectangle, nothing shown), start it with
+`$env:OPEN_ISLAND_OPAQUE=1` to use the old cut-to-shape way and tell me which of the two worked. With a maximized
+window in front the island hides; moving the pointer to the top edge, around the middle of the screen, brings it
+back, and it goes again a moment after the pointer leaves. A notification, the volume or a timer still show.

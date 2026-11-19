@@ -212,3 +212,8 @@ shows that line in place of today's high and low. Needs the latitude and longitu
 `just build windows` skips the menu, `just windows-zip` makes `dist/open-island-windows-x64.zip` to send to someone.
 Cross-building for Windows from Linux needs `cargo install cargo-xwin` (MSVC, recommended) or mingw-w64 (GNU).
 `just check-all` runs the tests, clippy and the Windows and macOS type-checks.
+
+On Windows (and anywhere the island is a plain window) it hides while a maximized window is in front, and comes back when
+the pointer touches the top edge near the middle of the screen; a notification, a timer or the volume still show over it.
+Windows draws through DirectX 12 into a transparent DirectComposition surface; `OPEN_ISLAND_OPAQUE=1` falls back to
+cutting the window to the island's shape.

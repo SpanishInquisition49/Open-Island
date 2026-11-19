@@ -52,6 +52,7 @@ impl Gpu {
             .find(|m| caps.alpha_modes.contains(m));
         match mode {
             Some(m) => {
+                log::info!("transparent surface ({m:?}) on {:?}", self.ctx.devices[surface.dev_id].adapter().get_info());
                 self.transparent = true;
                 surface.config.alpha_mode = m;
                 self.ctx.configure_surface(&surface);

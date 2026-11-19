@@ -79,6 +79,8 @@ pub enum Msg {
     Exec(Command),
     Quit,
     Fullscreen(bool),
+    /// A maximized window covers the island's screen, and whether the pointer is at the top edge asking for it.
+    Cover { maximized: bool, pointer_near: bool },
 }
 
 /// Where services report to, with a way to wake the event loop.
@@ -107,6 +109,12 @@ impl Reporter {
     #[allow(dead_code)]
     pub fn fullscreen(&self, on: bool) {
         let _ = self.tx.send(Msg::Fullscreen(on));
+        (self.waker)();
+    }
+
+    #[allow(dead_code)]
+    pub fn cover(&self, maximized: bool, pointer_near: bool) {
+        let _ = self.tx.send(Msg::Cover { maximized, pointer_near });
         (self.waker)();
     }
 

@@ -29,6 +29,12 @@ struct Shell {
     last_redraw: Instant,
 }
 
+/// Under a fullscreen window the island is out of sight. Under a maximized one it is too, while it rests, unless
+/// the pointer is at the top edge asking for it; a card or a page (not resting) always shows.
+fn should_hide(fullscreen: bool, maximized: bool, resting: bool, pointer_near: bool) -> bool {
+    fullscreen || (maximized && resting && !pointer_near)
+}
+
 #[allow(unused_mut)]
 fn attributes() -> WindowAttributes {
     let mut a = Window::default_attributes()
@@ -94,10 +100,13 @@ impl Shell {
         self.last_redraw = Instant::now();
         // cut the window to the island's outline before it is shown, so no rectangle flashes
         self.cut_to_shape(&window);
-        // under a fullscreen window the island hides (the platform service says when)
-        if self.app.fullscreen != self.hidden {
-            self.hidden = self.app.fullscreen;
-            log::info!("{} the island (fullscreen window: {})", if self.hidden { "hiding" } else { "showing" }, self.app.fullscreen);
+        // under a fullscreen window the island hides (the platform service says when); under a maximized one it
+        // hides too, except while it has something to say (a card, a page) or the pointer is at the top edge
+        let resting = self.app.island.current_face().is_compact();
+        let want_hidden = should_hide(self.app.fullscreen, self.app.maximized, resting, self.app.pointer_near);
+        if want_hidden != self.hidden {
+            self.hidden = want_hidden;
+            log::info!("{} the island (fullscreen: {}, maximized window: {}, pointer at the edge: {})", if self.hidden { "hiding" } else { "showing" }, self.app.fullscreen, self.app.maximized, self.app.pointer_near);
             window.set_visible(!self.hidden);
         } else if !self.hidden && !window.is_visible().unwrap_or(true) {
             log::info!("showing the island");
@@ -115,11 +124,17 @@ impl Shell {
     #[cfg(target_os = "windows")]
     fn cut_to_shape(&mut self, window: &Window) {
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        if self.gpu.transparent {
-            return;
-        }
         let scale = window.scale_factor();
-        let rects: Vec<(i32, i32, i32, i32, i32)> = self.app.island.shape_rects().iter().map(|&(x, y, w, h, r)| ((x * scale).round() as i32, (y * scale).round() as i32, (w * scale).round() as i32, (h * scale).round() as i32, (r * scale).round() as i32)).collect();
+        // A transparent window only needs the shape for the clicks (what is not the island lets them through):
+        // while it moves the whole window takes them, and the exact shape is set when it rests. An opaque one is
+        // cut to the shape all the time.
+        let transparent = self.gpu.transparent;
+        let pad = if transparent { 2.0 } else { 0.0 }; // room for the anti-aliased edge
+        let rects: Vec<(i32, i32, i32, i32, i32)> = if transparent && self.animating {
+            vec![]
+        } else {
+            self.app.island.shape_rects().iter().map(|&(x, y, w, h, r)| (((x - pad) * scale).round() as i32, ((y - pad) * scale).round() as i32, ((w + 2.0 * pad) * scale).round() as i32, ((h + 2.0 * pad) * scale).round() as i32, ((r + pad) * scale).round() as i32)).collect()
+        };
         if rects == self.shape {
             return;
         }
@@ -136,9 +151,22 @@ impl Shell {
         let _ = &self.shape;
     }
 
+    /// Asks for a frame. A hidden window gets no redraw requests (Windows sends none), so its frames are run
+    /// directly: that is how it notices that it should show itself again.
+    fn redraw(&mut self, el: &ActiveEventLoop) {
+        let Some(w) = self.window.clone() else { return };
+        if self.hidden {
+            self.frame(el);
+        } else {
+            w.request_redraw();
+        }
+    }
+
     fn schedule(&self, el: &ActiveEventLoop) {
         if let Some(w) = &self.window {
-            if self.animating {
+            if self.hidden {
+                el.set_control_flow(ControlFlow::WaitUntil(self.last_redraw + Duration::from_millis(200)));
+            } else if self.animating {
                 w.request_redraw();
                 el.set_control_flow(ControlFlow::Wait);
             } else {
@@ -182,17 +210,15 @@ impl ApplicationHandler<Wake> for Shell {
         window.request_redraw();
     }
 
-    fn user_event(&mut self, _el: &ActiveEventLoop, _e: Wake) {
-        if let Some(w) = &self.window {
-            w.request_redraw();
-        }
+    fn user_event(&mut self, el: &ActiveEventLoop, _e: Wake) {
+        self.redraw(el);
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
-        if !self.animating && self.last_redraw.elapsed() >= Duration::from_millis(self.next_ms.max(16) as u64) {
-            if let Some(w) = &self.window {
-                w.request_redraw();
-            }
+        // hidden: a frame five times a second keeps the clock, the timers and the reveal alive
+        let every = if self.hidden { 200 } else { self.next_ms.max(16) as u64 };
+        if (self.hidden || !self.animating) && self.last_redraw.elapsed() >= Duration::from_millis(every) {
+            self.redraw(el);
         }
         self.schedule(el);
     }
@@ -311,5 +337,20 @@ pub fn run() {
     event_loop.set_control_flow(ControlFlow::Wait);
     if let Err(e) = event_loop.run_app(&mut shell) {
         eprintln!("open-island: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_hide;
+
+    #[test]
+    fn hides_under_a_maximized_window_unless_it_has_something_to_show_or_is_asked_for() {
+        assert!(!should_hide(false, false, true, false), "nothing covers the screen");
+        assert!(should_hide(false, true, true, false), "maximized and resting: out of sight");
+        assert!(!should_hide(false, true, true, true), "the pointer at the top edge brings it back");
+        assert!(!should_hide(false, true, false, false), "a notification or a page shows");
+        assert!(should_hide(true, false, true, false), "fullscreen hides");
+        assert!(should_hide(true, true, false, true), "and nothing overrides a fullscreen window");
     }
 }

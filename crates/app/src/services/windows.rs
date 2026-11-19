@@ -102,20 +102,107 @@ fn keep_awake(rep: Reporter, rx: Receiver<bool>) {
 
 // ---- fullscreen ---------------------------------------------------------------------------------------
 
+/// A window that is on top of everything on the island's screen, and the pointer at its top edge.
 fn fullscreen(rep: Reporter) {
     use windows::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN};
     std::thread::spawn(move || {
-        let mut last = false;
+        let (mut last_full, mut last_max, mut last_near) = (false, false, false);
+        let mut near = false;
+        let mut left_at: Option<std::time::Instant> = None;
+        let mut tick = 0u32;
         loop {
-            // the shell's own "a full-screen application is running" answer (games, video, presentations)
-            let now = unsafe { SHQueryUserNotificationState() }.is_ok_and(|s| s == QUNS_BUSY || s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE);
-            if now != last {
-                last = now;
-                rep.fullscreen(now);
+            // the shell's own "a full-screen application is running" answer (games, video, presentations); once a second
+            if tick.is_multiple_of(12) {
+                let now = unsafe { SHQueryUserNotificationState() }.is_ok_and(|s| s == QUNS_BUSY || s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE);
+                if now != last_full {
+                    last_full = now;
+                    rep.fullscreen(now);
+                }
             }
-            std::thread::sleep(Duration::from_secs(1));
+            tick = tick.wrapping_add(1);
+            let maximized = foreground_maximized_on_primary();
+            // the pointer asks for the island at the top edge, and keeps it while it stays around it
+            let hot = pointer_zone(near);
+            match (hot, near) {
+                (true, _) => {
+                    near = true;
+                    left_at = None;
+                }
+                (false, true) => {
+                    // a short grace before it goes away again
+                    let since = *left_at.get_or_insert_with(std::time::Instant::now);
+                    if since.elapsed() > Duration::from_millis(700) {
+                        near = false;
+                        left_at = None;
+                    }
+                }
+                _ => {}
+            }
+            if maximized != last_max || near != last_near {
+                last_max = maximized;
+                last_near = near;
+                rep.cover(maximized, near);
+            }
+            std::thread::sleep(Duration::from_millis(80));
         }
     });
+}
+
+/// The rectangle of the primary monitor (left, top, right, bottom) in physical pixels.
+fn primary_rect() -> Option<(i32, i32, i32, i32)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY};
+    unsafe {
+        let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        GetMonitorInfoW(mon, &mut info).as_bool().then_some((info.rcMonitor.left, info.rcMonitor.top, info.rcMonitor.right, info.rcMonitor.bottom))
+    }
+}
+
+/// True when the pointer is where the island asks to be shown: at the very top of the primary screen, near its
+/// middle; once shown, a wider and taller area keeps it there.
+fn pointer_zone(already_near: bool) -> bool {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::HiDpi::GetDpiForSystem;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let Some((l, t, r, _)) = primary_rect() else { return false };
+    let mut p = POINT::default();
+    if unsafe { GetCursorPos(&mut p) }.is_err() {
+        return false;
+    }
+    let k = unsafe { GetDpiForSystem() } as f64 / 96.0;
+    let (cx, dx, dy) = ((l + r) as f64 / 2.0, p.x as f64, (p.y - t) as f64);
+    let (half, depth) = if already_near { (330.0 * k, 130.0 * k) } else { (230.0 * k, 3.0 * k) };
+    (dx - cx).abs() <= half && dy >= -2.0 && dy <= depth
+}
+
+/// The foreground window is maximized on the primary monitor (and is not the desktop, the taskbar or the island).
+fn foreground_maximized_on_primary() -> bool {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MonitorFromWindow, MONITOR_DEFAULTTOPRIMARY};
+    use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed};
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() || !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() || !IsZoomed(hwnd).as_bool() {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == std::process::id() {
+            return false;
+        }
+        let mut class = [0u16; 64];
+        let n = GetClassNameW(hwnd, &mut class).max(0) as usize;
+        if is_shell_class(&String::from_utf16_lossy(&class[..n])) {
+            return false;
+        }
+        MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY) == MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY)
+    }
+}
+
+/// Windows that are the desktop or the shell, never an application covering the screen.
+pub fn is_shell_class(class: &str) -> bool {
+    matches!(class, "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "NotifyIconOverflowWindow" | "TopLevelWindowForOverflowXamlIsland" | "XamlExplorerHostIslandWindow")
 }
 
 // ---- privacy ------------------------------------------------------------------------------------------
@@ -227,7 +314,7 @@ fn media(rep: Reporter, rx: Receiver<Command>) {
         loop {
             let sessions: Vec<Session> = manager.GetSessions().map(|v| v.into_iter().collect()).unwrap_or_default();
             let id_of = |s: &Session| s.SourceAppUserModelId().map(|h| h.to_string()).unwrap_or_default();
-            let chosen = selected.as_ref().and_then(|id| sessions.iter().find(|s| id_of(s) == *id).map(|s| s.clone())).or_else(|| manager.GetCurrentSession().ok());
+            let chosen = selected.as_ref().and_then(|id| sessions.iter().find(|s| id_of(s) == *id).cloned()).or_else(|| manager.GetCurrentSession().ok());
             while let Ok(c) = rx.try_recv() {
                 let Some(s) = chosen.as_ref() else { continue };
                 match c {
@@ -310,9 +397,13 @@ fn thumbnail(props: &windows::Media::Control::GlobalSystemMediaTransportControls
 pub fn set_window_shape(hwnd: isize, rects: &[(i32, i32, i32, i32, i32)]) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{CombineRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, RGN_OR};
-    let Some(&(x, y, w, h, r)) = rects.first() else { return };
     unsafe {
         let hwnd = HWND(hwnd as *mut _);
+        // no shapes: the whole window again
+        let Some(&(x, y, w, h, r)) = rects.first() else {
+            SetWindowRgn(hwnd, None, true);
+            return;
+        };
         let mut region = CreateRoundRectRgn(x, y, x + w + 1, y + h + 1, r * 2, r * 2);
         for &(x, y, w, h, r) in &rects[1..] {
             let part = CreateRoundRectRgn(x, y, x + w + 1, y + h + 1, r * 2, r * 2);
