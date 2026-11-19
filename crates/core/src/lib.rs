@@ -10,6 +10,7 @@ pub mod color;
 pub mod culprit;
 pub mod duration;
 pub mod face;
+pub mod headsup;
 pub mod ics;
 pub mod localsend;
 pub mod lyrics;

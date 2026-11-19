@@ -335,3 +335,10 @@ arrives in time) by Transitous. It starts from the location set for the weather.
 event and the two coordinates. Switch it off with `travel_times` (Options > Alerts > "Travel times"); `travel_margin_minutes`
 (default 5) is how much earlier than needed you are told. A short trip has no bus worth taking: transit then shows the walk.
 The OSRM demo server only knows roads, so on foot comes from Transitous (or a straight-line estimate when it does not answer).
+
+## Before you go
+
+Forty minutes before an event, if there is something worth knowing about it, one card says so: "Lecture in 30 min: rain in 25 min,
+take an umbrella · battery 21%, bring the charger". It stays silent when there is nothing to say. When the event has a place and
+a way to get there (see above), the same notes are added to the "Leave in ..." card instead. The rain comes from the forecast
+used for the weather (rain that falls or starts before you would arrive); the battery matters below 30% and unplugged.

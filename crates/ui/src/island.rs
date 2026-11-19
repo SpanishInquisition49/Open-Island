@@ -410,6 +410,7 @@ pub struct Island {
     /// Trips already asked for (event, way) and when; events already told to leave for.
     trip_asked: std::collections::HashMap<(String, island_core::travel::Mode), i64>,
     leave_told: std::collections::HashSet<String>,
+    headsup_told: std::collections::HashSet<String>,
     /// What the last network card was about, and the card's id (a click on it reconnects).
     net_seen: island_core::netstate::Health,
     net_id: u32,
@@ -530,6 +531,7 @@ impl Island {
             culprit_id: 0,
             trip_asked: Default::default(),
             leave_told: Default::default(),
+            headsup_told: Default::default(),
             net_seen: island_core::netstate::Health::Online,
             net_id: 0,
             next_own_id: OWN_ID_BASE,
@@ -1880,6 +1882,13 @@ impl Island {
         self.data.trips.iter().find(|t| t.event_id == event_id && t.mode == mode)
     }
 
+    /// What is worth knowing before leaving for an event: rain, a low battery.
+    fn before_you_go(&self, leave_in_min: i32, trip_min: i32) -> String {
+        let rain = self.rain_outlook().and_then(|o| island_core::headsup::rain_note(o, leave_in_min, trip_min));
+        let battery = self.data.battery.and_then(|b| island_core::headsup::battery_note(b.percent, b.on_ac));
+        island_core::headsup::line([rain, battery])
+    }
+
     /// Asks for the trip to the next event with a place when it matters (the page is open, or it is a few hours away),
     /// and again every ten minutes (public transport changes with the hour); tells when it is time to leave.
     fn trips(&mut self, now: i64) {
@@ -1898,7 +1907,11 @@ impl Island {
                 let off = self.data.utc_offset_secs;
                 let late = now >= leave_ms;
                 let summary = if late { format!("Time to leave for {}", e.title) } else { format!("Leave in {} min for {}", ((leave_ms - now) as f64 / 60_000.0).ceil() as i64, e.title) };
-                let body = format!("{} · {} · starts {}", mode.name(), island_core::travel::fmt_secs(secs), crate::clock::civil(e.start_ms, off).hhmm());
+                let mut body = format!("{} · {} · starts {}", mode.name(), island_core::travel::fmt_secs(secs), crate::clock::civil(e.start_ms, off).hhmm());
+                let notes = self.before_you_go(((leave_ms - now) as f64 / 60_000.0).ceil() as i32, (secs / 60) as i32);
+                if !notes.is_empty() {
+                    body = format!("{body} · {notes}");
+                }
                 self.next_own_id += 1;
                 let n = Incoming { id: self.next_own_id, app: "Reminder".into(), summary, body, expire_ms: Some(12_000), ..Default::default() };
                 self.push(now, Input::Notification(n));
@@ -1906,10 +1919,35 @@ impl Island {
         }
     }
 
+    /// An event within the hour with something to know about it (rain, a low battery) and no way to tell it with the
+    /// time to leave: one card.
+    fn heads_up(&mut self, now: i64) {
+        let next = self.data.events.iter().filter(|e| !e.all_day && e.start_ms > now && e.start_ms - now <= 40 * 60_000).min_by_key(|e| e.start_ms).cloned();
+        let Some(e) = next else { return };
+        if self.headsup_told.contains(&e.id) || self.leave_told.contains(&e.id) || self.quiet_blocks_headsup() {
+            return;
+        }
+        let min = ((e.start_ms - now) as f64 / 60_000.0).ceil() as i32;
+        let notes = self.before_you_go(min, 15);
+        if notes.is_empty() {
+            return;
+        }
+        self.headsup_told.insert(e.id.clone());
+        self.next_own_id += 1;
+        let n = Incoming { id: self.next_own_id, app: "Reminder".into(), summary: format!("{} in {min} min", e.title), body: notes, expire_ms: Some(10_000), ..Default::default() };
+        self.push(now, Input::Notification(n));
+    }
+
+    /// A call or a recording is not interrupted by a heads-up.
+    fn quiet_blocks_headsup(&self) -> bool {
+        self.auto_quiet.is_some_and(|r| r != "meeting")
+    }
+
     fn slow_checks(&mut self) {
         let now = self.now;
         self.update_quiet(now);
         self.trips(now);
+        self.heads_up(now);
         self.culprit_card(now);
         self.network_card(now);
         // a device whose battery went back up may warn again next time
@@ -4133,6 +4171,25 @@ mod tests {
         assert!(i.notif.is_none(), "told once");
         i.cfg.travel_times = false;
         assert!(i.trip_event().is_none(), "switched off");
+    }
+
+    #[test]
+    fn rain_or_a_low_battery_before_an_event_comes_as_one_card() {
+        let mut i = Island::new(Config::default());
+        i.data.events = vec![Event { id: "e".into(), title: "Lecture".into(), start_ms: T0 + 30 * 60_000, end_ms: T0 + 90 * 60_000, ..Default::default() }];
+        i.data.battery = Some(Battery { percent: 21.0, charging: false, on_ac: false });
+        run(&mut i, 1000);
+        let card = i.notif.clone().expect("a card");
+        assert_eq!(card.summary, "Lecture in 30 min");
+        assert_eq!(card.body, "battery 21%: bring the charger");
+        i.notif = None;
+        run(&mut i, 3000);
+        assert!(i.notif.is_none(), "once");
+        let mut j = Island::new(Config::default());
+        j.data.events = i.data.events.clone();
+        j.data.battery = Some(Battery { percent: 90.0, charging: false, on_ac: false });
+        run(&mut j, 2000);
+        assert!(j.notif.is_none(), "nothing to say, nothing said");
     }
 
     #[test]
