@@ -57,7 +57,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                 Command::AddFilter { .. } | Command::RemoveFilter(_) | Command::SetOption { .. } | Command::AddCalendar(_) | Command::AddICloud { .. } | Command::RenameCalendar { .. } | Command::SetCalendarColor { .. } | Command::RemoveCalendar(_) | Command::SetFont(_) | Command::SetLatitude(_) | Command::SetLongitude(_) | Command::SetNotificationSound(_) => {}
                 Command::RestoreClipboard(t) => clipboard::restore(&t),
                 Command::PlanTrip { .. } | Command::SearchPlaces { .. } | Command::PlanRoute { .. } => super::travel::command(&rep, c),
-                Command::RefreshPosition => super::location::refresh(&rep),
+                Command::RefreshPosition => super::location::refresh(),
                 Command::LoadTile { z, x, y, template, dark } => super::tiles::request(&rep, z, x, y, template, dark),
                 Command::MuteMicStream { stream, mute } => {
                     run("pactl", &["set-source-output-mute", &stream.to_string(), if mute { "1" } else { "0" }]);

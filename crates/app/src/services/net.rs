@@ -35,15 +35,21 @@ pub fn start(rep: Reporter) {
     let weather_rep = rep.clone();
     std::thread::spawn(move || loop {
         let s = crate::config::load();
-        match (s.latitude, s.longitude) {
+        // where the machine is, when it follows its position; else the coordinates of the settings
+        #[cfg(target_os = "linux")]
+        let at = super::location::point(&s);
+        #[cfg(not(target_os = "linux"))]
+        let at = s.latitude.zip(s.longitude);
+        log::debug!("weather for {at:?}");
+        match at {
             _ if !s.ui.weather => weather_rep.patch(|d| d.weather = None),
-            (Some(lat), Some(lon)) => match fetch_weather(lat, lon) {
+            Some((lat, lon)) => match fetch_weather(lat, lon) {
                 Ok(w) => weather_rep.patch(move |d| d.weather = Some(w)),
                 Err(e) => log::warn!("weather: {e}"),
             },
             _ => weather_rep.patch(|d| d.weather = None),
         }
-        super::wait_for(600, &[&super::CONFIG_GEN]);
+        super::wait_for(600, &[&super::CONFIG_GEN, &super::LOCATION_GEN]);
     });
     std::thread::spawn(move || {
         let mut cache: HashMap<String, Vec<Event>> = HashMap::new();

@@ -163,7 +163,7 @@ pub fn command(rep: &Reporter, c: Command) {
         let settings = crate::config::load();
         // from where the machine is (a GeoClue fix of the last quarter hour, asked for when there is none), else the settings
         #[cfg(target_os = "linux")]
-        let here = super::location::recent().or_else(|| super::location::fix(6).map(|(la, lo, _)| (la, lo)));
+        let here = if settings.ui.follow_position { super::location::recent().or_else(|| super::location::fix(6).map(|(la, lo, _)| (la, lo))) } else { None };
         #[cfg(not(target_os = "linux"))]
         let here: Option<(f64, f64)> = None;
         let from = here.or(settings.latitude.zip(settings.longitude));

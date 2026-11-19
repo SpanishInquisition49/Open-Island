@@ -49,24 +49,28 @@ pub fn fix(secs: u32) -> Option<(f64, f64, f64)> {
     Some(best)
 }
 
-/// The position the trips start from: a GeoClue fix of the last quarter hour, else None (the caller uses the settings).
+/// The position the trips start from: a GeoClue fix of the last quarter hour, else None.
 pub fn recent() -> Option<(f64, f64)> {
     let l = LAST.lock().ok()?;
     l.filter(|(_, _, _, at)| now_ms() - at < 15 * 60_000).map(|(la, lo, _, _)| (la, lo))
 }
 
-/// Looks for a fix and reports it (or the location of the settings when GeoClue gives none).
-pub fn refresh(rep: &Reporter) {
-    let rep = rep.clone();
-    std::thread::spawn(move || {
-        let fixed = fix(14);
-        log::debug!("position: {fixed:?}");
-        let found = fixed.map(|(lat, lon, accuracy_m)| Position { lat, lon, accuracy_m, at_ms: now_ms(), source: PosSource::Geoclue });
-        let pos = found.or_else(settings_position);
-        if let Some(p) = pos {
-            rep.patch(move |d| d.position = Some(p));
+/// The point the weather is for: where the machine is (a fix of the last twelve hours, not a guess wider than 50 km) when it
+/// follows the position, else the coordinates set in the settings.
+pub fn point(s: &crate::config::Settings) -> Option<(f64, f64)> {
+    if s.ui.follow_position {
+        if let Some((la, lo, acc, at)) = LAST.lock().ok().and_then(|l| *l) {
+            if now_ms() - at < 12 * 3_600_000 && acc <= 50_000.0 {
+                return Some((la, lo));
+            }
         }
-    });
+    }
+    s.latitude.zip(s.longitude)
+}
+
+/// Looks for a fix now (the loop in `start` does it, and wakes at once).
+pub fn refresh() {
+    super::LOCATION_ASK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn settings_position() -> Option<Position> {
@@ -74,15 +78,56 @@ fn settings_position() -> Option<Position> {
     Some(Position { lat: s.latitude?, lon: s.longitude?, accuracy_m: 0.0, at_ms: now_ms(), source: PosSource::Settings })
 }
 
+/// Where the machine is, kept up to date: a fix at the start and every ten minutes, at once when asked, and the settings'
+/// location when the position is not to be followed (or GeoClue gives none).
 pub fn start(rep: Reporter) {
     if let Some(p) = settings_position() {
         rep.patch(move |d| d.position = Some(p));
     }
+    std::thread::spawn(move || {
+        let mut published: Option<(f64, f64)> = None;
+        loop {
+            let follow = crate::config::load().ui.follow_position;
+            let found = if follow { fix(14).map(|(lat, lon, accuracy_m)| Position { lat, lon, accuracy_m, at_ms: now_ms(), source: PosSource::Geoclue }) } else { None };
+            log::debug!("position: follow {follow}, {:?}", found.as_ref().map(|p| (p.lat, p.lon, p.accuracy_m)));
+            let pos = found.or_else(settings_position);
+            if let Some(p) = pos {
+                // the weather is for a place: ask it again only when the machine has moved a few kilometres
+                let moved = published.is_none_or(|(la, lo)| island_core::map::distance_m((la, lo), (p.lat, p.lon)) > 3_000.0);
+                if moved {
+                    published = Some((p.lat, p.lon));
+                    super::LOCATION_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                rep.patch(move |d| d.position = Some(p));
+            }
+            super::wait_for(600, &[&super::CONFIG_GEN, &super::LOCATION_ASK]);
+        }
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_point_is_the_fix_when_following_and_the_settings_otherwise() {
+        let mut s = crate::config::Settings { latitude: Some(43.0), longitude: Some(10.0), ..Default::default() };
+        let set = |v: Option<(f64, f64, f64, i64)>| *LAST.lock().unwrap() = v;
+        set(None);
+        assert_eq!(point(&s), Some((43.0, 10.0)), "no fix: the settings");
+        set(Some((44.5, 11.5, 300.0, now_ms())));
+        assert_eq!(point(&s), Some((44.5, 11.5)), "a fix: here");
+        s.ui.follow_position = false;
+        assert_eq!(point(&s), Some((43.0, 10.0)), "fixed coordinates when not following");
+        s.ui.follow_position = true;
+        set(Some((44.5, 11.5, 80_000.0, now_ms())));
+        assert_eq!(point(&s), Some((43.0, 10.0)), "a guess wider than 50 km is no position");
+        set(Some((44.5, 11.5, 300.0, now_ms() - 13 * 3_600_000)));
+        assert_eq!(point(&s), Some((43.0, 10.0)), "an old fix is not where you are");
+        s.latitude = None;
+        assert_eq!(point(&s), None, "nothing at all");
+        set(None);
+    }
 
     #[test]
     fn the_fixes_of_where_am_i_are_read() {

@@ -60,6 +60,9 @@ pub mod windows;
 /// Set by the app while the system page / the quick settings page is open: the sampling threads idle otherwise.
 pub static SYSTEM_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Bumped whenever the settings change, so the services that read them (weather, calendars) refetch at once.
+/// Bumped when the position changes enough to matter to the weather (and asked for when a new fix is wanted).
+pub static LOCATION_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static LOCATION_ASK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static CONFIG_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Bumped to make the calendar thread read the calendars now (the refresh button, opening a stale page).

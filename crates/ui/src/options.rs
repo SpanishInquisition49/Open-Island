@@ -19,6 +19,7 @@ pub fn toggles(tab: usize) -> &'static [(&'static str, &'static str)] {
             ("weather", "Weather"),
             ("timer_sound", "Timer sound"),
             ("auto_audio_output", "Audio to headphones"),
+            ("follow_position", "Follow my position"),
         ],
         1 => &[
             ("show_notifications", "Show notifications"),
@@ -45,6 +46,7 @@ pub fn describe(key: &str) -> &'static str {
         "status_icons" => "Icons in the pill for the microphone, camera, screen share and quiet mode",
         "clipboard_history" => "Keep a list of what you copy (pinned entries survive restarts)",
         "hide_on_fullscreen" => "Slide the island away while a window is fullscreen",
+        "follow_position" => "Weather, trips and the map use where you are; off: the settings coordinates",
         "weather" => "Forecast, rain alerts and the weather page (needs a location)",
         "timer_sound" => "Play a sound when a timer ends",
         "auto_audio_output" => "Switch the sound to headphones when they connect, back when they go",
@@ -112,6 +114,7 @@ pub fn get_bool(c: &Config, key: &str) -> bool {
         "media_auto_expand" => c.media_auto_expand,
         "timer_sound" => c.timer_sound,
         "auto_audio_output" => c.auto_audio_output,
+        "follow_position" => c.follow_position,
         "battery_alerts" => c.battery_alerts,
         "weather" => c.weather,
         "rain_alerts" => c.rain_alerts,
@@ -140,6 +143,7 @@ pub fn set_bool(c: &mut Config, key: &str, on: bool) {
         "media_auto_expand" => c.media_auto_expand = on,
         "timer_sound" => c.timer_sound = on,
         "auto_audio_output" => c.auto_audio_output = on,
+        "follow_position" => c.follow_position = on,
         "battery_alerts" => c.battery_alerts = on,
         "weather" => c.weather = on,
         "rain_alerts" => c.rain_alerts = on,
@@ -235,7 +239,7 @@ mod tests {
     fn every_option_here_is_one_the_platform_layer_can_write() {
         // the keys of the page and the keys the configuration accepts are the same list
         let page: std::collections::BTreeSet<&str> = (0..TABS.len()).flat_map(|t| toggles(t).iter().map(|(k, _)| *k)).collect();
-        assert_eq!(page.len(), 22, "no option on two tabs");
+        assert_eq!(page.len(), 23, "no option on two tabs");
         assert_eq!(TABS[RULES_TAB], "Rules");
         let nums: Vec<&str> = (0..TABS.len()).flat_map(|t| steppers(t).iter().map(|s| s.0)).collect();
         assert_eq!(nums, ["notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes", "travel_margin_minutes", "deep_work_minutes", "break_minutes"]);

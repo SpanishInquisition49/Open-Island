@@ -258,6 +258,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     u.culprit_alerts = b("culprit_alerts", u.culprit_alerts);
     u.travel_times = b("travel_times", u.travel_times);
     u.map_dark = b("map_dark", u.map_dark);
+    u.follow_position = b("follow_position", u.follow_position);
     if let Some(url) = v.get("map_tile_url").and_then(|x| x.as_str()).map(str::trim).and_then(island_core::map::resolve) {
         u.map_tile_url = url;
     }
@@ -329,7 +330,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
 /// The options of the options page: the keys that are on or off.
 pub const BOOL_OPTIONS: &[&str] = &[
     "show_notifications", "show_osd", "media_auto_expand", "timer_sound", "battery_alerts", "weather", "rain_alerts", "meeting_alerts", "lyrics", "lyrics_in_pill", "art_tint", "status_icons",
-    "clipboard_history", "clock_in_pill", "hide_on_fullscreen", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "away_recap", "culprit_alerts", "travel_times", "map_dark", "quiet_on_screen_share",
+    "clipboard_history", "clock_in_pill", "hide_on_fullscreen", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "away_recap", "culprit_alerts", "travel_times", "map_dark", "follow_position", "quiet_on_screen_share",
 ];
 
 /// The numeric options: key, smallest, largest, and whether it is a whole number.
@@ -540,6 +541,7 @@ mod tests {
         assert_eq!(s.ui.timer_presets, vec![300, 600]);
         assert_eq!(s.ui.meeting_lead_ms, 15 * 60_000);
         assert_eq!(s.ui.meeting_pill_ms, UiConfig::default().meeting_pill_ms);
+        assert!(parse("{}").unwrap().ui.follow_position && !parse(r#"{"follow_position":false}"#).unwrap().ui.follow_position, "following by default, fixed on request");
         let d = parse(r#"{"deep_work_minutes":45,"break_minutes":90,"deep_work_apps":["Kitty"," ","Obsidian"]}"#).unwrap();
         assert_eq!((d.ui.deep_work_minutes, d.ui.break_minutes, d.ui.deep_work_apps.clone()), (45, 90, vec!["kitty".to_string(), "obsidian".to_string()]));
         assert_eq!(parse(r#"{"deep_work_minutes":999,"deep_work_apps":[]}"#).unwrap().ui.deep_work_minutes, UiConfig::default().deep_work_minutes);

@@ -58,6 +58,8 @@ pub struct Config {
     pub map_tile_url: String,
     /// Darken the (light) tiles to suit the black island.
     pub map_dark: bool,
+    /// Weather, trips and the map use where the machine is; off: the coordinates set in the settings.
+    pub follow_position: bool,
     /// Notifications are held after this many minutes in a row on work apps (0: never).
     pub deep_work_minutes: i64,
     /// Names of apps that count as work (part of the name, any case).
@@ -112,6 +114,7 @@ impl Default for Config {
             travel_margin_ms: 5 * 60_000,
             map_tile_url: island_core::map::DEFAULT_TILES.to_string(),
             map_dark: true,
+            follow_position: true,
             deep_work_minutes: 20,
             deep_work_apps: island_core::activity::DEEP_WORK_APPS.iter().map(|s| s.to_string()).collect(),
             break_minutes: 0,
@@ -2241,7 +2244,7 @@ impl Island {
         if self.page != Some(Page::Map) {
             return;
         }
-        if now - self.map_asked_at > 120_000 && self.data.position.as_ref().is_none_or(|p| p.source == PosSource::Settings || now - p.at_ms > 120_000) {
+        if self.cfg.follow_position && now - self.map_asked_at > 120_000 && self.data.position.as_ref().is_none_or(|p| p.source == PosSource::Settings || now - p.at_ms > 120_000) {
             self.map_asked_at = now;
             self.pending.push(Command::RefreshPosition);
         }

@@ -396,3 +396,11 @@ you first) come as a list over the map, and picking one gives the way from where
 bottom left switch the way and the distance and time follow; the cross next to the picked place forgets it. A click on the
 distance chip opens the same trip in OpenStreetMap's directions. What leaves the machine: the words searched and, for the route,
 the two points.
+
+## Following your position (Linux)
+
+By default the map, the trips to events and the weather use where the machine is: a GeoClue fix is asked for when the island starts
+and every ten minutes (and when the map page opens), and the weather is read again for the new place once you have moved a few
+kilometres. Until the first fix, and when GeoClue gives none (or only a guess wider than 50 km), the location set in the settings
+is used. To pin the coordinates instead, as before, switch off **Options > Island > "Follow my position"**
+(`follow_position`): the map, the trips and the weather then all use Settings > Weather location.
