@@ -397,6 +397,9 @@ pub struct Island {
     /// The program the last culprit card was about, and when.
     culprit_told: Option<(String, i64)>,
     culprit_id: u32,
+    /// What the last network card was about, and the card's id (a click on it reconnects).
+    net_seen: island_core::netstate::Health,
+    net_id: u32,
     next_own_id: u32,
     /// Keyboard navigation: the focused control among the drawn ones.
     pub(crate) kb: Option<Kb>,
@@ -512,6 +515,8 @@ impl Island {
             code_copied: None,
             culprit_told: None,
             culprit_id: 0,
+            net_seen: island_core::netstate::Health::Online,
+            net_id: 0,
             next_own_id: OWN_ID_BASE,
             kb: None,
             page_stack: vec![],
@@ -1505,6 +1510,12 @@ impl Island {
                     self.pending.extend(Self::open_commands(&n, false));
                 }
             }
+            Action::NotifOpen if self.notif.as_ref().is_some_and(|n| n.id == self.net_id && self.net_id != 0) => {
+                self.notif = None;
+                self.notif_until = 0;
+                self.say("Reconnecting…", "");
+                return vec![Command::ReconnectNetwork];
+            }
             Action::NotifOpen if self.notif.as_ref().is_some_and(|n| n.id == self.culprit_id && self.culprit_id != 0) => {
                 self.notif = None;
                 self.notif_until = 0;
@@ -1638,7 +1649,7 @@ impl Island {
         }
         let p = self.data.privacy;
         let _ = compact_busy;
-        p.mic as usize + p.camera as usize + p.screen as usize + self.quiet() as usize
+        p.mic as usize + p.camera as usize + p.screen as usize + self.quiet() as usize + (!self.data.net.is_ok()) as usize
     }
 
     fn sync_lyrics(&mut self) {
@@ -1809,10 +1820,35 @@ impl Island {
         self.push(now, Input::Notification(n));
     }
 
+    /// A card when the network breaks (with where) and when it is back.
+    fn network_card(&mut self, now: i64) {
+        let h = self.data.net;
+        if h == self.net_seen {
+            return;
+        }
+        let was_ok = self.net_seen.is_ok();
+        self.net_seen = h;
+        let (summary, body) = h.message();
+        self.next_own_id += 1;
+        let id = self.next_own_id;
+        if h.is_ok() {
+            self.net_id = 0;
+            self.push(now, Input::Notification(Incoming { id, app: "open-island".into(), summary: summary.into(), expire_ms: Some(2500), ..Default::default() }));
+        } else if h == island_core::netstate::Health::Portal {
+            self.net_id = 0;
+            self.push(now, Input::Notification(Incoming { id, app: "open-island".into(), summary: summary.into(), body: body.into(), expire_ms: Some(6000), ..Default::default() }));
+        } else {
+            self.net_id = id;
+            let tail = if was_ok { "· tap to reconnect" } else { "" };
+            self.push(now, Input::Notification(Incoming { id, app: "open-island".into(), summary: summary.into(), body: format!("{body} {tail}").trim().into(), expire_ms: Some(8000), ..Default::default() }));
+        }
+    }
+
     fn slow_checks(&mut self) {
         let now = self.now;
         self.update_quiet(now);
         self.culprit_card(now);
+        self.network_card(now);
         // a device whose battery went back up may warn again next time
         let devs = &self.data.devices;
         self.device_low_told.retain(|id| devs.iter().any(|d| d.id == *id && d.battery.is_some_and(|b| b <= 20)));
@@ -3980,6 +4016,27 @@ mod tests {
         i.data.culprit = Some(Culprit { name: "niri".into(), protected: true, ..hog });
         draw_frames(&mut i, 200);
         assert!(!i.hits.iter().any(|h| matches!(&h.action, Action::Cmd(Command::QuitProcs(_)))), "the session cannot be quit from here");
+    }
+
+    #[test]
+    fn a_broken_network_says_where_and_a_click_reconnects() {
+        use island_core::netstate::Health;
+        let mut i = Island::new(Config::default());
+        run(&mut i, 1000);
+        i.data.net = Health::NoInternet;
+        run(&mut i, 6000);
+        let card = i.notif.clone().expect("a card");
+        assert_eq!((card.summary.as_str(), card.body.as_str()), ("No internet", "The router answers: the problem is beyond it · tap to reconnect"));
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::NotifOpen));
+        assert!(i.take_commands().contains(&Command::ReconnectNetwork));
+        i.notif = None;
+        i.data.net = Health::Online;
+        run(&mut i, 1000);
+        assert_eq!(i.notif.as_ref().map(|n| n.summary.as_str()), Some("Back online"));
+        assert_eq!(i.icon_count(false), 0, "no warning icon once it works");
+        i.data.net = Health::RouterDown;
+        assert_eq!(i.icon_count(false), 1, "a warning icon while it does not");
     }
 
     #[test]

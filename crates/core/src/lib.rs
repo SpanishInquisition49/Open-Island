@@ -13,6 +13,7 @@ pub mod face;
 pub mod ics;
 pub mod localsend;
 pub mod lyrics;
+pub mod netstate;
 pub mod notify;
 pub mod timeline;
 pub mod pomodoro;

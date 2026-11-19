@@ -311,3 +311,12 @@ is listed with **Resume**. The programs the session lives on (the compositor, th
 never offered for stopping. A program the island froze and that is still frozen when the island ends is woken again the next
 time the island starts. Switch it off with `culprit_alerts` (Options > Alerts > "Heavy program alerts"). The check reads
 `/proc` every five seconds and does more only while the machine is loaded.
+
+## When the network breaks (Linux, NetworkManager)
+
+The link, the router (one ping) and the internet (NetworkManager's own connectivity check) are looked at every ten seconds, every
+five while something is wrong. A change that holds for two readings gives a card that says where it breaks: "No network", "Router
+not answering" (connected, but the router is silent), "No internet" (the router answers, the problem is beyond it), "Sign-in
+needed" (a captive portal). A click on the card switches the Wi-Fi radio (or the wired device) off and on again. A red Wi-Fi
+icon sits in the pill while it is broken, and a card says "Back online" afterwards. The network row of the System page adds
+"VPN" when a tunnel interface (wireguard, tailscale, tun, ppp...) is up.

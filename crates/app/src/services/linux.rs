@@ -56,6 +56,9 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                 // the app itself writes the configuration for these
                 Command::AddFilter { .. } | Command::RemoveFilter(_) | Command::SetOption { .. } | Command::AddCalendar(_) | Command::AddICloud { .. } | Command::RenameCalendar { .. } | Command::SetCalendarColor { .. } | Command::RemoveCalendar(_) | Command::SetFont(_) | Command::SetLatitude(_) | Command::SetLongitude(_) | Command::SetNotificationSound(_) => {}
                 Command::RestoreClipboard(t) => clipboard::restore(&t),
+                Command::ReconnectNetwork => {
+                    std::thread::spawn(super::netwatch::reconnect);
+                }
                 Command::PauseProcs { .. } | Command::ResumeProcs(_) | Command::QuitProcs(_) => super::culprit::command(&rep, &c),
                 Command::ScanPeers => super::send::scan(rep.clone()),
                 Command::SendFiles { peer, paths } => super::send::send(rep.clone(), peer, paths),

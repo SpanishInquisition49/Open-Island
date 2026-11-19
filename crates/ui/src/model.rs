@@ -222,6 +222,9 @@ pub struct Data {
     /// The program hogging the CPU or the memory, and the programs the island paused.
     pub culprit: Option<Culprit>,
     pub paused: Vec<String>,
+    /// Whether the network works, and where it breaks when it does not; whether a VPN is up.
+    pub net: island_core::netstate::Health,
+    pub vpn: bool,
     pub system: Option<SystemStats>,
     pub config: ConfigView,
     /// None when there is no focus script on this machine.
@@ -405,6 +408,8 @@ pub enum Command {
     ResumeProcs(String),
     /// Ask programs to quit (SIGTERM).
     QuitProcs(Vec<u32>),
+    /// Switch the connection off and on again.
+    ReconnectNetwork,
     /// Send these files (paths) to a device.
     SendFiles { peer: island_core::localsend::Peer, paths: Vec<String> },
     /// Re-read the quick-settings state (the page was just opened).

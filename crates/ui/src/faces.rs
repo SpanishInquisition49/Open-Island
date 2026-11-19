@@ -192,7 +192,7 @@ impl Island {
             return x_right;
         }
         let mut x = x_right;
-        for (on, icon, color) in [(self.quiet(), "bell-off", theme::DIM), (pr.screen, "screen-share", theme::ORANGE), (pr.camera, "video", theme::GREEN), (pr.mic, "microphone", theme::ORANGE)] {
+        for (on, icon, color) in [(self.quiet(), "bell-off", theme::DIM), (pr.screen, "screen-share", theme::ORANGE), (pr.camera, "video", theme::GREEN), (pr.mic, "microphone", theme::ORANGE), (!self.data.net.is_ok(), "wifi-off", theme::RED)] {
             if on {
                 p.icon(icon, x - size as f64 / 2.0, cy, size, color);
                 x -= ICON_W;
@@ -1123,7 +1123,7 @@ impl Island {
             self.metric_row(p, w, y, &d.name, frac, &t, col);
             y += 28.0;
         }
-        let net = format!("↓ {}   ↑ {}", island_core::system::fmt_rate(st.net_rx), island_core::system::fmt_rate(st.net_tx));
+        let net = format!("↓ {}   ↑ {}{}", island_core::system::fmt_rate(st.net_rx), island_core::system::fmt_rate(st.net_tx), if self.data.vpn { "   ·  VPN" } else { "" });
         self.metric_row(p, w, y, "Network", None, &net, theme::FG);
         y += 28.0;
         if let Some((used, total)) = st.disk {
