@@ -520,7 +520,7 @@ impl Island {
         };
         p.icon(icon, 30.0, h / 2.0, 20.0, theme::FG);
         let bar = rect(50.0, h / 2.0 - 3.0, w - 50.0 - 56.0, 6.0);
-        p.bar(bar, if o.muted { 0.0 } else { o.level as f64 }, theme::FG, theme::TRACK);
+        p.bar(bar, self.osd_shown, theme::FG, theme::TRACK);
         let pct = format!("{}%", (o.level * 100.0).round() as i32);
         p.text(&pct, w - 16.0, h / 2.0, 13.0, SEMI, theme::FG, Align::Right, 44.0);
     }
@@ -884,11 +884,11 @@ impl Island {
         marks
     }
 
-    fn slider_row(&self, p: P, w: f64, cy: f64, icon: &str, value: Option<f32>, action: Action) {
+    fn slider_row(&self, p: P, w: f64, cy: f64, icon: &str, level: Option<(f32, f64)>, action: Action) {
         p.icon(icon, 14.0 + 8.0, cy, 16.0, theme::FG);
         let bar = rect(14.0 + 26.0, cy - 3.0, w - 14.0 - 26.0 - 14.0 - 44.0, 6.0);
-        p.slider(bar, value.unwrap_or(0.0) as f64, action);
-        let t = value.map_or("–".to_string(), |v| format!("{}%", (v * 100.0).round() as i32));
+        p.slider(bar, level.map_or(0.0, |(_, shown)| shown), action);
+        let t = level.map_or("–".to_string(), |(v, _)| format!("{}%", (v * 100.0).round() as i32));
         p.text(&t, w - 14.0, cy, 11.0, REG, theme::DIM, Align::Right, 40.0);
     }
 
@@ -967,10 +967,10 @@ impl Island {
             p.chip(rect(14.0, fy, w - 28.0, 36.0), "target", &label, f.active, Action::Cmd(if f.active { Command::StopFocus } else { Command::StartFocus(50) }));
         }
         p.stagger(4);
-        self.slider_row(p, w, l.vol_cy, if d.muted { "volume-3" } else { "volume" }, d.volume, Action::VolumeBar);
+        self.slider_row(p, w, l.vol_cy, if d.muted { "volume-3" } else { "volume" }, d.volume.map(|v| (v, self.volume_shown)), Action::VolumeBar);
         if let Some(cy) = l.bri_cy {
             p.stagger(5);
-            self.slider_row(p, w, cy, "brightness-half", d.brightness, Action::BrightnessBar);
+            self.slider_row(p, w, cy, "brightness-half", d.brightness.map(|v| (v, self.brightness_shown)), Action::BrightnessBar);
         }
         if let Some(top) = l.out_top {
             p.stagger(6);

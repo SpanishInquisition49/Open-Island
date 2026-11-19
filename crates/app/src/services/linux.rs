@@ -27,6 +27,8 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
     let (quick_tx, quick_rx) = std::sync::mpsc::channel::<Command>();
     quick::start(rep.clone(), quick_rx);
     notif::start(rep.clone(), notif_cmd_rx, settings.clone(), initial_dnd);
+    let set_volume_tx = latest_wins(|v| drop(run("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{:.2}", v)])));
+    let set_brightness_tx = latest_wins(|v| drop(run("brightnessctl", &["set", &format!("{}%", (v * 100.0).round() as i32)])));
     // route the island's commands to the thread that handles them
     std::thread::spawn(move || {
         for c in cmd_rx {
@@ -54,14 +56,15 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                 // the app itself writes the configuration for these
                 Command::AddCalendar(_) | Command::AddICloud { .. } | Command::RenameCalendar { .. } | Command::SetCalendarColor { .. } | Command::RemoveCalendar(_) | Command::SetFont(_) | Command::SetLatitude(_) | Command::SetLongitude(_) | Command::SetNotificationSound(_) => {}
                 Command::RestoreClipboard(t) => clipboard::restore(&t),
+                // a slider being dragged sends dozens of these a second: only the latest is worth a process
                 Command::SetVolume(v) => {
-                    run("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{:.2}", v)]);
+                    let _ = set_volume_tx.send(v);
                 }
                 Command::ToggleMute => {
                     run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]);
                 }
                 Command::SetBrightness(v) => {
-                    run("brightnessctl", &["set", &format!("{}%", (v * 100.0).round() as i32)]);
+                    let _ = set_brightness_tx.send(v);
                 }
                 Command::OpenUrl(u) => {
                     if u.starts_with("http://") || u.starts_with("https://") {
@@ -80,6 +83,21 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
             }
         }
     });
+}
+
+/// A worker that does `job` with the newest value sent to it: values that arrive while it is busy are skipped, so a
+/// flood of slider positions costs one command at a time and the last one always lands.
+fn latest_wins(job: impl Fn(f32) + Send + 'static) -> std::sync::mpsc::Sender<f32> {
+    let (tx, rx) = std::sync::mpsc::channel::<f32>();
+    std::thread::spawn(move || {
+        while let Ok(mut v) = rx.recv() {
+            while let Ok(newer) = rx.try_recv() {
+                v = newer;
+            }
+            job(v);
+        }
+    });
+    tx
 }
 
 fn run(prog: &str, args: &[&str]) -> Option<String> {
@@ -168,31 +186,44 @@ fn audio_and_brightness(rep: Reporter, settings: Arc<Settings>) {
     std::thread::spawn(move || {
         let (mut last_vol, mut last_br): (Option<(f32, bool)>, Option<f32>) = (None, None);
         let mut last_bloop = std::time::Instant::now();
+        let mut last_vol_read = std::time::Instant::now();
+        let mut last_change = std::time::Instant::now() - Duration::from_secs(60);
         let events = pactl_events();
         let mut first = true;
         loop {
             // the volume is read when the audio server says something changed (and once a few seconds as a
             // safety net); the backlight has no events, a sysfs read every second and a half costs nothing
-            let read_volume_now = first
-                || match &events {
-                    Some(rx) => match rx.recv_timeout(Duration::from_millis(1500)) {
-                        Ok(line) => {
-                            // a burst of events (dragging a slider) is one reading
-                            while rx.recv_timeout(Duration::from_millis(60)).is_ok() {}
-                            line.contains("sink") || line.contains("server")
+            // While something is changing both are looked at often (so a bar can follow a key held down or a
+            // slider being dragged at nearly the display's rate); at rest the backlight is read four times a second
+            // and the volume once every second and a half, besides when the audio server says so.
+            let busy = last_change.elapsed() < Duration::from_secs(2);
+            let poll = Duration::from_millis(if busy { 30 } else { 250 });
+            let mut read_volume_now = first;
+            match &events {
+                Some(rx) => match rx.recv_timeout(poll) {
+                    Ok(line) => {
+                        // events that piled up while the last reading ran are the same news: read once
+                        let mut relevant = line.contains("sink") || line.contains("server");
+                        while let Ok(l) = rx.try_recv() {
+                            relevant |= l.contains("sink") || l.contains("server");
                         }
-                        Err(_) => true,
-                    },
-                    None => {
-                        std::thread::sleep(Duration::from_millis(1500));
-                        true
+                        read_volume_now |= relevant;
                     }
-                };
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(_) => std::thread::sleep(poll),
+                },
+                None => std::thread::sleep(poll),
+            }
+            if last_vol_read.elapsed() > Duration::from_millis(1500) {
+                read_volume_now = true;
+            }
             first = false;
             let br = read_brightness();
             if read_volume_now {
+                last_vol_read = std::time::Instant::now();
                 let vol = read_volume();
                 if vol != last_vol {
+                    last_change = std::time::Instant::now();
                     if let (Some((v, m)), Some(_)) = (vol, last_vol) {
                         rep.input(Input::Osd { kind: OsdKind::Volume, level: v, muted: m });
                         if let Some(f) = &settings.volume_sound {
@@ -212,6 +243,7 @@ fn audio_and_brightness(rep: Reporter, settings: Arc<Settings>) {
                 }
             }
             if br != last_br {
+                last_change = std::time::Instant::now();
                 if let (Some(b), Some(_)) = (br, last_br) {
                     rep.input(Input::Osd { kind: OsdKind::Brightness, level: b, muted: false });
                 }
@@ -563,5 +595,29 @@ mod tests {
         assert!(!mic_streams_active(ours, SOURCES), "this program's own stream");
         let mixed = r#"[{"index": 8, "source": 53, "corked": false, "properties": {}}, {"index": 7, "source": 54, "corked": false, "properties": {"application.name": "Zoom"}}]"#;
         assert!(mic_streams_active(mixed, SOURCES), "one real recorder among spectrum streams");
+    }
+}
+
+#[cfg(test)]
+mod latest_tests {
+    use super::latest_wins;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    #[test]
+    fn a_flood_of_values_costs_few_jobs_and_the_last_always_lands() {
+        let done = Arc::new(Mutex::new(vec![]));
+        let d = done.clone();
+        let tx = latest_wins(move |v| {
+            std::thread::sleep(Duration::from_millis(20)); // a slow command
+            d.lock().unwrap().push(v);
+        });
+        for k in 0..50 {
+            tx.send(k as f32).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        let got = done.lock().unwrap().clone();
+        assert_eq!(*got.last().unwrap(), 49.0, "the final position is applied");
+        assert!(got.len() < 10, "and not fifty processes: {got:?}");
     }
 }

@@ -335,6 +335,11 @@ pub struct Island {
     waiting: std::collections::VecDeque<Incoming>,
     pub(crate) history: Vec<(Incoming, i64)>,
     pub(crate) osd: Option<Osd>,
+    /// What the bars show: the level eased towards the real one, so a level that arrives in steps moves smoothly.
+    pub(crate) osd_shown: f64,
+    levels_init: bool,
+    pub(crate) volume_shown: f64,
+    pub(crate) brightness_shown: f64,
     osd_until: i64,
     pub(crate) power: Option<PowerEvent>,
     power_until: i64,
@@ -428,6 +433,10 @@ impl Island {
             waiting: Default::default(),
             history: vec![],
             osd: None,
+            osd_shown: 0.0,
+            levels_init: false,
+            volume_shown: 0.0,
+            brightness_shown: 0.0,
             osd_until: 0,
             power: None,
             power_until: 0,
@@ -528,6 +537,14 @@ impl Island {
                 self.spectrum_at = now;
             }
             Input::Osd { kind, level, muted } => {
+                // a bar that was not on screen starts from the level it had before, and slides to the new one
+                let before = match kind {
+                    OsdKind::Volume => self.data.volume,
+                    OsdKind::Brightness => self.data.brightness,
+                };
+                if self.osd.as_ref().is_none_or(|o| o.kind != kind) {
+                    self.osd_shown = before.unwrap_or(level) as f64;
+                }
                 self.osd = Some(Osd { kind, level, muted });
                 self.osd_until = now + self.cfg.osd_ms;
             }
@@ -1632,6 +1649,36 @@ impl Island {
         }
     }
 
+    /// Moves the levels the bars show towards the real ones: about a twentieth of a second to cover most of the
+    /// distance, so the 10 or 30 changes a second that arrive look like a continuous slide at any refresh rate.
+    /// A slider being dragged follows the pointer exactly. Returns true while something is still on its way.
+    fn ease_levels(&mut self, dt_ms: f64) -> bool {
+        let k = 1.0 - (-(if dt_ms.is_finite() { dt_ms.clamp(0.0, 100.0) } else { 0.0 }) / 55.0).exp();
+        let dragging = matches!(self.dragging, Some(Action::VolumeBar | Action::BrightnessBar));
+        let mut moving = false;
+        let mut ease = |shown: &mut f64, target: f64, snap: bool| {
+            if snap || (target - *shown).abs() < 0.002 {
+                *shown = target;
+            } else {
+                *shown += (target - *shown) * k;
+                moving = true;
+            }
+        };
+        let vol = self.data.volume.unwrap_or(0.0) as f64;
+        let bri = self.data.brightness.unwrap_or(0.0) as f64;
+        if !self.levels_init && (self.data.volume.is_some() || self.data.brightness.is_some()) {
+            // the first reading is where the bars are, not something to slide to
+            self.levels_init = true;
+            (self.volume_shown, self.brightness_shown) = (vol, bri);
+        }
+        ease(&mut self.volume_shown, vol, dragging && self.dragging == Some(Action::VolumeBar));
+        ease(&mut self.brightness_shown, bri, dragging && self.dragging == Some(Action::BrightnessBar));
+        if let Some(o) = self.osd {
+            ease(&mut self.osd_shown, if o.muted { 0.0 } else { o.level as f64 }, false);
+        }
+        moving
+    }
+
     /// Advances the island to `now` (epoch ms) and says how big the surface has to be.
     pub fn tick(&mut self, now: i64, dt_ms: f64) -> Frame {
         self.now = now;
@@ -1777,8 +1824,9 @@ impl Island {
         self.settled = at_rest && self.alpha >= 1.0 && self.want == self.shown && self.want_side == self.shown_side;
         // what needs frames: motion at every vsync, an equalizer at 30 fps, things that expire a few times a second,
         // a timer twice a second, otherwise the clock once a second
+        let levels_moving = self.ease_levels(dt_ms);
         let waiting_for_hover = (self.hovering && now - self.hover_since < HOVER_INTENT_MS + 60) || now < self.hover_left + HOVER_GRACE_MS + 60;
-        let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover;
+        let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving;
         let equalizer = self.data.media.as_ref().is_some_and(|m| m.playing) && matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric);
         let expiring = snap.osd || snap.notif.is_some() || snap.timer_done || snap.power || snap.meeting || snap.rain || snap.op_flash || self.edit.is_some() || self.reply.is_some() || self.kb.is_some() || self.bar.is_some();
         let next_ms: u32 = if moving {
@@ -2597,6 +2645,55 @@ mod tests {
         assert!(worth_showing_at_home(o));
         i.data.weather = Some(forecast(T0, Some(9)));
         assert!(!worth_showing_at_home(i.rain_outlook().unwrap()), "nine hours away is not a home page matter");
+    }
+
+    #[test]
+    fn a_level_that_arrives_in_steps_slides_instead_of_jumping() {
+        let mut i = Island::new(Config::default());
+        i.data.volume = Some(0.30);
+        run(&mut i, 100);
+        assert!((i.volume_shown - 0.30).abs() < 1e-6, "the first reading is not slid to");
+        i.data.volume = Some(0.60);
+        let fr = i.tick(i.now + 8, 8.0);
+        assert!(i.volume_shown > 0.30 && i.volume_shown < 0.40, "one frame moves a little: {}", i.volume_shown);
+        assert!(fr.animating, "and frames keep coming at the display rate until it arrives");
+        let mut shown = vec![i.volume_shown];
+        for _ in 0..80 {
+            i.tick(i.now + 8, 8.0);
+            shown.push(i.volume_shown);
+        }
+        assert!(shown.windows(2).all(|w| w[1] >= w[0]), "monotonic, no overshoot");
+        assert!((*shown.last().unwrap() - 0.60).abs() < 1e-6, "it lands on the level");
+    }
+
+    #[test]
+    fn a_slider_under_the_pointer_follows_it_exactly() {
+        let mut i = Island::new(Config::default());
+        i.data.volume = Some(0.30);
+        run(&mut i, 100);
+        i.dragging = Some(Action::VolumeBar);
+        i.data.volume = Some(0.90);
+        i.tick(i.now + 8, 8.0);
+        assert!((i.volume_shown - 0.90).abs() < 1e-6, "no lag behind the finger");
+        i.dragging = None;
+        i.data.brightness = Some(0.5);
+        i.tick(i.now + 8, 8.0);
+        assert!(i.brightness_shown <= 0.5);
+    }
+
+    #[test]
+    fn the_volume_bar_starts_from_the_level_it_had() {
+        let mut i = Island::new(Config::default());
+        i.data.volume = Some(0.50);
+        run(&mut i, 100);
+        i.push(i.now, Input::Osd { kind: OsdKind::Volume, level: 0.56, muted: false });
+        assert!((i.osd_shown - 0.50).abs() < 1e-6, "it starts where the bar last was");
+        draw_frames(&mut i, 60);
+        assert!((i.osd_shown - 0.56).abs() < 0.001, "and slides to the new one: {}", i.osd_shown);
+        // muting slides to empty
+        i.push(i.now, Input::Osd { kind: OsdKind::Volume, level: 0.56, muted: true });
+        draw_frames(&mut i, 80);
+        assert!(i.osd_shown < 0.01);
     }
 
     #[test]
