@@ -20,6 +20,7 @@ pub mod audio_mixer;
 pub mod culprit;
 #[cfg(target_os = "linux")]
 pub mod netwatch;
+pub mod travel;
 #[cfg(target_os = "linux")]
 pub mod audio_route;
 pub mod windows_focus;

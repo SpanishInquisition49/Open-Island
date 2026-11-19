@@ -20,6 +20,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, _settings: std::sync::Arc
             match c {
                 Command::OpenUrl(u) if u.starts_with("http://") || u.starts_with("https://") || u.starts_with("mailto:") => open_url(&u),
                 Command::RestoreClipboard(t) => super::generic::restore_clipboard(&t),
+                Command::PlanTrip { .. } => super::travel::command(&rep2, c),
                 Command::ReconnectNetwork => {}
                 Command::PauseProcs { .. } | Command::ResumeProcs(_) | Command::QuitProcs(_) => {}
                 Command::ScanPeers => super::send::scan(rep2.clone()),

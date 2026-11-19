@@ -387,7 +387,7 @@ pub fn parse_in(text: &str, off: OffsetFn, from_ms: i64, to_ms: i64) -> Vec<Even
         let url = meeting_url(&r.url, &r.conference, &r.location, &r.description);
         let mut push = |s: i64| {
             if s < to_ms && s + len.max(1) > from_ms {
-                events.push(Event { id: format!("{}@{}", r.uid, s), title: r.summary.clone(), start_ms: s, end_ms: s + len, all_day: start.date_only, url: url.clone(), color: None, calendar: String::new() });
+                events.push(Event { id: format!("{}@{}", r.uid, s), title: r.summary.clone(), start_ms: s, end_ms: s + len, all_day: start.date_only, url: url.clone(), color: None, calendar: String::new(), location: r.location.clone() });
             }
         };
         match (&r.rrule, r.recurrence_id.is_some()) {

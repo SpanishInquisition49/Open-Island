@@ -217,7 +217,7 @@ fn main() {
         ("page-today", Box::new(|i, d| {
             let day = 1_700_000_000_000i64 / 86_400_000 * 86_400_000;
             let _ = day;
-            let ev = |t: &str, h: i64, m: i64, dur: i64, url: bool| island_core::calendar::Event { id: t.into(), title: t.into(), start_ms: NOW / 86_400_000 * 86_400_000 + (h * 60 + m) * 60_000, end_ms: NOW / 86_400_000 * 86_400_000 + (h * 60 + m + dur) * 60_000, all_day: false, url: url.then(|| "https://meet.example/x".to_string()), color: Some((90, 160, 255)), calendar: "Uni".into() };
+            let ev = |t: &str, h: i64, m: i64, dur: i64, url: bool| island_core::calendar::Event { id: t.into(), title: t.into(), start_ms: NOW / 86_400_000 * 86_400_000 + (h * 60 + m) * 60_000, end_ms: NOW / 86_400_000 * 86_400_000 + (h * 60 + m + dur) * 60_000, all_day: false, url: url.then(|| "https://meet.example/x".to_string()), color: Some((90, 160, 255)), calendar: "Uni".into(), location: String::new() };
             d.events = vec![ev("Reti di calcolatori", 8, 30, 120, false), ev("Pranzo", 12, 30, 60, false), ev("Ricevimento", 15, 0, 45, true), ev("Studio di gruppo", 17, 0, 90, false)];
             i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
         })),
@@ -229,6 +229,13 @@ fn main() {
         })),
         ("notif-code", Box::new(|i, _| {
             i.push(NOW, Input::Notification(island_ui::model::Incoming { id: 1, app: "Poste Italiane".into(), summary: "Your verification code".into(), body: "482913 is your code. Do not share it.".into(), ..Default::default() }));
+        })),
+        ("page-today-trip", Box::new(|i, d| {
+            let day = NOW / 86_400_000 * 86_400_000;
+            let ev = |t: &str, h: i64, m: i64, loc: &str| island_core::calendar::Event { id: t.into(), title: t.into(), start_ms: day + (h * 60 + m) * 60_000, end_ms: day + (h * 60 + m + 60) * 60_000, color: Some((90, 160, 255)), calendar: "Uni".into(), location: loc.into(), ..Default::default() };
+            d.events = vec![ev("Reti di calcolatori", 8, 30, "Aula 12, Polo Fibonacci, Pisa"), ev("Studio di gruppo", 17, 0, "Biblioteca, Via Santa Maria 36, Pisa")];
+            d.trips = vec![island_ui::model::TripInfo { event_id: "Studio di gruppo".into(), mode: island_core::travel::Mode::Car, trip: Some(island_core::travel::Trip { secs: 840, meters: Some(5200), leave_ms: Some(day + (16 * 60 + 41) * 60_000), transfers: None }), error: None, at_ms: NOW }];
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
         })),
         ("page-audio", Box::new(|i, d| {
             let sink = |n: &str, l: &str| island_ui::model::Sink { name: n.into(), label: l.into() };

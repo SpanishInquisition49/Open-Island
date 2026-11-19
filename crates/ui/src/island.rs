@@ -49,6 +49,11 @@ pub struct Config {
     pub meeting_lead_ms: i64,
     /// How long before an event the pill on the side reminds of it (the card is `meeting_lead_ms` before).
     pub meeting_pill_ms: i64,
+    /// Work out how to get to an event with a place (the place is sent to public map services).
+    pub travel_times: bool,
+    pub travel_mode: island_core::travel::Mode,
+    /// How much earlier than needed to leave.
+    pub travel_margin_ms: i64,
     pub meeting_alerts: bool,
     pub rain_alerts: bool,
     pub battery_alerts: bool,
@@ -92,6 +97,9 @@ impl Default for Config {
             osd_ms: 1600,
             meeting_lead_ms: 10 * 60_000,
             meeting_pill_ms: 10 * 60_000,
+            travel_times: true,
+            travel_mode: island_core::travel::Mode::Car,
+            travel_margin_ms: 5 * 60_000,
             meeting_alerts: true,
             rain_alerts: true,
             battery_alerts: true,
@@ -174,6 +182,8 @@ pub enum Action {
     NotifOpen,
     ClipRestore(usize),
     ClipPin(usize),
+    /// How to get to the next event with a place.
+    TravelMode(island_core::travel::Mode),
     /// The action of a clipboard entry (open the link, write the mail, show the place).
     ClipAct(usize),
     CopyCode(String),
@@ -397,6 +407,9 @@ pub struct Island {
     /// The program the last culprit card was about, and when.
     culprit_told: Option<(String, i64)>,
     culprit_id: u32,
+    /// Trips already asked for (event, way) and when; events already told to leave for.
+    trip_asked: std::collections::HashMap<(String, island_core::travel::Mode), i64>,
+    leave_told: std::collections::HashSet<String>,
     /// What the last network card was about, and the card's id (a click on it reconnects).
     net_seen: island_core::netstate::Health,
     net_id: u32,
@@ -515,6 +528,8 @@ impl Island {
             code_copied: None,
             culprit_told: None,
             culprit_id: 0,
+            trip_asked: Default::default(),
+            leave_told: Default::default(),
             net_seen: island_core::netstate::Health::Online,
             net_id: 0,
             next_own_id: OWN_ID_BASE,
@@ -1561,6 +1576,11 @@ impl Island {
                     return vec![Command::OpenUrl(act.target)];
                 }
             }
+            Action::TravelMode(m) => {
+                self.cfg.travel_mode = m;
+                self.trip_asked.retain(|(_, mode), _| *mode == m);
+                return vec![Command::SetOption { key: "travel_mode".into(), value: OptionValue::Text(m.name().into()) }];
+            }
             Action::ClipPin(i) => {
                 if let Some(t) = self.data.clipboard.get(i).cloned() {
                     return vec![Command::PinClipboard(t)];
@@ -1844,9 +1864,52 @@ impl Island {
         }
     }
 
+    /// The next event that has a place to go to, today or tomorrow.
+    pub(crate) fn trip_event(&self) -> Option<&calendar::Event> {
+        if !self.cfg.travel_times {
+            return None;
+        }
+        self.data
+            .events
+            .iter()
+            .filter(|e| !e.all_day && e.start_ms > self.now && e.start_ms - self.now < 24 * 3_600_000 && island_core::travel::is_physical(&e.location))
+            .min_by_key(|e| e.start_ms)
+    }
+
+    pub(crate) fn trip_info(&self, event_id: &str, mode: island_core::travel::Mode) -> Option<&TripInfo> {
+        self.data.trips.iter().find(|t| t.event_id == event_id && t.mode == mode)
+    }
+
+    /// Asks for the trip to the next event with a place when it matters (the page is open, or it is a few hours away),
+    /// and again every ten minutes (public transport changes with the hour); tells when it is time to leave.
+    fn trips(&mut self, now: i64) {
+        let Some(e) = self.trip_event().cloned() else { return };
+        let mode = self.cfg.travel_mode;
+        let wanted = self.page == Some(Page::Today) || e.start_ms - now <= 3 * 3_600_000;
+        let key = (e.id.clone(), mode);
+        if wanted && self.trip_asked.get(&key).is_none_or(|at| now - at > 600_000) {
+            self.trip_asked.insert(key, now);
+            self.pending.push(Command::PlanTrip { event_id: e.id.clone(), location: e.location.clone(), start_ms: e.start_ms, mode, margin_secs: self.cfg.travel_margin_ms / 1000 });
+        }
+        let leave = self.trip_info(&e.id, mode).and_then(|t| t.trip.as_ref()).and_then(|t| t.leave_ms.map(|l| (l, t.secs)));
+        if let Some((leave_ms, secs)) = leave {
+            if now >= leave_ms - 5 * 60_000 && !self.leave_told.contains(&e.id) {
+                self.leave_told.insert(e.id.clone());
+                let off = self.data.utc_offset_secs;
+                let late = now >= leave_ms;
+                let summary = if late { format!("Time to leave for {}", e.title) } else { format!("Leave in {} min for {}", ((leave_ms - now) as f64 / 60_000.0).ceil() as i64, e.title) };
+                let body = format!("{} · {} · starts {}", mode.name(), island_core::travel::fmt_secs(secs), crate::clock::civil(e.start_ms, off).hhmm());
+                self.next_own_id += 1;
+                let n = Incoming { id: self.next_own_id, app: "Reminder".into(), summary, body, expire_ms: Some(12_000), ..Default::default() };
+                self.push(now, Input::Notification(n));
+            }
+        }
+    }
+
     fn slow_checks(&mut self) {
         let now = self.now;
         self.update_quiet(now);
+        self.trips(now);
         self.culprit_card(now);
         self.network_card(now);
         // a device whose battery went back up may warn again next time
@@ -3913,7 +3976,7 @@ mod tests {
         let t = crate::clock::civil(T0, 0);
         let at = |h: i64| crate::clock::midnight_ms(t.year, t.month, t.day, 0) + h * 3_600_000;
         let now = at(10);
-        let ev = |title: &str, s: i64, e: i64| Event { id: title.into(), title: title.into(), start_ms: at(s), end_ms: at(e), all_day: false, url: None, color: None, calendar: "c".into() };
+        let ev = |title: &str, s: i64, e: i64| Event { id: title.into(), title: title.into(), start_ms: at(s), end_ms: at(e), all_day: false, url: None, color: None, calendar: "c".into(), location: String::new() };
         i.data.events = vec![ev("early", 1, 2), ev("later", 16, 17)];
         i.reminders = vec![Reminder { due_ms: at(14), text: "call".into() }];
         i.push(now, Input::OpenPage(Page::Today));
@@ -3951,7 +4014,7 @@ mod tests {
     #[test]
     fn the_pill_reminds_earlier_than_the_card_when_asked() {
         let mut i = Island::new(Config { meeting_lead_ms: 10 * 60_000, meeting_pill_ms: 45 * 60_000, ..Default::default() });
-        i.data.events = vec![Event { id: "e".into(), title: "Seminar".into(), start_ms: T0 + 30 * 60_000, end_ms: T0 + 60 * 60_000, all_day: false, url: None, color: None, calendar: "c".into() }];
+        i.data.events = vec![Event { id: "e".into(), title: "Seminar".into(), start_ms: T0 + 30 * 60_000, end_ms: T0 + 60 * 60_000, all_day: false, url: None, color: None, calendar: "c".into(), location: String::new() }];
         i.push(T0, Input::OpenKeyboard(None));
         i.now = T0;
         assert!(i.soon().is_some(), "30 min away: inside the 45 min of the pill");
@@ -4037,6 +4100,39 @@ mod tests {
         assert_eq!(i.icon_count(false), 0, "no warning icon once it works");
         i.data.net = Health::RouterDown;
         assert_eq!(i.icon_count(false), 1, "a warning icon while it does not");
+    }
+
+    #[test]
+    fn an_event_with_a_place_gets_a_trip_and_a_time_to_leave() {
+        use island_core::travel::{Mode, Trip};
+        let mut i = Island::new(Config::default());
+        let ev = |id: &str, loc: &str, start: i64| Event { id: id.into(), title: "Seminar".into(), start_ms: start, end_ms: start + 3_600_000, location: loc.into(), ..Default::default() };
+        i.data.events = vec![ev("call", "https://teams.microsoft.com/x", T0 + 3 * 3_600_000), ev("far", "Polo Fibonacci, Pisa", T0 + 5 * 3_600_000), ev("near", "Largo Pontecorvo 3, Pisa", T0 + 90 * 60_000)];
+        i.push(T0, Input::OpenPage(Page::Today));
+        i.now = T0;
+        assert_eq!(i.trip_event().map(|e| e.id.as_str()), Some("near"), "a link is no place, and the nearest comes first");
+        run(&mut i, 1000);
+        let cmds = i.take_commands();
+        assert!(cmds.iter().any(|c| matches!(c, Command::PlanTrip { event_id, mode: Mode::Car, margin_secs: 300, .. } if event_id == "near")), "asked for the way by car");
+        run(&mut i, 1000);
+        assert!(!i.take_commands().iter().any(|c| matches!(c, Command::PlanTrip { .. })), "not asked again within ten minutes");
+        i.push(i.now, Input::OpenPage(Page::Today));
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::TravelMode(Mode::Transit)));
+        assert!(i.take_commands().contains(&Command::SetOption { key: "travel_mode".into(), value: OptionValue::Text("transit".into()) }));
+        run(&mut i, 1000);
+        assert!(i.take_commands().iter().any(|c| matches!(c, Command::PlanTrip { mode: Mode::Transit, .. })), "the other way is asked for at once");
+        // the way is known: leave in two minutes
+        i.data.trips = vec![TripInfo { event_id: "near".into(), mode: Mode::Transit, trip: Some(Trip { secs: 1500, meters: None, leave_ms: Some(i.now + 2 * 60_000), transfers: Some(1) }), error: None, at_ms: i.now }];
+        run(&mut i, 1000);
+        let card = i.notif.clone().expect("a card");
+        assert_eq!(card.summary, "Leave in 2 min for Seminar");
+        assert!(card.body.starts_with("transit · 25 min"));
+        i.notif = None;
+        run(&mut i, 3000);
+        assert!(i.notif.is_none(), "told once");
+        i.cfg.travel_times = false;
+        assert!(i.trip_event().is_none(), "switched off");
     }
 
     #[test]

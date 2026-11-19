@@ -22,4 +22,5 @@ pub mod spectrum;
 pub mod spring;
 pub mod system;
 pub mod sysmon;
+pub mod travel;
 pub mod weather;

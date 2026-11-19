@@ -90,6 +90,8 @@ pub struct Event {
     pub color: Option<(u8, u8, u8)>,
     /// The name of the calendar the event belongs to.
     pub calendar: String,
+    /// Where it takes place (the LOCATION of the calendar entry; may be a video call link).
+    pub location: String,
 }
 
 /// Events overlapping [start, end), all-day ones first, then by start time.

@@ -55,7 +55,7 @@ mod tests {
     const MIN: i64 = 60_000;
 
     fn ev(title: &str, start: i64, end: i64, all_day: bool) -> Event {
-        Event { id: title.into(), title: title.into(), start_ms: start, end_ms: end, all_day, url: Some(String::new()), color: None, calendar: "c".into() }
+        Event { id: title.into(), title: title.into(), start_ms: start, end_ms: end, all_day, url: Some(String::new()), color: None, calendar: "c".into(), location: String::new() }
     }
 
     #[test]

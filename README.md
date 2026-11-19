@@ -320,3 +320,18 @@ not answering" (connected, but the router is silent), "No internet" (the router 
 needed" (a captive portal). A click on the card switches the Wi-Fi radio (or the wired device) off and on again. A red Wi-Fi
 icon sits in the pill while it is broken, and a card says "Back online" afterwards. The network row of the System page adds
 "VPN" when a tunnel interface (wireguard, tailscale, tun, ppp...) is up.
+
+## Getting to an event
+
+An event with a place (not a link or a video call) gets a row on the Today page: three buttons, car, on foot and public
+transport (the choice is `travel_mode`, also `open-island msg set travel_mode transit`), and next to them how long it takes and
+when to leave ("14 min · leave 17:41"). A card says "Leave in 5 min for ..." once, five minutes before the time to leave, and
+it gets through the quiet mode like a reminder. The island asks for the way when the page is open or the event is within three
+hours, and again every ten minutes.
+
+Where the data comes from, all public services without a key: the place is found by Nominatim (OpenStreetMap), the road trip is
+timed by the OSRM demo server (no traffic), and the walk and the public transport (buses, trains, trams, with the departure that
+arrives in time) by Transitous. It starts from the location set for the weather. What leaves the machine: the place of the
+event and the two coordinates. Switch it off with `travel_times` (Options > Alerts > "Travel times"); `travel_margin_minutes`
+(default 5) is how much earlier than needed you are told. A short trip has no bus worth taking: transit then shows the walk.
+The OSRM demo server only knows roads, so on foot comes from Transitous (or a straight-line estimate when it does not answer).

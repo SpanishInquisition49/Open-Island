@@ -253,6 +253,13 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     u.quiet_on_mic = b("quiet_on_mic", u.quiet_on_mic);
     u.away_recap = b("away_recap", u.away_recap);
     u.culprit_alerts = b("culprit_alerts", u.culprit_alerts);
+    u.travel_times = b("travel_times", u.travel_times);
+    if let Some(m) = v.get("travel_mode").and_then(|x| x.as_str()).and_then(island_core::travel::Mode::parse) {
+        u.travel_mode = m;
+    }
+    if let Some(m) = v.get("travel_margin_minutes").and_then(|x| x.as_i64()).filter(|m| (0..=30).contains(m)) {
+        u.travel_margin_ms = m * 60_000;
+    }
     u.quiet_on_screen_share = b("quiet_on_screen_share", u.quiet_on_screen_share);
     u.battery_alerts = b("battery_alerts", u.battery_alerts);
     u.media_auto_expand = b("media_auto_expand", u.media_auto_expand);
@@ -302,11 +309,11 @@ pub fn parse(text: &str) -> Result<Settings, String> {
 /// The options of the options page: the keys that are on or off.
 pub const BOOL_OPTIONS: &[&str] = &[
     "show_notifications", "show_osd", "media_auto_expand", "timer_sound", "battery_alerts", "weather", "rain_alerts", "meeting_alerts", "lyrics", "lyrics_in_pill", "art_tint", "status_icons",
-    "clipboard_history", "clock_in_pill", "hide_on_fullscreen", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "away_recap", "culprit_alerts", "quiet_on_screen_share",
+    "clipboard_history", "clock_in_pill", "hide_on_fullscreen", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "away_recap", "culprit_alerts", "travel_times", "quiet_on_screen_share",
 ];
 
 /// The numeric options: key, smallest, largest, and whether it is a whole number.
-pub const NUM_OPTIONS: &[(&str, f64, f64, bool)] = &[("notification_seconds", 2.0, 30.0, true), ("osd_seconds", 0.5, 5.0, false), ("low_battery_percent", 5.0, 50.0, true), ("meeting_lead_minutes", 1.0, 60.0, true), ("meeting_pill_minutes", 1.0, 120.0, true)];
+pub const NUM_OPTIONS: &[(&str, f64, f64, bool)] = &[("notification_seconds", 2.0, 30.0, true), ("osd_seconds", 0.5, 5.0, false), ("low_battery_percent", 5.0, 50.0, true), ("meeting_lead_minutes", 1.0, 60.0, true), ("meeting_pill_minutes", 1.0, 120.0, true), ("travel_margin_minutes", 0.0, 30.0, true)];
 
 /// Adds a notification rule (once): `hide` drops the notifications, otherwise they only lose their sound.
 pub fn add_filter(o: &mut serde_json::Map<String, serde_json::Value>, app: &str, content: &str, hide: bool) {
@@ -352,6 +359,10 @@ pub fn set_option(o: &mut serde_json::Map<String, serde_json::Value>, key: &str,
             } else {
                 o.insert("timer_presets".into(), json!(list));
             }
+        }
+        Text(t) if key == "travel_mode" => {
+            let m = island_core::travel::Mode::parse(t).ok_or("travel_mode is car, walk or transit")?;
+            o.insert("travel_mode".into(), json!(m.name()));
         }
         Text(t) if key == "screen" => {
             let t = t.trim();
@@ -488,6 +499,9 @@ mod tests {
         assert_eq!(s.ui.timer_presets, vec![300, 600]);
         assert_eq!(s.ui.meeting_lead_ms, 15 * 60_000);
         assert_eq!(s.ui.meeting_pill_ms, UiConfig::default().meeting_pill_ms);
+        let t = parse(r#"{"travel_mode":"Transit","travel_margin_minutes":10,"travel_times":false}"#).unwrap();
+        assert_eq!((t.ui.travel_mode, t.ui.travel_margin_ms, t.ui.travel_times), (island_core::travel::Mode::Transit, 600_000, false));
+        assert_eq!(parse(r#"{"travel_mode":"rocket"}"#).unwrap().ui.travel_mode, island_core::travel::Mode::Car);
         assert_eq!(parse(r#"{"meeting_pill_minutes":45}"#).unwrap().ui.meeting_pill_ms, 45 * 60_000);
         assert_eq!(parse(r#"{"meeting_pill_minutes":0}"#).unwrap().ui.meeting_pill_ms, UiConfig::default().meeting_pill_ms);
         assert!(!s.ui.lyrics);

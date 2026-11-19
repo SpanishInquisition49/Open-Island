@@ -1558,6 +1558,34 @@ impl Island {
         }
     }
 
+    /// How to get to the next event with a place: the three ways, and the time for the chosen one.
+    fn trip_row(&self, p: P, w: f64, y: f64) {
+        use island_core::travel::{self, Mode};
+        let Some(e) = self.trip_event() else { return };
+        p.stagger(9);
+        let off = self.data.utc_offset_secs;
+        for (n, mode) in [Mode::Car, Mode::Walk, Mode::Transit].into_iter().enumerate() {
+            let r = rect(14.0 + n as f64 * 32.0, y, 28.0, 28.0);
+            let on = mode == self.cfg.travel_mode;
+            p.rrect(r, 14.0, if on { theme::ACCENT } else if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
+            p.icon(mode.icon(), r.center().x, r.center().y, 15.0, if on { theme::ON_ACCENT } else { theme::FG });
+            p.hit(r, Action::TravelMode(mode));
+        }
+        let x = 14.0 + 3.0 * 32.0 + 8.0;
+        let text = match self.trip_info(&e.id, self.cfg.travel_mode) {
+            None => "Looking up the way…".to_string(),
+            Some(t) => match (&t.trip, &t.error) {
+                (Some(trip), _) => {
+                    let leave = trip.leave_ms.map(|l| format!(" · leave {}", crate::clock::civil(l, off).hhmm())).unwrap_or_default();
+                    format!("{}{leave} · {}", travel::fmt_secs(trip.secs), e.title)
+                }
+                (None, Some(err)) => err.clone(),
+                _ => String::new(),
+            },
+        };
+        p.text(&text, x, y + 14.0, 12.0, REG, theme::FG, Align::Left, (w - x - 14.0) as f32);
+    }
+
     /// Rows the today page lists at most (the now line is one more).
     const TODAY_ROWS: usize = 7;
 
@@ -1578,7 +1606,7 @@ impl Island {
 
     pub(crate) fn today_height(&self) -> f64 {
         let (items, _, _) = self.today_view();
-        14.0 + 34.0 + 6.0 + if items.is_empty() { 40.0 } else { items.len() as f64 * 28.0 + 18.0 } + 10.0
+        14.0 + 34.0 + 6.0 + if items.is_empty() { 40.0 } else { items.len() as f64 * 28.0 + 18.0 } + if self.trip_event().is_some() { 38.0 } else { 0.0 } + 10.0
     }
 
     fn face_today(&self, p: P, w: f64, _h: f64) {
@@ -1635,8 +1663,10 @@ impl Island {
         }
         if now_at >= items.len() {
             line(p, y);
+            y += 18.0;
         }
         let _ = skipped;
+        self.trip_row(p, w, y + 6.0);
     }
 
     /// Rows of each section of the audio page.

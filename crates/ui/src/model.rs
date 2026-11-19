@@ -90,6 +90,17 @@ pub struct Sink {
     pub label: String,
 }
 
+/// What it takes to get to an event by one way of travelling.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TripInfo {
+    pub event_id: String,
+    pub mode: island_core::travel::Mode,
+    pub trip: Option<island_core::travel::Trip>,
+    /// Why there is no trip.
+    pub error: Option<String>,
+    pub at_ms: i64,
+}
+
 /// A program that is hogging the machine.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Culprit {
@@ -225,6 +236,8 @@ pub struct Data {
     /// Whether the network works, and where it breaks when it does not; whether a VPN is up.
     pub net: island_core::netstate::Health,
     pub vpn: bool,
+    /// Trips to events with a place, as the service worked them out.
+    pub trips: Vec<TripInfo>,
     pub system: Option<SystemStats>,
     pub config: ConfigView,
     /// None when there is no focus script on this machine.
@@ -410,6 +423,8 @@ pub enum Command {
     QuitProcs(Vec<u32>),
     /// Switch the connection off and on again.
     ReconnectNetwork,
+    /// Work out how to get to an event that arrives by `start_ms` (the place is sent to public map services).
+    PlanTrip { event_id: String, location: String, start_ms: i64, mode: island_core::travel::Mode, margin_secs: i64 },
     /// Send these files (paths) to a device.
     SendFiles { peer: island_core::localsend::Peer, paths: Vec<String> },
     /// Re-read the quick-settings state (the page was just opened).

@@ -31,6 +31,7 @@ pub fn toggles(tab: usize) -> &'static [(&'static str, &'static str)] {
             ("quiet_on_screen_share", "Quiet when sharing"),
             ("away_recap", "Recap when back"),
             ("culprit_alerts", "Heavy program alerts"),
+            ("travel_times", "Travel times"),
         ],
         2 => &[("media_auto_expand", "Open on a new track"), ("lyrics", "Synced lyrics"), ("lyrics_in_pill", "Lyrics in the pill"), ("art_tint", "Tint from the cover")],
         _ => &[],
@@ -66,6 +67,8 @@ pub fn describe(key: &str) -> &'static str {
         "low_battery_percent" => "The battery level that gives the low battery warning",
         "meeting_lead_minutes" => "How long before an event its card appears",
         "meeting_pill_minutes" => "How long before an event the pill on the side appears",
+        "travel_margin_minutes" => "How much earlier than needed to be told to leave for an event",
+        "travel_times" => "Time the way to events with a place (sends the place to map services)",
         "timer_presets" => "The quick timers on the timer page, such as 5m, 10m, 1h30m",
         "screen" => "The screen the island sits on (Wayland): a name like eDP-1, or empty",
         _ => "",
@@ -86,6 +89,7 @@ pub fn steppers(tab: usize) -> &'static [Stepper] {
             ("low_battery_percent", "Low battery", "%", 1.0, 5.0, 50.0),
             ("meeting_lead_minutes", "Event card", "min", 1.0, 1.0, 60.0),
             ("meeting_pill_minutes", "Event pill", "min", 1.0, 1.0, 120.0),
+            ("travel_margin_minutes", "Leave early", "min", 1.0, 0.0, 30.0),
         ],
         _ => &[],
     }
@@ -118,6 +122,7 @@ pub fn get_bool(c: &Config, key: &str) -> bool {
         "quiet_on_mic" => c.quiet_on_mic,
         "away_recap" => c.away_recap,
         "culprit_alerts" => c.culprit_alerts,
+        "travel_times" => c.travel_times,
         "quiet_on_screen_share" => c.quiet_on_screen_share,
         _ => false,
     }
@@ -145,6 +150,7 @@ pub fn set_bool(c: &mut Config, key: &str, on: bool) {
         "quiet_on_mic" => c.quiet_on_mic = on,
         "away_recap" => c.away_recap = on,
         "culprit_alerts" => c.culprit_alerts = on,
+        "travel_times" => c.travel_times = on,
         "quiet_on_screen_share" => c.quiet_on_screen_share = on,
         _ => {}
     }
@@ -157,6 +163,7 @@ pub fn get_num(c: &Config, key: &str) -> f64 {
         "low_battery_percent" => c.low_battery as f64,
         "meeting_lead_minutes" => c.meeting_lead_ms as f64 / 60_000.0,
         "meeting_pill_minutes" => c.meeting_pill_ms as f64 / 60_000.0,
+        "travel_margin_minutes" => c.travel_margin_ms as f64 / 60_000.0,
         _ => 0.0,
     }
 }
@@ -168,6 +175,7 @@ pub fn set_num(c: &mut Config, key: &str, v: f64) {
         "low_battery_percent" => c.low_battery = v as f32,
         "meeting_lead_minutes" => c.meeting_lead_ms = (v * 60_000.0).round() as i64,
         "meeting_pill_minutes" => c.meeting_pill_ms = (v * 60_000.0).round() as i64,
+        "travel_margin_minutes" => c.travel_margin_ms = (v * 60_000.0).round() as i64,
         _ => {}
     }
 }
@@ -218,10 +226,10 @@ mod tests {
     fn every_option_here_is_one_the_platform_layer_can_write() {
         // the keys of the page and the keys the configuration accepts are the same list
         let page: std::collections::BTreeSet<&str> = (0..TABS.len()).flat_map(|t| toggles(t).iter().map(|(k, _)| *k)).collect();
-        assert_eq!(page.len(), 21, "no option on two tabs");
+        assert_eq!(page.len(), 22, "no option on two tabs");
         assert_eq!(TABS[RULES_TAB], "Rules");
         let nums: Vec<&str> = (0..TABS.len()).flat_map(|t| steppers(t).iter().map(|s| s.0)).collect();
-        assert_eq!(nums, ["notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes"]);
+        assert_eq!(nums, ["notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes", "travel_margin_minutes"]);
     }
 
     #[test]
