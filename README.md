@@ -23,7 +23,7 @@ crates/app    window backends (Wayland layer-shell, winit), the OS services, the
 | clock, timers, Pomodoro, stopwatch, control socket, `notify`, `progress run`, `autostart` | yes | yes | yes | yes |
 | weather, calendars (feeds, iCloud / CalDAV), lyrics | yes | yes | yes | yes |
 | media with cover art, several players | MPRIS | SMTC (built) | **not yet** | MPRIS |
-| notifications | the island is the daemon (replaces mako, dunst, Noctalia's) | **only `open-island notify`** (Windows has no daemon to replace and gives other apps' toasts to nobody) | **only `open-island notify`** | the island is the daemon |
+| notifications | the island is the daemon (replaces mako, dunst, Noctalia's) | other apps' toasts are read from Windows' notification database (a plain program cannot be handed them), plus `open-island notify` | **only `open-island notify`** | the island is the daemon |
 | volume card, volume / mute | wpctl, pactl | Core Audio (built) | **not yet** | yes |
 | brightness, Wi-Fi / Bluetooth switches, power profile | brightnessctl, nmcli, bluetoothctl, TLP / powerprofilesctl | **not yet** (the chips hide) | **not yet** | yes |
 | battery, system page | sysfs, /proc, nvidia-smi | sysinfo + starship-battery (built) | the same (built) | yes |
@@ -211,7 +211,7 @@ shows that line in place of today's high and low. Needs the latitude and longitu
 `just build` asks for the target (Linux, Windows MSVC, Windows GNU, macOS check) and leaves the result in `dist/<target>/`;
 `just build windows` skips the menu, `just windows-zip` makes `dist/open-island-windows-x64.zip` to send to someone.
 Cross-building for Windows from Linux needs `cargo install cargo-xwin` (MSVC, recommended) or mingw-w64 (GNU).
-`just check-all` runs the tests, clippy and the Windows and macOS type-checks.
+`just check-all` runs the tests, clippy and the Windows (cargo-xwin) and macOS type-checks.
 
 On Windows (and anywhere the island is a plain window) it hides while a maximized window is in front, and comes back when
 the pointer touches the top edge near the middle of the screen; a notification, a timer or the volume still show over it.

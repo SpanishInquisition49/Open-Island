@@ -25,6 +25,7 @@ pub fn start(rep: Reporter) {
     volume(rep.clone(), vrx);
     privacy(rep.clone());
     fullscreen(rep.clone());
+    toasts(rep.clone());
     brightness(rep.clone());
     keep_awake(rep, krx);
 }
@@ -203,6 +204,77 @@ fn foreground_maximized_on_primary() -> bool {
 /// Windows that are the desktop or the shell, never an application covering the screen.
 pub fn is_shell_class(class: &str) -> bool {
     matches!(class, "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "NotifyIconOverflowWindow" | "TopLevelWindowForOverflowXamlIsland" | "XamlExplorerHostIslandWindow")
+}
+
+// ---- other applications' notifications ---------------------------------------------------------------
+
+/// The database where Windows keeps the toasts of every application (what the notification centre lists).
+pub fn notification_db() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA")?;
+    let p = std::path::Path::new(&base).join(r"Microsoft\Windows\Notifications\wpndatabase.db");
+    p.is_file().then_some(p)
+}
+
+/// Windows has no way for a plain program to be handed other applications' toasts (the listener API needs a
+/// packaged app), so the island reads the database Windows keeps them in: a copy of it every second and a half
+/// while it changes, and every toast that is new since the last look is shown as a notification. The Windows
+/// banner still shows as well; turning banners off for an application (the toast still goes to the centre)
+/// leaves the island as the only one.
+fn toasts(rep: Reporter) {
+    use island_ui::model::{Incoming, Input};
+    use rusqlite::Connection;
+    std::thread::spawn(move || {
+        let Some(db) = notification_db() else {
+            log::warn!("no notification database: other applications' notifications will not show");
+            return;
+        };
+        let tmp = std::env::temp_dir().join("open-island-wpn");
+        let _ = std::fs::create_dir_all(&tmp);
+        let stamp = |ext: &str| {
+            let mut p = db.clone().into_os_string();
+            p.push(ext);
+            std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok()))
+        };
+        let (mut seen_stamp, mut last_id): (Option<_>, Option<i64>) = (None, None);
+        loop {
+            std::thread::sleep(Duration::from_millis(1500));
+            let now_stamp = (stamp(""), stamp("-wal"));
+            if Some(&now_stamp) == seen_stamp.as_ref() {
+                continue;
+            }
+            // read a copy: Windows keeps the original open
+            for ext in ["", "-wal", "-shm"] {
+                let (mut from, mut to) = (db.clone().into_os_string(), tmp.join("wpndatabase.db").into_os_string());
+                from.push(ext);
+                to.push(ext);
+                if std::fs::copy(&from, &to).is_err() && ext.is_empty() {
+                    continue;
+                }
+            }
+            let Ok(conn) = Connection::open(tmp.join("wpndatabase.db")) else { continue };
+            let Ok(max) = conn.query_row("SELECT COALESCE(MAX(Id), 0) FROM Notification", [], |r| r.get::<_, i64>(0)) else { continue };
+            seen_stamp = Some(now_stamp);
+            let Some(after) = last_id else {
+                last_id = Some(max); // what is already there is old news
+                log::info!("watching the notification database (last toast {max})");
+                continue;
+            };
+            if max <= after {
+                last_id = Some(max); // the database was cleared
+                continue;
+            }
+            let Ok(mut q) = conn.prepare("SELECT n.Id, n.Payload, COALESCE(h.PrimaryId, '') FROM Notification n LEFT JOIN NotificationHandler h ON n.HandlerId = h.RecordId WHERE n.Id > ?1 AND n.Type = 'toast' ORDER BY n.Id LIMIT 20") else { continue };
+            let rows: Vec<(i64, Vec<u8>, String)> = q.query_map([after], |r| Ok((r.get(0)?, r.get::<_, Vec<u8>>(1).unwrap_or_default(), r.get(2)?))).map(|it| it.flatten().collect()).unwrap_or_default();
+            last_id = Some(max);
+            for (id, payload, aumid) in rows {
+                let xml = super::parse::decode_payload(&payload);
+                let Some(t) = super::parse::parse_toast(&xml) else { continue };
+                let app = t.attribution.clone().filter(|_| matches!(super::parse::app_name_from_aumid(&aumid).as_str(), "Chrome" | "Edge" | "Firefox")).unwrap_or_else(|| super::parse::app_name_from_aumid(&aumid));
+                let image = t.image.as_deref().and_then(|p| std::fs::read(p).ok()).and_then(|b| super::art::decode(&b));
+                rep.input(Input::Notification(Incoming { id: 4_000_000 + (id % 1_000_000) as u32, app, summary: t.title, body: t.body, image, desktop_entry: aumid, ..Default::default() }));
+            }
+        }
+    });
 }
 
 // ---- privacy ------------------------------------------------------------------------------------------

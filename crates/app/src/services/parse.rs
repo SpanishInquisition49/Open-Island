@@ -45,9 +45,119 @@ pub fn win_brightness(text: &str) -> Option<f32> {
     (0.0..=100.0).contains(&v).then_some(v / 100.0)
 }
 
+/// What a Windows toast says (the XML the notification database keeps).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Toast {
+    pub title: String,
+    pub body: String,
+    /// The line some senders add to say where it comes from (browsers put the site there).
+    pub attribution: Option<String>,
+    /// A local file with the picture, when the toast names one.
+    pub image: Option<String>,
+}
+
+/// `<toast><visual><binding template="ToastGeneric"><text>Title</text><text>Body</text>...`
+pub fn parse_toast(xml: &str) -> Option<Toast> {
+    let doc = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}').trim()).ok()?;
+    let binding = doc.descendants().find(|n| n.has_tag_name("binding"))?;
+    let (mut texts, mut attribution) = (vec![], None);
+    for t in binding.children().filter(|n| n.has_tag_name("text")) {
+        let s = t.text().unwrap_or("").trim().to_string();
+        if t.attribute("placement") == Some("attribution") {
+            attribution = Some(s).filter(|s| !s.is_empty());
+        } else if !s.is_empty() {
+            texts.push(s);
+        }
+    }
+    if texts.is_empty() {
+        return None;
+    }
+    let title = texts.remove(0);
+    let image = binding
+        .children()
+        .filter(|n| n.has_tag_name("image"))
+        .find(|n| n.attribute("placement") == Some("appLogoOverride") || n.attribute("placement").is_none())
+        .and_then(|n| n.attribute("src"))
+        .map(|s| s.strip_prefix("file:///").unwrap_or(s).replace('/', "\\"))
+        .filter(|s| !s.starts_with("http"));
+    Some(Toast { title, body: texts.join("\n"), attribution, image })
+}
+
+/// The payload column: UTF-8 XML, or UTF-16 when a sender stored it that way.
+pub fn decode_payload(bytes: &[u8]) -> String {
+    if bytes.len() >= 2 && (bytes[..2] == [0xff, 0xfe] || bytes.iter().skip(1).step_by(2).take(8).all(|b| *b == 0)) {
+        let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
+        return String::from_utf16_lossy(&units).trim_start_matches('\u{feff}').to_string();
+    }
+    String::from_utf8_lossy(bytes).trim_start_matches('\u{feff}').to_string()
+}
+
+/// A nicer name for an application user model id (`Chrome`, `MSEdge`, `Microsoft.WindowsStore_8wekyb3d8bbwe!App`).
+pub fn app_name_from_aumid(id: &str) -> String {
+    let id = id.trim();
+    match id.to_ascii_lowercase().as_str() {
+        "chrome" | "google chrome" => return "Chrome".into(),
+        "msedge" | "microsoft edge" => return "Edge".into(),
+        "firefox" | "mozilla firefox" => return "Firefox".into(),
+        _ => {}
+    }
+    let tail = id.rsplit('!').next().unwrap_or(id);
+    let name = tail.rsplit('.').next().unwrap_or(tail);
+    let name = name.split('_').next().unwrap_or(name);
+    if name.is_empty() { id.to_string() } else { name.to_string() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_a_toast() {
+        let xml = r#"<toast launch="x"><visual><binding template="ToastGeneric"><image placement="appLogoOverride" src="file:///C:/Users/a/AppData/Local/Temp/icon.png"/><text>Anna</text><text>Ci vediamo alle 18?</text><text placement="attribution">web.whatsapp.com</text></binding></visual></toast>"#;
+        let t = parse_toast(xml).unwrap();
+        assert_eq!((t.title.as_str(), t.body.as_str(), t.attribution.as_deref()), ("Anna", "Ci vediamo alle 18?", Some("web.whatsapp.com")));
+        assert_eq!(t.image.as_deref(), Some("C:\\Users\\a\\AppData\\Local\\Temp\\icon.png"));
+    }
+
+    #[test]
+    fn a_toast_with_one_text_or_several() {
+        let one = parse_toast(r#"<toast><visual><binding template="ToastGeneric"><text>Backup done</text></binding></visual></toast>"#).unwrap();
+        assert_eq!((one.title.as_str(), one.body.as_str(), one.attribution), ("Backup done", "", None));
+        let many = parse_toast(r#"<toast><visual><binding template="ToastGeneric"><text>T</text><text>line 1</text><text>line 2</text></binding></visual></toast>"#).unwrap();
+        assert_eq!(many.body, "line 1\nline 2");
+        let entities = parse_toast(r#"<toast><visual><binding><text>A &amp; B</text><text>&lt;ok&gt;</text></binding></visual></toast>"#).unwrap();
+        assert_eq!((entities.title.as_str(), entities.body.as_str()), ("A & B", "<ok>"));
+    }
+
+    #[test]
+    fn not_a_toast() {
+        assert!(parse_toast("").is_none());
+        assert!(parse_toast("not xml").is_none());
+        assert!(parse_toast("<toast><visual><binding></binding></visual></toast>").is_none(), "no text");
+        assert!(parse_toast(r#"<toast><visual><binding><image src="http://x/y.png"/><text>T</text></binding></visual></toast>"#).unwrap().image.is_none(), "web pictures are not fetched");
+        assert!(parse_toast("\u{feff}<toast><visual><binding><text>BOM</text></binding></visual></toast>").is_some(), "a byte order mark is fine");
+    }
+
+    #[test]
+    fn decodes_both_encodings_of_the_payload() {
+        assert_eq!(decode_payload(b"<toast/>"), "<toast/>");
+        let utf16: Vec<u8> = "<toast/>".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        assert_eq!(decode_payload(&utf16), "<toast/>");
+        let with_bom: Vec<u8> = [0xff, 0xfe].into_iter().chain(utf16.iter().copied()).collect();
+        assert_eq!(decode_payload(&with_bom), "<toast/>");
+        assert_eq!(decode_payload(b""), "");
+    }
+
+    #[test]
+    fn names_an_app_from_its_id() {
+        assert_eq!(app_name_from_aumid("Chrome"), "Chrome");
+        assert_eq!(app_name_from_aumid("MSEdge"), "Edge");
+        assert_eq!(app_name_from_aumid("Microsoft.WindowsStore_8wekyb3d8bbwe!App"), "App");
+        assert_eq!(app_name_from_aumid("com.squirrel.Telegram.Desktop"), "Desktop");
+        assert_eq!(app_name_from_aumid("308046B0AF4A39CB"), "308046B0AF4A39CB");
+        assert_eq!(app_name_from_aumid(""), "");
+    }
+
 
     #[test]
     fn reads_the_macos_volume() {

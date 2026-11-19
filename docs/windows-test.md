@@ -33,3 +33,10 @@ Smoothness and the edge: on Windows the island draws through DirectX 12 into a t
 `$env:OPEN_ISLAND_OPAQUE=1` to use the old cut-to-shape way and tell me which of the two worked. With a maximized
 window in front the island hides; moving the pointer to the top edge, around the middle of the screen, brings it
 back, and it goes again a moment after the pointer leaves. A notification, the volume or a timer still show.
+
+Notifications from other applications (the browser, Telegram...): Windows will not hand them to a plain program, so the island
+reads the database where Windows keeps them (`%LOCALAPPDATA%\Microsoft\Windows\Notifications\wpndatabase.db`) every second
+and a half and shows every new toast. `open-island doctor` says whether it found the file; the log says "watching the
+notification database". Test: a site's notification in Chrome/Edge/Firefox, `Win+N` shows the same one. The Windows banner
+appears as well; Settings > System > Notifications > (the app) > "Show notification banners" off leaves only the island.
+This reads an undocumented file, so it can stop working with a Windows update.

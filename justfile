@@ -91,7 +91,7 @@ test:
 check-all:
     cargo test --workspace
     cargo clippy --workspace --all-targets -- -D warnings
-    cargo check --target x86_64-pc-windows-msvc -p open-island
+    cargo xwin check --target x86_64-pc-windows-msvc -p open-island
     cargo check --target aarch64-apple-darwin -p open-island
 
 # run the island from the source tree

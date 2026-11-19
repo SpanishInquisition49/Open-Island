@@ -81,6 +81,14 @@ pub fn run() {
     }
     #[cfg(target_os = "linux")]
     notification_owner();
+    #[cfg(windows)]
+    {
+        println!("\nNotifications");
+        match crate::services::windows::notification_db() {
+            Some(p) => println!("  ok      other applications' notifications are read from {}", p.display()),
+            None => println!("  missing the Windows notification database was not found: only `open-island notify` will show"),
+        }
+    }
 }
 
 fn gpu_name() -> Option<String> {
