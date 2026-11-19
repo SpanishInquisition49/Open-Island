@@ -92,11 +92,15 @@ impl Shell {
             log::error!("{e}");
         }
         self.last_redraw = Instant::now();
+        // cut the window to the island's outline before it is shown, so no rectangle flashes
+        self.cut_to_shape(&window);
         // under a fullscreen window the island hides (the platform service says when)
         if self.app.fullscreen != self.hidden {
             self.hidden = self.app.fullscreen;
+            log::info!("{} the island (fullscreen window: {})", if self.hidden { "hiding" } else { "showing" }, self.app.fullscreen);
             window.set_visible(!self.hidden);
         } else if !self.hidden && !window.is_visible().unwrap_or(true) {
+            log::info!("showing the island");
             window.set_visible(true);
         }
         // a text field needs the keyboard: ask for the focus when one opens
@@ -105,7 +109,6 @@ impl Shell {
             window.focus_window();
         }
         self.keyboard_on = kb;
-        self.cut_to_shape(&window);
     }
 
     /// Windows (and any platform without a transparent surface): cut the window to the island's outline.
@@ -169,6 +172,13 @@ impl ApplicationHandler<Wake> for Shell {
         self.surface_logical = (size.width as f64 / scale, size.height as f64 / scale);
         self.window = Some(window.clone());
         self.place(&window);
+        log::info!("window created: {}x{} physical px, scale {scale}", size.width, size.height);
+        // The window starts hidden and Windows sends no redraw to a hidden window, so the first frame is drawn
+        // here (it shows the window once it has something on it) rather than waited for.
+        self.frame(el);
+        if !self.hidden {
+            window.set_visible(true); // whatever is_visible() says
+        }
         window.request_redraw();
     }
 

@@ -23,3 +23,7 @@ MSVC build tools needed) or take the `open-island.exe` someone built for you.
 
 Known gaps on Windows: Wi-Fi and Bluetooth switches, night light, going to the app behind a notification (there are
 no desktop notifications from other apps to click anyway), the audio equalizer (it shows a plain animation).
+
+If nothing appears: run it from a terminal (PowerShell) as `$env:RUST_LOG="debug"; .\open-island.exe` and send the output;
+the lines "window created", "showing the island" and "hiding the island (fullscreen window: ...)" say how far it got. Windows
+surfaces are opaque, so the line "the window surface is opaque" is normal: the window is cut to the island's shape.

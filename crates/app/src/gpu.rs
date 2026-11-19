@@ -56,6 +56,7 @@ impl Gpu {
                 surface.config.alpha_mode = m;
                 self.ctx.configure_surface(&surface);
             }
+            None if cfg!(target_os = "windows") => log::info!("the window surface is opaque (the usual case on Windows): the window is cut to the island's shape instead"),
             None => log::warn!("no transparent surface mode: the island will have a visible rectangle behind it"),
         }
         let device = &self.ctx.devices[surface.dev_id].device;
