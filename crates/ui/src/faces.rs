@@ -1295,6 +1295,10 @@ impl Island {
         let cell = |i: usize, y: f64| rect(14.0 + (i % 2) as f64 * (col_w + 8.0), y + (i / 2) as f64 * 34.0, col_w, 30.0);
         let mut n = 2;
         // switches
+        if tab == options::RULES_TAB {
+            self.options_rules(p, w, y, n);
+            return;
+        }
         let toggles = options::toggles(tab);
         for (i, (key, label)) in toggles.iter().enumerate() {
             p.stagger(n + i / 2);
@@ -1346,6 +1350,53 @@ impl Island {
         }
     }
 
+    /// The notification rules: one row each, and two rows to add one.
+    fn options_rules(&self, p: P, w: f64, mut y: f64, n: usize) {
+        let rules = &self.data.config.filters;
+        let editing = |f: Field| self.edit.as_ref().filter(|e| e.field == f);
+        if rules.is_empty() {
+            p.stagger(n);
+            p.text("No rules: every notification shows", 14.0 + 4.0, y + 15.0, 12.0, REG, theme::DIM, Align::Left, (w - 40.0) as f32);
+            y += 34.0;
+        }
+        for (i, r) in rules.iter().take(4).enumerate() {
+            p.stagger(n + i);
+            let row = rect(14.0, y, w - 28.0, 30.0);
+            p.rrect(row, 10.0, theme::CHIP);
+            p.icon(if r.show { "volume-3" } else { "bell-off" }, row.x0 + 18.0, y + 15.0, 14.0, theme::DIM);
+            let what = match (r.app.is_empty(), r.content.is_empty()) {
+                (false, false) => format!("{} · {}", r.app, r.content),
+                (false, true) => r.app.clone(),
+                (true, false) => format!("\"{}\"", r.content),
+                (true, true) => "everything".to_string(),
+            };
+            let state = if r.show { "silent" } else { "hidden" };
+            let sw = p.fonts.measure(state, 11.0, REG) as f64;
+            p.text(&what, row.x0 + 34.0, y + 15.0, 12.0, SEMI, theme::FG, Align::Left, (row.width() - 34.0 - sw as f32 as f64 - 52.0).max(40.0) as f32);
+            p.text(state, row.x1 - 38.0, y + 15.0, 11.0, REG, theme::DIM, Align::Right, 60.0);
+            p.icon_button(row.x1 - 18.0, y + 15.0, 26.0, "x", 13.0, Action::RemoveRule(i));
+            y += 34.0;
+        }
+        // (field, icon, label, hint) of the two rows that add a rule
+        type AddRow<'a> = (Field, &'a str, &'a str, &'a str);
+        n_rule_row(self, p, w, (y, n + 5), (Field::RuleHide, "bell-off", "Hide an app's notifications", "App name, e.g. Zen Browser"));
+        n_rule_row(self, p, w, (y + 34.0, n + 6), (Field::RuleSilence, "volume-3", "Silence an app's sound", "App name, e.g. Telegram"));
+        fn n_rule_row(s: &Island, p: P, w: f64, (y, n): (f64, usize), (f, icon, label, hint): AddRow) {
+            p.stagger(n);
+            let r = rect(14.0, y, w - 28.0, 30.0);
+            match s.edit.as_ref().filter(|e| e.field == f) {
+                Some(e) => s.edit_row(p, r, e, hint),
+                None => {
+                    p.rrect(r, 10.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
+                    p.icon(icon, r.x0 + 18.0, y + 15.0, 14.0, theme::DIM);
+                    p.text(label, r.x0 + 34.0, y + 15.0, 12.0, REG, theme::DIM, Align::Left, 300.0);
+                    p.hit(r, Action::EditField(f));
+                }
+            }
+        }
+        let _ = editing;
+    }
+
     fn face_clip(&self, p: P, w: f64, _h: f64) {
         let hy = self.page_header(p, w, "Clipboard");
         p.text("click to copy", w - 14.0, hy, 11.0, REG, theme::DIM, Align::Right, 120.0);
@@ -1391,10 +1442,13 @@ impl Island {
                 None => p.icon("bell", row.x0 + 24.0, y + 20.0, 18.0, theme::DIM),
             }
             let tx = row.x0 + 48.0;
-            let tmax = (row.width() - 48.0 - 40.0) as f32;
+            let tmax = (row.width() - 48.0 - 66.0) as f32;
             p.text(&format!("{}  ·  {}", n.app, ago(self.now - at)), tx, y + 12.0, 10.0, REG, theme::DIM, Align::Left, tmax);
             p.text(if n.summary.is_empty() { &n.body } else { &n.summary }, tx, y + 27.0, 12.0, SEMI, theme::FG, Align::Left, tmax);
             p.icon_button(row.x1 - 18.0, y + 20.0, 26.0, "x", 13.0, Action::HistoryRemove(i));
+            if !super::island::is_own_notification(n) {
+                p.icon_button(row.x1 - 44.0, y + 20.0, 26.0, "bell-off", 12.0, Action::MuteApp(i));
+            }
             p.hit(row, Action::HistoryOpen(i));
             y += 46.0;
         }

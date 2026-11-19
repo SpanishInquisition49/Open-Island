@@ -32,6 +32,7 @@ pub fn config_view_of(fonts: &Fonts) -> island_ui::model::ConfigView {
         latitude: s.latitude,
         longitude: s.longitude,
         notification_sound: s.notification_sound.unwrap_or_default(),
+        filters: s.filters.iter().map(|f| island_ui::model::FilterView { app: f.app.clone(), content: f.content.clone(), show: f.show, sound: f.sound }).collect(),
         timer_presets: s.ui.timer_presets.iter().map(|p| island_core::duration::preset_label(*p)).collect::<Vec<_>>().join(", "),
         screen: s.screen,
     }
@@ -232,6 +233,8 @@ impl App {
                     let _ = crate::config::set_option(o, key, value);
                 })
             }),
+            Command::AddFilter { app, content, hide } => crate::config::update(|o| crate::config::add_filter(o, app, content, *hide)),
+            Command::RemoveFilter(i) => crate::config::update(|o| crate::config::remove_filter(o, *i)),
             Command::SetNotificationSound(f) => crate::config::update(|o| {
                 if f.is_empty() {
                     o.remove("notification_sound");

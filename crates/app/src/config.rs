@@ -302,6 +302,28 @@ pub const BOOL_OPTIONS: &[&str] = &[
 /// The numeric options: key, smallest, largest, and whether it is a whole number.
 pub const NUM_OPTIONS: &[(&str, f64, f64, bool)] = &[("notification_seconds", 2.0, 30.0, true), ("osd_seconds", 0.5, 5.0, false), ("low_battery_percent", 5.0, 50.0, true), ("meeting_lead_minutes", 1.0, 60.0, true)];
 
+/// Adds a notification rule (once): `hide` drops the notifications, otherwise they only lose their sound.
+pub fn add_filter(o: &mut serde_json::Map<String, serde_json::Value>, app: &str, content: &str, hide: bool) {
+    let rule = serde_json::json!({"app": app.trim(), "content": content.trim(), "show": !hide, "sound": false});
+    let list = o.entry("notification_filters").or_insert_with(|| serde_json::json!([]));
+    if let Some(a) = list.as_array_mut() {
+        if !a.contains(&rule) {
+            a.push(rule);
+        }
+    }
+}
+
+pub fn remove_filter(o: &mut serde_json::Map<String, serde_json::Value>, index: usize) {
+    if let Some(a) = o.get_mut("notification_filters").and_then(|v| v.as_array_mut()) {
+        if index < a.len() {
+            a.remove(index);
+        }
+        if a.is_empty() {
+            o.remove("notification_filters");
+        }
+    }
+}
+
 /// Sets one option in the configuration object; an unknown key or a value out of range is an error.
 pub fn set_option(o: &mut serde_json::Map<String, serde_json::Value>, key: &str, value: &island_ui::model::OptionValue) -> Result<(), String> {
     use island_ui::model::OptionValue::*;
@@ -401,6 +423,26 @@ mod tests {
         let old = parse(r#"{"timer_sound":"/x/y.wav"}"#).unwrap();
         assert!(old.ui.timer_sound && old.timer_sound.as_deref() == Some("/x/y.wav"));
         assert_eq!(parse(r#"{"osd_seconds":99}"#).unwrap().ui.osd_ms, 1600, "out of range: the default");
+    }
+
+    #[test]
+    fn notification_rules_are_added_once_and_removed_by_position() {
+        let mut o = serde_json::Map::new();
+        add_filter(&mut o, " Zen Browser ", "", true);
+        add_filter(&mut o, "Zen Browser", "", true);
+        add_filter(&mut o, "Telegram", "", false);
+        let rules = serde_json::Value::Object(o.clone());
+        assert_eq!(rules["notification_filters"].as_array().unwrap().len(), 2, "the same rule twice is one");
+        // what the island reads back
+        let s = parse(&rules.to_string()).unwrap();
+        assert_eq!(s.filters.len(), 2);
+        assert!(!s.filters[0].show && s.filters[0].matches("zen browser", "x", "y"), "hidden, matched without case");
+        assert!(s.filters[1].show && !s.filters[1].sound, "silent");
+        remove_filter(&mut o, 0);
+        remove_filter(&mut o, 9);
+        assert_eq!(parse(&serde_json::Value::Object(o.clone()).to_string()).unwrap().filters.len(), 1);
+        remove_filter(&mut o, 0);
+        assert!(!o.contains_key("notification_filters"), "no empty list left behind");
     }
 
     #[test]

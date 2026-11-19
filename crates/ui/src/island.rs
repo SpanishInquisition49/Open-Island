@@ -122,6 +122,9 @@ pub enum Action {
     NextNotif,
     /// A tab of the options page.
     OptionsTab(usize),
+    /// Silence the app of the n-th notification in the history (hide it from now on).
+    MuteApp(usize),
+    RemoveRule(usize),
     /// Flip a switch of the options page.
     Toggle(&'static str),
     /// Raise (1) or lower (-1) a number of the options page.
@@ -230,6 +233,10 @@ pub enum Field {
     Sound,
     TimerPresets,
     Screen,
+    /// An app (or a word) whose notifications are hidden.
+    RuleHide,
+    /// An app (or a word) whose notifications lose their sound.
+    RuleSilence,
 }
 
 #[derive(Clone, Debug)]
@@ -872,6 +879,7 @@ impl Island {
             Field::Latitude => c.latitude.map(|v| v.to_string()).unwrap_or_default(),
             Field::Longitude => c.longitude.map(|v| v.to_string()).unwrap_or_default(),
             Field::Sound => c.notification_sound.clone(),
+            Field::RuleHide | Field::RuleSilence => String::new(),
             Field::TimerPresets => c.timer_presets.clone(),
             Field::Screen => if c.screen == "focused" { String::new() } else { c.screen.clone() },
         };
@@ -925,6 +933,11 @@ impl Island {
                     }
                     Field::Font => self.pending.push(Command::SetFont(t)),
                     Field::Sound => self.pending.push(Command::SetNotificationSound(t)),
+                    Field::RuleHide | Field::RuleSilence if t.is_empty() => {}
+                    Field::RuleHide | Field::RuleSilence => {
+                        // a word is matched against the app and the text: the app first
+                        self.pending.push(Command::AddFilter { app: t, content: String::new(), hide: e.field == Field::RuleHide });
+                    }
                     Field::TimerPresets => self.pending.push(Command::SetOption { key: "timer_presets".into(), value: OptionValue::Text(t) }),
                     Field::Screen => self.pending.push(Command::SetOption { key: "screen".into(), value: OptionValue::Text(t) }),
                     Field::Latitude | Field::Longitude => {
@@ -1319,6 +1332,14 @@ impl Island {
             }
             Action::Dismiss | Action::NextNotif => self.close_notif(CloseReason::Dismissed),
             Action::OptionsTab(t) => self.options_tab = t.min(crate::options::TABS.len() - 1),
+            Action::MuteApp(n) => {
+                if let Some((inc, _)) = self.history.get(n) {
+                    let app = inc.app.clone();
+                    self.say("Notifications hidden", &format!("{app} (Options > Rules to undo)"));
+                    return vec![Command::AddFilter { app, content: String::new(), hide: true }];
+                }
+            }
+            Action::RemoveRule(n) => return vec![Command::RemoveFilter(n)],
             Action::Toggle(key) => {
                 let on = !crate::options::get_bool(&self.cfg, key);
                 crate::options::set_bool(&mut self.cfg, key, on);
@@ -1462,7 +1483,7 @@ impl Island {
             Face::Clip => h = 14.0 + 34.0 + 4.0 + self.data.clipboard.len().clamp(1, 5) as f64 * 32.0 + 10.0,
             Face::FocusMini => w += self.icon_count(true) as f64 * ICON_W,
             Face::Settings => h = 14.0 + 34.0 + self.settings_content_height() + 14.0,
-            Face::Options => h = 14.0 + 34.0 + 40.0 + crate::options::content_height(self.options_tab) + 14.0,
+            Face::Options => h = 14.0 + 34.0 + 40.0 + crate::options::content_height(self.options_tab, self.data.config.filters.len()) + 14.0,
             Face::Qs => h = self.qs_layout().height,
             Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
             Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
@@ -2855,6 +2876,37 @@ mod tests {
         let mut j = Island::new(Config::default());
         run(&mut j, 600);
         assert!(j.scroll(j.now, 9.0, 0.0).is_empty());
+    }
+
+    #[test]
+    fn an_app_can_be_hidden_from_the_history_and_rules_are_listed_and_removed() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::Notification(Incoming { id: 1, app: "Zen Browser".into(), summary: "unseen".into(), ..Default::default() }));
+        i.activate(Action::Dismiss); // the card first, then the page behind it
+        i.take_commands();
+        i.push(i.now, Input::OpenPage(Page::Notifs));
+        draw_frames(&mut i, 300);
+        assert!(press(&mut i, Action::MuteApp(0)), "a bell on the row");
+        assert_eq!(i.take_commands(), vec![Command::AddFilter { app: "Zen Browser".into(), content: String::new(), hide: true }]);
+        // the confirmation card away, then the rules tab
+        i.activate(Action::Dismiss);
+        i.take_commands();
+        i.data.config.filters = vec![FilterView { app: "Zen Browser".into(), content: String::new(), show: false, sound: false }, FilterView { app: "Telegram".into(), content: String::new(), show: true, sound: false }];
+        i.push(i.now, Input::OpenPage(Page::Options));
+        i.activate(Action::OptionsTab(crate::options::RULES_TAB));
+        draw_frames(&mut i, 300);
+        assert!(press(&mut i, Action::RemoveRule(1)));
+        assert_eq!(i.take_commands(), vec![Command::RemoveFilter(1)]);
+        // typing an app name into the add row
+        i.activate(Action::EditField(Field::RuleSilence));
+        i.push(i.now, Input::Key(KeyInput::Text("Mail".into())));
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert_eq!(i.take_commands(), vec![Command::AddFilter { app: "Mail".into(), content: String::new(), hide: false }]);
+        // an empty name adds nothing
+        i.activate(Action::EditField(Field::RuleHide));
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        assert!(i.take_commands().is_empty());
+        assert_eq!(i.face_size(Face::Options).1, 14.0 + 34.0 + 40.0 + 4.0 * 34.0 + 14.0, "two rules and two add rows");
     }
 
     #[test]

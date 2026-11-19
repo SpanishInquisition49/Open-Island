@@ -3,7 +3,10 @@
 
 use crate::island::Config;
 
-pub const TABS: [&str; 3] = ["Island", "Alerts", "Music"];
+pub const TABS: [&str; 4] = ["Island", "Alerts", "Music", "Rules"];
+
+/// The tab that lists the notification rules.
+pub const RULES_TAB: usize = 3;
 
 /// (key, label) of the switches on a tab.
 pub fn toggles(tab: usize) -> &'static [(&'static str, &'static str)] {
@@ -26,7 +29,8 @@ pub fn toggles(tab: usize) -> &'static [(&'static str, &'static str)] {
             ("quiet_on_mic", "Quiet on a call"),
             ("quiet_on_screen_share", "Quiet when sharing"),
         ],
-        _ => &[("media_auto_expand", "Open on a new track"), ("lyrics", "Synced lyrics"), ("lyrics_in_pill", "Lyrics in the pill"), ("art_tint", "Tint from the cover")],
+        2 => &[("media_auto_expand", "Open on a new track"), ("lyrics", "Synced lyrics"), ("lyrics_in_pill", "Lyrics in the pill"), ("art_tint", "Tint from the cover")],
+        _ => &[],
     }
 }
 
@@ -124,7 +128,11 @@ pub fn fmt_num(v: f64, unit: &str) -> String {
 }
 
 /// Height of a tab's content (below the tabs): rows of 34.
-pub fn content_height(tab: usize) -> f64 {
+/// The rules tab has a row per rule (at most four), a hint when there are none, and two rows to add one.
+pub fn content_height(tab: usize, rules: usize) -> f64 {
+    if tab == RULES_TAB {
+        return (rules.clamp(1, 4) + 2) as f64 * 34.0;
+    }
     let tg = toggles(tab).len().div_ceil(2);
     let st = steppers(tab).len().div_ceil(2);
     (tg + st + text_rows(tab)) as f64 * 34.0
@@ -160,6 +168,7 @@ mod tests {
         // the keys of the page and the keys the configuration accepts are the same list
         let page: std::collections::BTreeSet<&str> = (0..TABS.len()).flat_map(|t| toggles(t).iter().map(|(k, _)| *k)).collect();
         assert_eq!(page.len(), 18, "no option on two tabs");
+        assert_eq!(TABS[RULES_TAB], "Rules");
         let nums: Vec<&str> = (0..TABS.len()).flat_map(|t| steppers(t).iter().map(|s| s.0)).collect();
         assert_eq!(nums, ["notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes"]);
     }

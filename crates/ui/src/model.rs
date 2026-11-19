@@ -126,6 +126,17 @@ pub struct CalendarView {
     pub color: (u8, u8, u8),
 }
 
+/// A notification rule: matches by app and text, and hides the notification or only silences it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FilterView {
+    pub app: String,
+    pub content: String,
+    /// false: the notification is dropped.
+    pub show: bool,
+    /// false: it shows without a sound.
+    pub sound: bool,
+}
+
 /// The settings the menu shows and changes (the platform layer owns the file).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ConfigView {
@@ -136,6 +147,8 @@ pub struct ConfigView {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     pub notification_sound: String,
+    /// What the user told the island to hide or silence.
+    pub filters: Vec<FilterView>,
     /// The timer presets as typed (`5m, 10m, 25m`).
     pub timer_presets: String,
     /// "focused", or the name of the screen the island is pinned to.
@@ -358,6 +371,9 @@ pub enum Command {
     SetNotificationSound(String),
     /// Change one option of the options page; the platform layer writes it to the configuration.
     SetOption { key: String, value: OptionValue },
+    /// Add a notification rule (an app name and/or a piece of text); `hide` drops the notifications, otherwise they only lose their sound.
+    AddFilter { app: String, content: String, hide: bool },
+    RemoveFilter(usize),
     StartFocus(u32),
     StopFocus,
     /// Put this text back on the clipboard.

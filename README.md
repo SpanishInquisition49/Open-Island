@@ -240,3 +240,10 @@ or in `config.json`, or from a script with `open-island msg set <option> <value>
 | Music | `media_auto_expand`, `lyrics`, `lyrics_in_pill` (off), `art_tint` | on |
 
 Not carried over, because they are about running inside Noctalia: `style` (the island is always black), `update_check`.
+
+## Notification rules from the island
+
+On the Notifications page every row has a crossed bell: it hides that app's notifications from then on. The Rules tab of
+the Options page lists the rules (hidden or silent), removes them, and adds one by app name (hide the notifications, or
+only silence their sound). The same rules can be written by hand in `config.json` as `notification_filters` (with a
+`content` word to match, too).

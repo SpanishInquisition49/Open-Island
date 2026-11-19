@@ -54,7 +54,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                 }
                 Command::RefreshCalendars => {}
                 // the app itself writes the configuration for these
-                Command::SetOption { .. } | Command::AddCalendar(_) | Command::AddICloud { .. } | Command::RenameCalendar { .. } | Command::SetCalendarColor { .. } | Command::RemoveCalendar(_) | Command::SetFont(_) | Command::SetLatitude(_) | Command::SetLongitude(_) | Command::SetNotificationSound(_) => {}
+                Command::AddFilter { .. } | Command::RemoveFilter(_) | Command::SetOption { .. } | Command::AddCalendar(_) | Command::AddICloud { .. } | Command::RenameCalendar { .. } | Command::SetCalendarColor { .. } | Command::RemoveCalendar(_) | Command::SetFont(_) | Command::SetLatitude(_) | Command::SetLongitude(_) | Command::SetNotificationSound(_) => {}
                 Command::RestoreClipboard(t) => clipboard::restore(&t),
                 // a slider being dragged sends dozens of these a second: only the latest is worth a process
                 Command::SetVolume(v) => {
