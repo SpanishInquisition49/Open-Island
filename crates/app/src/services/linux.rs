@@ -422,6 +422,29 @@ fn identity(conn: &Connection, name: &str) -> String {
     Proxy::new(conn, name, MPRIS_PATH, MPRIS).ok().and_then(|p| p.get_property::<String>("Identity").ok()).filter(|s| !s.is_empty()).unwrap_or_else(|| name.trim_start_matches("org.mpris.MediaPlayer2.").to_string())
 }
 
+/// Looks the lyrics up in the background, trying again a few times when the lookup fails (the network is not
+/// always there the moment a track starts), and only keeps the answer if that track is still the one playing.
+fn spawn_lyrics(rep: Reporter, current: Arc<std::sync::Mutex<String>>, track_id: String, title: String, artist: String, secs: f64) {
+    std::thread::spawn(move || {
+        for (attempt, wait) in [0u64, 4, 15, 45].into_iter().enumerate() {
+            std::thread::sleep(Duration::from_secs(wait));
+            if *current.lock().unwrap() != track_id {
+                return;
+            }
+            match net::fetch_lyrics(&title, &artist, secs) {
+                Ok(lrc) => {
+                    log::info!("lyrics for {title:?}: {}", lrc.as_ref().map_or("none".to_string(), |l| format!("{} lines", l.lines().count())));
+                    if *current.lock().unwrap() == track_id {
+                        rep.patch(move |d| d.lyrics_lrc = lrc);
+                    }
+                    return;
+                }
+                Err(e) => log::warn!("lyrics for {title:?}: {e} (attempt {})", attempt + 1),
+            }
+        }
+    });
+}
+
 fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
     std::thread::spawn(move || {
         let Ok(conn) = Connection::session() else {
@@ -435,6 +458,8 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
         let mut art_url = String::new();
         let mut cached_art: Option<Image> = None;
         let mut last_sent: Option<Media> = None;
+        // the track the lyrics are wanted for: an answer for a track that has gone by is dropped
+        let current_track = Arc::new(std::sync::Mutex::new(String::new()));
         let (mut identity_for, mut identity_name): (Option<String>, String) = (None, String::new());
         loop {
             // commands first, so a click feels instant
@@ -467,10 +492,9 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
             let Some(name) = pick else {
                 if current.take().is_some() {
                     last_sent = None;
-                    rep.patch(|d| {
-                        d.media = None;
-                        d.lyrics_lrc = None;
-                    });
+                    // the lyrics stay: when the same track is back (a player that restarted its bus name, a bus
+                    // hiccup) there is nothing to fetch again, and a different one replaces them
+                    rep.patch(|d| d.media = None);
                 }
                 std::thread::sleep(Duration::from_millis(1500));
                 continue;
@@ -495,14 +519,10 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
             }
             if track_id != last_track {
                 last_track = track_id.clone();
+                *current_track.lock().unwrap() = track_id.clone();
                 rep.patch(|d| d.lyrics_lrc = None);
-                let (t, a, secs) = (title.clone(), artist.clone(), length_us as f64 / 1e6);
-                let rep2 = rep.clone();
-                if !t.is_empty() {
-                    std::thread::spawn(move || {
-                        let lrc = net::fetch_lyrics(&t, &a, secs);
-                        rep2.patch(move |d| d.lyrics_lrc = lrc);
-                    });
+                if !title.is_empty() {
+                    spawn_lyrics(rep.clone(), current_track.clone(), track_id.clone(), title.clone(), artist.clone(), length_us as f64 / 1e6);
                 }
             }
             let now = chrono::Utc::now().timestamp_millis();

@@ -63,6 +63,13 @@ pub struct App {
 /// animation that starts from rest. The last frame was drawn long ago then (a second, for the clock), and the
 /// springs would leap by their whole step limit in that one frame, a visible jump at the start of every
 /// animation; a normal frame's worth is used instead.
+/// The start epoch to use: unchanged while the monotonic clock agrees with the wall clock to within 1.5 s (the
+/// jitter of reading two clocks), the wall clock's otherwise.
+pub fn reanchor(epoch_at_start: i64, elapsed_ms: i64, wall_ms: i64) -> i64 {
+    let drift = wall_ms - (epoch_at_start + elapsed_ms);
+    if drift.abs() > 1500 { epoch_at_start + drift } else { epoch_at_start }
+}
+
 pub fn frame_dt(gap_ms: f64, was_animating: bool) -> f64 {
     const FIRST_FRAME_MS: f64 = 10.0;
     if !gap_ms.is_finite() || gap_ms < 0.0 {
@@ -100,9 +107,22 @@ impl App {
         Self { island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, was_animating: false, quit: false, persist_history: crate::config::load().persist_history, fullscreen: false, maximized: false, pointer_near: false, last_pointer: (0.0, 0.0) }
     }
 
-    /// Epoch milliseconds, monotonic (not affected by clock changes while running).
+    /// Epoch milliseconds: the monotonic clock since the start, so a clock that is adjusted a little does not make
+    /// time jump, kept in step with the wall clock (see `reanchor`).
     pub fn now(&self) -> i64 {
         self.epoch_at_start + self.start.elapsed().as_millis() as i64
+    }
+
+    /// The monotonic clock stops while the machine sleeps, so after a suspend the island's time would stay behind the
+    /// real one for ever (the clock, the countdowns, the position of the lyrics). Called every frame.
+    fn follow_wall_clock(&mut self) {
+        let elapsed = self.start.elapsed().as_millis() as i64;
+        let wall = chrono::Utc::now().timestamp_millis();
+        let fixed = reanchor(self.epoch_at_start, elapsed, wall);
+        if fixed != self.epoch_at_start {
+            log::info!("the clock moved by {} ms (sleep or a clock change): following it", fixed - self.epoch_at_start);
+            self.epoch_at_start = fixed;
+        }
     }
 
     /// Applies everything the services have reported.
@@ -132,6 +152,7 @@ impl App {
 
     /// Advances the island; returns the surface size it needs and whether another frame is wanted.
     pub fn tick(&mut self) -> island_ui::Frame {
+        self.follow_wall_clock();
         self.pump();
         let dt = frame_dt(self.last_tick.elapsed().as_secs_f64() * 1000.0, self.was_animating);
         self.last_tick = Instant::now();
@@ -327,7 +348,17 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::frame_dt;
+    use super::{frame_dt, reanchor};
+
+    #[test]
+    fn the_clock_follows_the_wall_clock_after_a_sleep_but_not_its_jitter() {
+        let start = 1_000_000;
+        assert_eq!(reanchor(start, 5000, start + 5400), start, "a few hundred ms of difference is noise");
+        // an hour asleep: the monotonic clock did not move, the wall clock did
+        assert_eq!(reanchor(start, 5000, start + 5000 + 3_600_000), start + 3_600_000);
+        // the wall clock stepped back by ten seconds
+        assert_eq!(reanchor(start, 60_000, start + 50_000), start - 10_000);
+    }
 
     #[test]
     fn the_first_frame_of_an_animation_does_not_leap() {

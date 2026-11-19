@@ -1569,9 +1569,11 @@ impl Island {
         if let Some(lines) = &self.lyric_lines {
             let idx = lyrics::index_at(lines, self.media_position(), LYRIC_LEAD_MS);
             if idx != self.lyric_idx {
+                // one line on is a scroll; a jump (a seek, the island waking from a long pause) is just there
+                let jump = idx.abs_diff(self.lyric_idx) > 1;
                 self.lyric_dir = if idx > self.lyric_idx { 1.0 } else { -1.0 };
                 self.lyric_idx = idx;
-                self.lyric_at = self.now;
+                self.lyric_at = if jump { -100_000 } else { self.now };
             }
         }
     }
@@ -3551,6 +3553,32 @@ mod tests {
         let mut i = Island::new(Config::default());
         assert_eq!(i.activate(Action::Cmd(Command::RefreshCalendars)), vec![Command::RefreshCalendars]);
         assert!(i.note.is_some());
+    }
+
+    #[test]
+    fn the_lyrics_scroll_one_line_but_a_jump_just_lands() {
+        let mut i = Island::new(Config { lyrics_in_pill: true, ..Config::default() });
+        i.data = data();
+        let lrc: String = (1..=40).map(|n| format!("[{:02}:{:02}.00] line {n}\n", n * 3 / 60, n * 3 % 60)).collect();
+        i.data.lyrics_lrc = Some(lrc);
+        i.data.media.as_mut().unwrap().position_ms = 10_000.0;
+        i.data.media.as_mut().unwrap().sampled_at_ms = T0;
+        run(&mut i, 600);
+        let idx = i.lyric_idx;
+        // the next line comes up: a scroll in progress
+        i.data.media.as_mut().unwrap().position_ms = 13_000.0;
+        i.data.media.as_mut().unwrap().sampled_at_ms = i.now;
+        run(&mut i, 16);
+        assert_eq!(i.lyric_idx, idx + 1);
+        assert!(i.lyric_at > 0, "one line on is animated");
+        // the island wakes after a long pause (the screen was locked): thirty lines on, no scroll through them
+        i.now += 1000;
+        i.data.media.as_mut().unwrap().position_ms = 100_000.0;
+        i.data.media.as_mut().unwrap().sampled_at_ms = i.now;
+        run(&mut i, 16);
+        assert!(i.lyric_idx > idx + 20);
+        assert!(i.lyric_at < 0, "a jump has no animation to play");
+        assert!(i.lyric_strip().is_some_and(|s| s.iter().any(|(_, slot)| *slot == 0.0)), "the current line sits in its place");
     }
 
     #[test]

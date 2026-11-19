@@ -253,12 +253,15 @@ fn fetch_caldav(src: &crate::config::CalendarSource, from: i64, to: i64, default
 }
 
 /// Synced lyrics for a track from LRCLIB, or None.
-pub fn fetch_lyrics(title: &str, artist: &str, length_secs: f64) -> Option<String> {
+/// The synced lyrics of a track: Ok(None) when there are none, Err when the lookup itself failed (no network, the
+/// service down), which is worth trying again.
+pub fn fetch_lyrics(title: &str, artist: &str, length_secs: f64) -> Result<Option<String>, String> {
     let clean = lyrics::clean_title(title);
     let url = format!("https://lrclib.net/api/search?track_name={}&artist_name={}", urlenc(&clean), urlenc(artist));
-    let v: serde_json::Value = agent().get(&url).call().ok()?.body_mut().read_json().ok()?;
+    let v: serde_json::Value = agent().get(&url).call().map_err(|e| e.to_string())?.body_mut().read_json().map_err(|e| e.to_string())?;
     let versions: Vec<Version> = v
-        .as_array()?
+        .as_array()
+        .ok_or("unexpected answer")?
         .iter()
         .map(|i| Version {
             id: i.get("id").and_then(|x| x.as_u64()),
@@ -266,7 +269,7 @@ pub fn fetch_lyrics(title: &str, artist: &str, length_secs: f64) -> Option<Strin
             synced: i.get("syncedLyrics").and_then(|x| x.as_str()).unwrap_or("").to_string(),
         })
         .collect();
-    lyrics::pick(&versions, length_secs, 5.0)
+    Ok(lyrics::pick(&versions, length_secs, 5.0))
 }
 
 fn urlenc(s: &str) -> String {
