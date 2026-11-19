@@ -205,6 +205,10 @@ pub enum Action {
     MapZoom(i8),
     /// Switch the map between "around me" and "me and the next event".
     MapView,
+    /// Drag the map: the press starts it, the pointer moves it.
+    MapPan,
+    /// Back to following the position.
+    MapRecenter,
     MapCopy,
     MapOpen,
     /// Directions to the next event, in the browser.
@@ -486,6 +490,11 @@ pub struct Island {
     last_copy: String,
     pub(crate) activity_tab: usize,
     pub(crate) map_zoom_delta: i8,
+    /// Where the map was dragged to (and the zoom it was at): None follows the position.
+    map_center: Option<(f64, f64)>,
+    map_fixed_zoom: Option<u8>,
+    map_drag_last: (f64, f64),
+    map_scroll_acc: f64,
     pub(crate) map_both: bool,
     map_asked_at: i64,
     /// Map tiles that arrived (and which were asked for), by zoom, x, y.
@@ -620,6 +629,10 @@ impl Island {
             last_copy: String::new(),
             activity_tab: 0,
             map_zoom_delta: 0,
+            map_center: None,
+            map_fixed_zoom: None,
+            map_drag_last: (0.0, 0.0),
+            map_scroll_acc: 0.0,
             map_both: true,
             map_asked_at: i64::MIN / 2,
             tiles: Default::default(),
@@ -1315,6 +1328,15 @@ impl Island {
             let over_bubble = self.shown_side.is_some() && x > px + self.spring.w.pos;
             self.hover_page = if over_bubble { self.shown_side.map(side_page) } else { main_page(self.shown) };
         }
+        if self.dragging == Some(Action::MapPan) {
+            let (dx, dy) = (x - self.map_drag_last.0, y - self.map_drag_last.1);
+            self.map_drag_last = (x, y);
+            if let Some(v) = self.map_view() {
+                self.map_center = Some(island_core::map::pan(v.center, v.zoom, dx, dy));
+                self.map_fixed_zoom = Some(v.zoom);
+            }
+            return std::mem::take(&mut self.pending);
+        }
         if let Some(Action::SeekBar | Action::VolumeBar | Action::BrightnessBar) = self.dragging.clone() {
             return self.slider_at(x, y);
         }
@@ -1374,6 +1396,11 @@ impl Island {
             Action::SeekBar | Action::VolumeBar | Action::BrightnessBar => {
                 self.dragging = Some(action);
                 self.slider_at(x, y)
+            }
+            Action::MapPan => {
+                self.dragging = Some(action);
+                self.map_drag_last = (x, y);
+                vec![]
             }
             a => self.activate(a),
         }
@@ -1440,6 +1467,16 @@ impl Island {
 
     pub fn scroll(&mut self, now: i64, dx: f64, dy: f64) -> Vec<Command> {
         self.now = now;
+        // over the map the wheel zooms (and a sideways swipe does not turn the page under the finger)
+        if self.shown == Face::Map {
+            self.map_scroll_acc += dy;
+            while self.map_scroll_acc.abs() >= 1.0 {
+                self.map_zoom(if self.map_scroll_acc > 0.0 { 1 } else { -1 });
+                self.map_scroll_acc -= self.map_scroll_acc.signum();
+            }
+            self.expand_until = now + 6000;
+            return vec![];
+        }
         if dx.abs() > dy.abs() && dx.abs() > 0.5 {
             // horizontal swipe: next/previous page
             if self.shown.size().1 > 40.0 {
@@ -1753,10 +1790,12 @@ impl Island {
                     return vec![Command::RestoreClipboard(t)];
                 }
             }
-            Action::MapZoom(d) => self.map_zoom_delta = (self.map_zoom_delta + d).clamp(-10, 10),
+            Action::MapZoom(d) => self.map_zoom(d),
+            Action::MapRecenter => self.map_recenter(),
+            Action::MapPan => {}
             Action::MapView => {
                 self.map_both = !self.map_both;
-                self.map_zoom_delta = 0;
+                self.map_recenter();
             }
             Action::MapRefresh => {
                 self.map_asked_at = now;
@@ -2109,6 +2148,24 @@ impl Island {
         self.push(now, Input::Notification(n));
     }
 
+    pub(crate) fn map_is_panned(&self) -> bool {
+        self.map_center.is_some()
+    }
+
+    /// Back to following the position, at the zoom that fits.
+    fn map_recenter(&mut self) {
+        self.map_center = None;
+        self.map_fixed_zoom = None;
+        self.map_zoom_delta = 0;
+    }
+
+    fn map_zoom(&mut self, d: i8) {
+        match self.map_fixed_zoom {
+            Some(z) => self.map_fixed_zoom = Some((z as i16 + d as i16).clamp(island_core::map::MIN_ZOOM as i16, island_core::map::MAX_ZOOM as i16) as u8),
+            None => self.map_zoom_delta = (self.map_zoom_delta + d).clamp(-10, 10),
+        }
+    }
+
     /// What the map page shows: the centre and zoom, where the machine is, and the next event's place when it is known.
     pub(crate) fn map_view(&self) -> Option<MapView> {
         use island_core::map;
@@ -2122,7 +2179,8 @@ impl Island {
             (Some((d, _, _)), true) => (map::midpoint(me, *d), map::zoom_to_fit(me, *d, MAP_W, MAP_H, 40.0)),
             _ => (me, map::zoom_for_accuracy(pos.accuracy_m)),
         };
-        let zoom = (base as i16 + self.map_zoom_delta as i16).clamp(map::MIN_ZOOM as i16, map::MAX_ZOOM as i16) as u8;
+        let zoom = self.map_fixed_zoom.unwrap_or((base as i16 + self.map_zoom_delta as i16).clamp(map::MIN_ZOOM as i16, map::MAX_ZOOM as i16) as u8);
+        let center = self.map_center.unwrap_or(center);
         Some(MapView { center, zoom, me, accuracy_m: pos.accuracy_m, from_settings: pos.source == PosSource::Settings, dest: dest.map(|(d, t, _)| (d, t)) })
     }
 
@@ -2139,7 +2197,8 @@ impl Island {
             return;
         }
         let Some(v) = self.map_view() else { return };
-        for t in island_core::map::tiles(v.center.0, v.center.1, v.zoom, MAP_W, MAP_H) {
+        // a ring of tiles beyond the view, so a drag finds them there
+        for t in island_core::map::tiles(v.center.0, v.center.1, v.zoom, MAP_W + 256.0, MAP_H + 256.0) {
             let key = (t.z, t.x, t.y);
             if !self.tiles.contains_key(&key) && self.tiles_asked.insert(key) {
                 self.pending.push(Command::LoadTile { z: t.z, x: t.x, y: t.y, template: self.cfg.map_tile_url.clone(), dark: self.cfg.map_dark && !island_core::map::is_dark_style(&self.cfg.map_tile_url) });
@@ -4749,6 +4808,44 @@ mod tests {
             assert!(i.edit.is_none());
             draw_frames(&mut i, 20);
         }
+    }
+
+    #[test]
+    fn the_map_is_dragged_not_clicked_and_zooms_with_the_wheel() {
+        let mut i = Island::new(Config::default());
+        i.data.position = Some(Position { lat: 43.7255, lon: 10.3908, accuracy_m: 100.0, at_ms: T0, source: PosSource::Geoclue });
+        i.push(T0, Input::OpenPage(Page::Map));
+        run(&mut i, 500);
+        i.take_commands();
+        draw_frames(&mut i, 200);
+        let area = i.hits.iter().find(|h| h.action == Action::MapPan).expect("the map is a drag area").rect;
+        let (ox, oy) = i.pill_origin;
+        let (x, y) = (area.center().x + ox - 40.0, area.center().y + oy + 30.0);
+        // a click on the map does nothing: no page in the browser
+        let cmds = i.pointer_down(i.now, x, y);
+        i.pointer_up(i.now);
+        assert!(cmds.is_empty() && !i.take_commands().iter().any(|c| matches!(c, Command::OpenUrl(_))), "a click on the map opens nothing");
+        let before = i.map_view().unwrap();
+        assert!(!i.map_is_panned());
+        // drag it 120 px to the right: what is west of here comes into view
+        i.pointer_down(i.now, x, y);
+        i.pointer_moved(i.now, x + 60.0, y);
+        i.pointer_moved(i.now, x + 120.0, y + 20.0);
+        i.pointer_up(i.now);
+        let after = i.map_view().unwrap();
+        assert!(i.map_is_panned() && after.zoom == before.zoom, "the zoom is kept while dragging");
+        assert!(after.center.1 < before.center.1 - 0.001, "the centre moved west: {:?} -> {:?}", before.center, after.center);
+        assert!(after.center.0 > before.center.0, "and north, because the drag went down");
+        assert_eq!(after.me, before.me, "the position itself did not move");
+        // the tiles around the new centre are asked for
+        run(&mut i, 300);
+        assert!(i.take_commands().iter().any(|c| matches!(c, Command::LoadTile { .. })));
+        // the wheel zooms the dragged map; a button brings it back
+        i.scroll(i.now, 0.0, 2.0);
+        assert_eq!(i.map_view().unwrap().zoom, before.zoom + 2);
+        draw_frames(&mut i, 100);
+        assert!(press(&mut i, Action::MapRecenter), "a button appears once the map is away");
+        assert!(!i.map_is_panned() && i.map_view().unwrap().center == before.center && i.map_view().unwrap().zoom == before.zoom);
     }
 
     #[test]

@@ -17,6 +17,20 @@ pub fn world_px(lat: f64, lon: f64, zoom: u8) -> (f64, f64) {
     (x, y)
 }
 
+/// The inverse of `world_px`: the latitude and longitude of a world pixel.
+pub fn lat_lon_of_px(x: f64, y: f64, zoom: u8) -> (f64, f64) {
+    let n = TILE * (1u64 << zoom) as f64;
+    let lon = (x / n * 360.0 - 180.0 + 540.0).rem_euclid(360.0) - 180.0;
+    let lat = (std::f64::consts::PI * (1.0 - 2.0 * (y / n).clamp(0.0, 1.0))).sinh().atan().to_degrees();
+    (lat.clamp(-85.0511, 85.0511), lon)
+}
+
+/// Moves a map centre as the map is dragged by `dx`, `dy` pixels: the ground follows the pointer.
+pub fn pan(center: (f64, f64), zoom: u8, dx: f64, dy: f64) -> (f64, f64) {
+    let (x, y) = world_px(center.0, center.1, zoom);
+    lat_lon_of_px(x - dx, y - dy, zoom)
+}
+
 /// The tile that holds a world pixel, and where in the view it lands: the view is `w` x `h` pixels centred on `center`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placed {
@@ -214,6 +228,25 @@ mod tests {
         assert!(ts.iter().any(|t| t.x == 0) && ts.iter().any(|t| t.x == 3), "x wraps");
         let polar = tiles(85.0, 0.0, 2, 300.0, 900.0);
         assert!(polar.iter().all(|t| t.y >= 0 && t.y < 4));
+    }
+
+    #[test]
+    fn dragging_moves_the_ground_with_the_pointer_and_round_trips() {
+        let c = (43.7228, 10.4017);
+        for z in [3u8, 10, 16] {
+            let (x, y) = world_px(c.0, c.1, z);
+            let back = lat_lon_of_px(x, y, z);
+            assert!((back.0 - c.0).abs() < 1e-6 && (back.1 - c.1).abs() < 1e-6, "zoom {z}: {back:?}");
+        }
+        // dragging right shows what is to the west: the centre's longitude goes down; dragging up, the latitude goes down
+        let w = pan(c, 15, 100.0, 0.0);
+        assert!(w.1 < c.1 && (w.0 - c.0).abs() < 1e-9);
+        let s = pan(c, 15, 0.0, -100.0);
+        assert!(s.0 < c.0 && (s.1 - c.1).abs() < 1e-9);
+        // 100 px at zoom 15 near Pisa is about 0.0027 degrees of longitude
+        assert!(((c.1 - w.1) - 100.0 / (TILE * 32768.0) * 360.0).abs() < 1e-9);
+        // the poles and the date line are not crossed into nonsense
+        assert!(pan((85.0, 0.0), 3, 0.0, -5000.0).0 <= 85.0511 && pan((0.0, 179.9), 3, -500.0, 0.0).1.abs() <= 180.0);
     }
 
     #[test]

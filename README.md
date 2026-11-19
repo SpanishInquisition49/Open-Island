@@ -368,7 +368,7 @@ The map icon in the dock (after Today; `open-island msg page map`) shows where t
 doubt of the fix, and the place of the next event as an orange pin joined to you by a dashed line, with the distance and the
 travel time of the chosen way (a click on that chip opens directions on openstreetmap.org). **+ / -** zoom, **Me / Both**
 switches between around me and fitting both, and the buttons below copy the coordinates, open the spot in the browser and look
-for a new fix. A click on the map opens it in the browser too.
+for a new fix. The map is dragged with the pointer (a click on it does nothing) and the wheel zooms; once it is away from you a pin button in the corner brings it back.
 
 The position comes from GeoClue (the `where-am-i` client that ships with it, which is allowed to ask without a configuration
 change): Wi-Fi when the machine has it, else GeoIP, which can be 25 km off; the circle shows how sure it is. Without GeoClue

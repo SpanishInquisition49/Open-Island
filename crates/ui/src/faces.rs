@@ -1614,13 +1614,21 @@ impl Island {
             p.icon(icon, b.center().x, b.center().y, 14.0, if p.hovered(b) { theme::ACCENT } else { theme::FG });
             p.hit(b, Action::MapZoom(d));
         }
+        // back to the position, once the map was dragged away
+        if self.map_is_panned() {
+            let b = rect(area.x1 - 38.0, area.y0 + 8.0 + 68.0, 30.0, 30.0);
+            p.rrect(b, 15.0, with_alpha(theme::BG, 0.85));
+            p.icon("map-pin", b.center().x, b.center().y, 14.0, if p.hovered(b) { theme::ACCENT } else { theme::RAIN });
+            p.hit(b, Action::MapRecenter);
+        }
         // the credit the tile providers ask for
         let credit = map::credit_for(&self.cfg.map_tile_url);
         let cw = p.fonts.measure(credit, 8.5, REG) as f64 + 10.0;
         p.rrect(rect(area.x1 - cw - 4.0, area.y1 - 17.0, cw, 13.0), 6.5, with_alpha(theme::BG, 0.7));
         p.text(credit, area.x1 - cw / 2.0 - 4.0, area.y1 - 10.5, 8.5, REG, theme::DIM, Align::Center, 160.0);
         p.scene.pop_layer();
-        p.hit(area, Action::MapOpen);
+        // the map is dragged, not clicked: a click on it does nothing (the buttons below open the browser)
+        p.hit(area, Action::MapPan);
         // under the map: the numbers, and what can be done with them
         p.stagger(2);
         let y = area.y1 + 8.0 + 15.0;
