@@ -4,6 +4,7 @@
 pub mod bluetooth;
 pub mod bar;
 pub mod calendar;
+pub mod clipact;
 pub mod codes;
 pub mod color;
 pub mod duration;

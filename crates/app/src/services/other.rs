@@ -18,7 +18,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, _settings: std::sync::Arc
     std::thread::spawn(move || {
         for c in cmd_rx {
             match c {
-                Command::OpenUrl(u) if u.starts_with("http://") || u.starts_with("https://") => open_url(&u),
+                Command::OpenUrl(u) if u.starts_with("http://") || u.starts_with("https://") || u.starts_with("mailto:") => open_url(&u),
                 Command::RestoreClipboard(t) => super::generic::restore_clipboard(&t),
                 Command::ScanPeers => super::send::scan(rep2.clone()),
                 Command::SendFiles { peer, paths } => super::send::send(rep2.clone(), peer, paths),

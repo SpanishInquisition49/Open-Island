@@ -75,7 +75,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                     let _ = set_brightness_tx.send(v);
                 }
                 Command::OpenUrl(u) => {
-                    if u.starts_with("http://") || u.starts_with("https://") {
+                    if u.starts_with("http://") || u.starts_with("https://") || u.starts_with("mailto:") {
                         run("xdg-open", &[&u]);
                     }
                 }

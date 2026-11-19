@@ -47,7 +47,8 @@ cp contrib/open-island.service ~/.config/systemd/user/ && systemctl --user enabl
 On niri, `contrib/niri-snippet.kdl` has `spawn-at-startup` and key bindings (open, quick settings, notifications, reply,
 clipboard). The island replaces the notification daemon at start (see below); at rest it uses under 1% of a core.
 On the clipboard page a star keeps an entry on top (pinned entries are the only ones written to disk, in the state
-directory, mode 0600) and the x forgets it.
+directory, mode 0600) and the x forgets it. A copied link, e-mail address, street address or pair of coordinates gets a button
+that opens it (the browser, the mail client, OpenStreetMap), and a `#rrggbb` colour shows its swatch.
 
 ## Windows and macOS
 

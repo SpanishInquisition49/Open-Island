@@ -239,7 +239,7 @@ fn main() {
             d.streams = vec![island_ui::model::AppStream { id: 1, name: "Spotify".into(), volume: 62, muted: false }, island_ui::model::AppStream { id: 2, name: "Zen".into(), volume: 100, muted: true }];
             i.push(NOW, Input::OpenPage(island_core::face::Page::Audio));
         })),
-        ("page-clip", Box::new(|i, d| { d.clipboard = vec!["cargo test --workspace".into(), "https://example.org/a/very/long/link/that/needs/an/ellipsis?with=query&and=more".into(), "Reti di calcolatori\n  lezione 12".into()]; i.push(NOW, Input::OpenPage(island_core::face::Page::Clip)); })),
+        ("page-clip", Box::new(|i, d| { d.clipboard = vec!["cargo test --workspace".into(), "https://example.org/ciao".into(), "#ff8000".into(), "Via Santa Maria 36, Pisa".into(), "https://example.org/a/very/long/link/that/needs/an/ellipsis?with=query&and=more".into(), "Reti di calcolatori\n  lezione 12".into()]; i.push(NOW, Input::OpenPage(island_core::face::Page::Clip)); })),
         ("focus-mini", Box::new(|_, d| d.focus = Some(Focus { active: true, end_epoch: Some(NOW / 1000 + 23 * 60) }))),
         ("focus-full", Box::new(|i, d| { d.focus = Some(Focus { active: true, end_epoch: Some(NOW / 1000 + 23 * 60) }); i.push(NOW, Input::OpenPage(island_core::face::Page::Focus)); })),
         ("page-sys-opening", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Sys)))),

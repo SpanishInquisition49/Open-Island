@@ -168,6 +168,8 @@ pub enum Action {
     NotifOpen,
     ClipRestore(usize),
     ClipPin(usize),
+    /// The action of a clipboard entry (open the link, write the mail, show the place).
+    ClipAct(usize),
     CopyCode(String),
     /// Send the files waiting on the send page to the device at this index.
     SendTo(usize),
@@ -1520,6 +1522,11 @@ impl Island {
                 self.code_copied = self.notif.as_ref().map(|n| (n.id, now + 2500));
                 self.notif_until = self.notif_until.max(now + 2500);
                 return vec![Command::CopyCode(code)];
+            }
+            Action::ClipAct(i) => {
+                if let Some(act) = self.data.clipboard.get(i).and_then(|t| island_core::clipact::classify(t)) {
+                    return vec![Command::OpenUrl(act.target)];
+                }
             }
             Action::ClipPin(i) => {
                 if let Some(t) = self.data.clipboard.get(i).cloned() {
@@ -3873,6 +3880,21 @@ mod tests {
         draw_frames(&mut i, 200);
         assert!(!press(&mut i, Action::CopyCode("1030".into())));
         assert!(press(&mut i, Action::NotifOpen), "a card without a code still opens its sender");
+    }
+
+    #[test]
+    fn a_copied_link_or_mail_has_its_own_button_on_the_clipboard_page() {
+        let mut i = Island::new(Config::default());
+        i.data.clipboard = vec!["plain words".into(), "https://example.org/x".into(), "me@uni.it".into(), "#ff8000".into()];
+        i.push(T0, Input::OpenPage(Page::Clip));
+        draw_frames(&mut i, 200);
+        assert!(!press(&mut i, Action::ClipAct(0)), "nothing to do with plain words");
+        assert!(!press(&mut i, Action::ClipAct(3)), "a colour is only shown");
+        assert!(press(&mut i, Action::ClipAct(1)));
+        assert_eq!(i.take_commands(), vec![Command::OpenUrl("https://example.org/x".into())]);
+        draw_frames(&mut i, 10);
+        assert!(press(&mut i, Action::ClipAct(2)));
+        assert_eq!(i.take_commands(), vec![Command::OpenUrl("mailto:me@uni.it".into())]);
     }
 
     #[test]
