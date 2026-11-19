@@ -265,7 +265,7 @@ impl Island {
         let cy = h / 2.0;
         let mut right = self.pill_clock(p, w - 14.0, cy);
         right = self.status_icons(p, right, cy, 13.0);
-        self.equalizer(p, right - 22.0, cy, 4, 12.0, 2.5, m.playing, self.art_tint());
+        self.equalizer(p, right - 22.0, cy, 4, 12.0, 2.5, self.playing_shown(), self.art_tint());
         let max = (right - 26.0 - 38.0).max(20.0) as f32;
         // with the option on, the line being sung replaces the title and rises into place on every change
         match self.cfg.lyrics_in_pill.then(|| self.lyric_now()).flatten().filter(|_| m.playing) {
@@ -286,7 +286,7 @@ impl Island {
         let Some(m) = self.data.media.as_ref() else { return };
         p.text(&m.title, 92.0, 30.0, 14.0, SEMI, theme::FG, Align::Left, (w - 92.0 - 56.0) as f32);
         p.text(&m.artist, 92.0, 50.0, 12.0, REG, theme::DIM, Align::Left, (w - 92.0 - 56.0) as f32);
-        self.equalizer(p, w - 40.0, 30.0, 4, 14.0, 3.0, m.playing, self.art_tint());
+        self.equalizer(p, w - 40.0, 30.0, 4, 14.0, 3.0, self.playing_shown(), self.art_tint());
         // progress (a slider you can drag) + times
         let pos = self.media_position();
         let frac = if m.length_ms > 0.0 { pos / m.length_ms } else { 0.0 };
@@ -302,12 +302,21 @@ impl Island {
         // controls: previous, a white play/pause disc, next
         let cy = 114.0;
         let cx = w / 2.0;
-        p.icon_button(cx - 64.0, cy, 36.0, "player-skip-back", 20.0, Action::Cmd(Command::MediaPrevious));
-        let disc = rect(cx - 22.0, cy - 22.0, 44.0, 44.0);
-        p.circle(cx, cy, if p.hovered(disc) { 23.0 } else { 22.0 }, theme::FG);
-        p.icon(if m.playing { "player-pause" } else { "player-play" }, cx, cy, 22.0, theme::ON_ACCENT);
+        p.icon_button_nudged((cx - 64.0, cy), 36.0, "player-skip-back", 20.0, 5.0 * self.skip_press.min(0.0), Action::Cmd(Command::MediaPrevious));
+        let disc = rect(cx - 24.0, cy - 24.0, 48.0, 48.0);
+        // the disc swells under the pointer and gives when pressed; the two icons cross-fade, each growing in
+        let (hover, press, a) = (self.disc_hover, self.disc_press, self.play_anim.clamp(0.0, 1.0));
+        p.circle(cx, cy, 22.0 + 1.5 * hover - 3.5 * press, theme::FG);
+        let base = p.opacity;
+        for (icon, shown) in [("player-play", 1.0 - a), ("player-pause", a)] {
+            if shown > 0.01 {
+                p.opacity = base * shown as f32;
+                p.icon(icon, cx, cy, (17.0 + 5.0 * shown - 2.0 * press) as f32, theme::ON_ACCENT);
+            }
+        }
+        p.opacity = base;
         p.hit(disc, Action::Cmd(Command::MediaPlayPause));
-        p.icon_button(cx + 64.0, cy, 36.0, "player-skip-forward", 20.0, Action::Cmd(Command::MediaNext));
+        p.icon_button_nudged((cx + 64.0, cy), 36.0, "player-skip-forward", 20.0, 5.0 * self.skip_press.max(0.0), Action::Cmd(Command::MediaNext));
         if m.players > 1 {
             p.icon_button(cx - 128.0, cy, 34.0, "arrows-exchange", 17.0, Action::CyclePlayer);
         }

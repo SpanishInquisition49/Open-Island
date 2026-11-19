@@ -142,6 +142,16 @@ impl<A: Clone> Painter<'_, A> {
         self.hits.push(Hit { rect: r, action });
     }
 
+    /// An icon button whose icon is drawn `dx` to the side of where its hit region stays (a nudge on a press).
+    pub fn icon_button_nudged(&mut self, (cx, cy): (f64, f64), size: f64, icon: &str, icon_size: f32, dx: f64, action: A) {
+        let r = Rect::new(cx - size / 2.0, cy - size / 2.0, cx + size / 2.0, cy + size / 2.0);
+        if self.hovered(r) {
+            self.circle(cx, cy, size / 2.0, theme::HOT_CHIP);
+        }
+        self.icon(icon, cx + dx, cy, icon_size, theme::FG);
+        self.hits.push(Hit { rect: r, action });
+    }
+
     /// A toggle chip: filled white when on, dim when off.
     pub fn chip(&mut self, r: Rect, icon: &str, label: &str, on: bool, action: A) {
         let hot = self.hovered(r);

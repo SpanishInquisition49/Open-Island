@@ -26,6 +26,8 @@ const BAR_IDLE_MS: i64 = 30_000;
 /// How far a sideways swipe has to go (in scroll units) to skip a track, and the pause after one.
 const SWIPE_TRACK: f64 = 3.0;
 const SWIPE_COOLDOWN_MS: i64 = 700;
+/// How long a press of play/pause is believed before the player has confirmed it.
+const PLAY_CONFIRM_MS: i64 = 1500;
 const SNOOZE_MS: i64 = 10 * 60_000;
 /// Notifications the island makes itself (confirmations, reminders, the recap) have ids from here.
 const OWN_ID_BASE: u32 = 3_000_000;
@@ -356,6 +358,15 @@ pub struct Island {
     pub(crate) options_tab: usize,
     swipe_acc: f64,
     swipe_until: i64,
+    /// The play/pause button answers at once: the state a press asked for, until the player confirms it.
+    play_override: Option<(bool, i64)>,
+    /// 0 shows the play icon, 1 the pause icon; eased, so the icons cross-fade.
+    pub(crate) play_anim: f64,
+    /// 0..1: how much the pointer is over the button, and a press that is dying away.
+    pub(crate) disc_hover: f64,
+    pub(crate) disc_press: f64,
+    /// A skip button was pressed: +1 next, -1 previous, dying away; the icon nudges in its direction.
+    pub(crate) skip_press: f64,
     pub(crate) reminders: Vec<Reminder>,
     next_own_id: u32,
     /// Keyboard navigation: the focused control among the drawn ones.
@@ -462,6 +473,11 @@ impl Island {
             options_tab: 0,
             swipe_acc: 0.0,
             swipe_until: 0,
+            play_override: None,
+            play_anim: 0.0,
+            disc_hover: 0.0,
+            disc_press: 0.0,
+            skip_press: 0.0,
             reminders: vec![],
             next_own_id: OWN_ID_BASE,
             kb: None,
@@ -1283,6 +1299,16 @@ impl Island {
         let now = self.now;
         self.expand_until = self.expand_until.max(now + 4000);
         match a {
+            Action::Cmd(c @ (Command::MediaNext | Command::MediaPrevious)) => {
+                self.skip_press = if c == Command::MediaNext { 1.0 } else { -1.0 };
+                return vec![c];
+            }
+            Action::Cmd(Command::MediaPlayPause) => {
+                // show the answer now; the player's own report comes a moment later and agrees
+                self.play_override = Some((!self.playing_shown(), now + PLAY_CONFIRM_MS));
+                self.disc_press = 1.0;
+                return vec![Command::MediaPlayPause];
+            }
             Action::Cmd(c) => {
                 if c == Command::RefreshCalendars {
                     self.last_refresh_req = now;
@@ -1751,6 +1777,45 @@ impl Island {
         }
     }
 
+    /// Whether the music is shown as playing: what the player says, except just after a press of the button.
+    pub(crate) fn playing_shown(&self) -> bool {
+        let base = self.data.media.as_ref().is_some_and(|m| m.playing);
+        match self.play_override {
+            Some((v, until)) if self.now < until => v,
+            _ => base,
+        }
+    }
+
+    /// Moves the play/pause button: the icons cross-fade, the disc grows under the pointer and gives under a press.
+    /// Returns true while something is still on its way.
+    fn ease_media_button(&mut self, dt_ms: f64) -> bool {
+        let dt = if dt_ms.is_finite() { dt_ms.clamp(0.0, 100.0) } else { 0.0 };
+        let base = self.data.media.as_ref().is_some_and(|m| m.playing);
+        if matches!(self.play_override, Some((v, until)) if v == base || self.now >= until) {
+            self.play_override = None; // the player agrees (or never did): back to what it says
+        }
+        let on_screen = matches!(self.shown, Face::MediaFull | Face::MediaLyric);
+        let over = self.pointer.is_some_and(|(x, y)| {
+            let (lx, ly) = self.local(x, y);
+            self.hits.iter().any(|h| h.action == Action::Cmd(Command::MediaPlayPause) && h.rect.contains(vello::kurbo::Point::new(lx, ly)))
+        });
+        let mut moving = false;
+        let mut ease = |v: &mut f64, target: f64, tau: f64| {
+            if !on_screen || (target - *v).abs() < 0.004 {
+                *v = target;
+            } else {
+                *v += (target - *v) * (1.0 - (-dt / tau).exp());
+                moving = true;
+            }
+        };
+        let target = if self.playing_shown() { 1.0 } else { 0.0 };
+        ease(&mut self.play_anim, target, 70.0);
+        ease(&mut self.disc_hover, if over { 1.0 } else { 0.0 }, 60.0);
+        ease(&mut self.disc_press, 0.0, 90.0);
+        ease(&mut self.skip_press, 0.0, 110.0);
+        moving
+    }
+
     /// Moves the levels the bars show towards the real ones: about a twentieth of a second to cover most of the
     /// distance, so the 10 or 30 changes a second that arrive look like a continuous slide at any refresh rate.
     /// A slider being dragged follows the pointer exactly. Returns true while something is still on its way.
@@ -1926,7 +1991,7 @@ impl Island {
         self.settled = at_rest && self.alpha >= 1.0 && self.want == self.shown && self.want_side == self.shown_side;
         // what needs frames: motion at every vsync, an equalizer at 30 fps, things that expire a few times a second,
         // a timer twice a second, otherwise the clock once a second
-        let levels_moving = self.ease_levels(dt_ms);
+        let levels_moving = self.ease_levels(dt_ms) | self.ease_media_button(dt_ms);
         let waiting_for_hover = (self.hovering && now - self.hover_since < HOVER_INTENT_MS + 60) || now < self.hover_left + HOVER_GRACE_MS + 60;
         let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving;
         let equalizer = self.data.media.as_ref().is_some_and(|m| m.playing) && matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric);
@@ -2907,6 +2972,73 @@ mod tests {
         i.push(i.now, Input::Key(KeyInput::Enter));
         assert!(i.take_commands().is_empty());
         assert_eq!(i.face_size(Face::Options).1, 14.0 + 34.0 + 40.0 + 4.0 * 34.0 + 14.0 + DOCK_H, "two rules and two add rows, and the dock");
+    }
+
+    fn media_page(playing: bool) -> Island {
+        let mut i = Island::new(Config::default());
+        i.data = data();
+        i.data.media.as_mut().unwrap().playing = playing;
+        i.push(T0, Input::OpenPage(Page::Media));
+        draw_frames(&mut i, 300);
+        assert!(matches!(i.current_face(), Face::MediaFull | Face::MediaLyric));
+        i
+    }
+
+    #[test]
+    fn the_play_pause_button_answers_at_once_and_the_icons_cross_fade() {
+        let mut i = media_page(false);
+        assert_eq!((i.play_anim, i.playing_shown()), (0.0, false));
+        assert!(press(&mut i, Action::Cmd(Command::MediaPlayPause)));
+        assert_eq!(i.take_commands(), vec![Command::MediaPlayPause], "the player is asked once");
+        assert!(i.playing_shown(), "it shows playing before the player has said so");
+        assert!(i.disc_press > 0.9, "and the disc gives under the press");
+        i.tick(i.now + 8, 8.0);
+        assert!(i.play_anim > 0.0 && i.play_anim < 0.5, "one frame in: part of the way ({})", i.play_anim);
+        draw_frames(&mut i, 40);
+        assert!(i.play_anim > 0.99, "and then the pause icon is fully there");
+        assert!(i.disc_press < 0.05, "the press has died away");
+        // the player agrees: nothing changes, the override is dropped
+        i.data.media.as_mut().unwrap().playing = true;
+        draw_frames(&mut i, 5);
+        assert!(i.play_override.is_none() && i.playing_shown());
+    }
+
+    #[test]
+    fn a_press_the_player_never_confirms_is_taken_back() {
+        let mut i = media_page(true);
+        assert!(press(&mut i, Action::Cmd(Command::MediaPlayPause)));
+        assert!(!i.playing_shown());
+        draw_frames(&mut i, 40);
+        assert!(i.play_anim < 0.1, "shown as paused: {}", i.play_anim);
+        i.now += 2000; // the player still says playing
+        draw_frames(&mut i, 40);
+        assert!(i.playing_shown(), "back to what the player says");
+        assert!(i.play_anim > 0.9);
+    }
+
+    #[test]
+    fn a_skip_button_nudges_its_icon_and_comes_back() {
+        let mut i = media_page(true);
+        assert!(press(&mut i, Action::Cmd(Command::MediaNext)));
+        assert_eq!(i.take_commands(), vec![Command::MediaNext]);
+        assert!(i.skip_press > 0.9, "{}", i.skip_press);
+        draw_frames(&mut i, 60);
+        assert!(i.skip_press.abs() < 0.01, "back in place: {}", i.skip_press);
+        assert!(press(&mut i, Action::Cmd(Command::MediaPrevious)));
+        assert!(i.skip_press < -0.9, "the other way for previous: {}", i.skip_press);
+    }
+
+    #[test]
+    fn the_disc_swells_under_the_pointer() {
+        let mut i = media_page(true);
+        let disc = i.hits.iter().find(|h| h.action == Action::Cmd(Command::MediaPlayPause)).unwrap().rect;
+        assert_eq!(i.disc_hover, 0.0);
+        i.pointer_moved(i.now, disc.center().x + i.pill_origin.0, disc.center().y + i.pill_origin.1);
+        draw_frames(&mut i, 30);
+        assert!(i.disc_hover > 0.95, "{}", i.disc_hover);
+        i.pointer_left(i.now);
+        draw_frames(&mut i, 30);
+        assert!(i.disc_hover < 0.05);
     }
 
     #[test]
