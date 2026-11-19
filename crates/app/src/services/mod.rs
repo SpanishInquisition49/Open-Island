@@ -14,6 +14,8 @@ pub mod icons;
 pub mod parse;
 #[cfg(target_os = "linux")]
 pub mod devices;
+#[cfg(target_os = "linux")]
+pub mod audio_route;
 pub mod windows_focus;
 pub mod sound;
 pub mod tz;
@@ -139,6 +141,7 @@ pub fn start(tx: Sender<Msg>, waker: Arc<dyn Fn() + Send + Sync>) -> Sender<Comm
     {
         niri::start(rep.clone());
         devices::start(rep.clone());
+        audio_route::start(rep.clone());
         linux::start(rep.clone(), cmd_rx, settings, dnd);
     }
     #[cfg(not(target_os = "linux"))]

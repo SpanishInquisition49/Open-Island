@@ -75,6 +75,8 @@ pub struct Config {
     pub weather: bool,
     /// Play a sound when a timer ends.
     pub timer_sound: bool,
+    /// Move the audio output to headphones when they connect, and back when they go.
+    pub auto_audio_output: bool,
 }
 
 impl Default for Config {
@@ -103,6 +105,7 @@ impl Default for Config {
             hide_on_fullscreen: true,
             weather: true,
             timer_sound: true,
+            auto_audio_output: true,
         }
     }
 }

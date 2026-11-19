@@ -2319,6 +2319,7 @@ dependencies = [
  "interprocess",
  "island-core",
  "island-ui",
+ "libc",
  "log",
  "png",
  "pollster",

@@ -255,3 +255,11 @@ other installed fonts, by script: kana and kanji in a Japanese font (Noto Sans C
 Korean one, Chinese in a Chinese one, then Arabic, Thai, symbols and the like in a Noto font or any font that has it. The
 font is loaded the first time it is needed. On Linux install `noto-fonts-cjk`; Windows and macOS ship with such fonts. There
 is no shaping, so Arabic and Indic scripts come out letter by letter, not joined. Colour emoji are not drawn.
+
+## Audio output follows the headphones (Linux)
+
+When Bluetooth or USB headphones connect (or a headphone jack is plugged in) the island makes them the default output and shows
+a short "Audio output" card; when they go, the output falls back to the best one left. WirePlumber does that on its own until
+something pins a default output (the sink button of the quick settings, or a mixer, stores it as
+`default.configured.audio.sink`), and from then on new headphones are ignored: that is what this works around. Switch it off with
+`auto_audio_output` (Options > Island > "Audio to headphones").

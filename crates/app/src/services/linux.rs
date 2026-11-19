@@ -165,9 +165,20 @@ fn read_brightness() -> Option<f32> {
 
 /// Lines of `pactl subscribe` (what PulseAudio / PipeWire report as it happens), so volume and recording streams
 /// are read when they change instead of every few hundred milliseconds. None when pactl is missing.
-fn pactl_events() -> Option<std::sync::mpsc::Receiver<String>> {
+pub(crate) fn pactl_subscribe() -> Option<std::sync::mpsc::Receiver<String>> {
     use std::io::{BufRead, BufReader};
-    let mut child = Proc::new("pactl").arg("subscribe").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().ok()?;
+    use std::os::unix::process::CommandExt;
+    let mut cmd = Proc::new("pactl");
+    cmd.arg("subscribe").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    // SAFETY: only prctl is called between fork and exec, which is async-signal-safe. Without this a `pactl subscribe`
+    // outlives an island that is killed (it only notices when it next has something to write).
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().ok()?;
     let out = child.stdout.take()?;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -188,7 +199,7 @@ fn audio_and_brightness(rep: Reporter, settings: Arc<Settings>) {
         let mut last_bloop = std::time::Instant::now();
         let mut last_vol_read = std::time::Instant::now();
         let mut last_change = std::time::Instant::now() - Duration::from_secs(60);
-        let events = pactl_events();
+        let events = pactl_subscribe();
         let mut first = true;
         loop {
             // the volume is read when the audio server says something changed (and once a few seconds as a
@@ -329,7 +340,7 @@ fn video_devices_exist() -> bool {
 fn privacy(rep: Reporter) {
     std::thread::spawn(move || {
         let mut last = Privacy::default();
-        let events = pactl_events();
+        let events = pactl_subscribe();
         let has_camera = video_devices_exist();
         let (mut camera, mut screen) = (false, false);
         let (mut camera_at, mut screen_at) = (None::<std::time::Instant>, None::<std::time::Instant>);

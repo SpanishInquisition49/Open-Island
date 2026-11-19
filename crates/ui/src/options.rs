@@ -18,6 +18,7 @@ pub fn toggles(tab: usize) -> &'static [(&'static str, &'static str)] {
             ("hide_on_fullscreen", "Hide under fullscreen"),
             ("weather", "Weather"),
             ("timer_sound", "Timer sound"),
+            ("auto_audio_output", "Audio to headphones"),
         ],
         1 => &[
             ("show_notifications", "Show notifications"),
@@ -60,6 +61,7 @@ pub fn get_bool(c: &Config, key: &str) -> bool {
         "show_osd" => c.show_osd,
         "media_auto_expand" => c.media_auto_expand,
         "timer_sound" => c.timer_sound,
+        "auto_audio_output" => c.auto_audio_output,
         "battery_alerts" => c.battery_alerts,
         "weather" => c.weather,
         "rain_alerts" => c.rain_alerts,
@@ -84,6 +86,7 @@ pub fn set_bool(c: &mut Config, key: &str, on: bool) {
         "show_osd" => c.show_osd = on,
         "media_auto_expand" => c.media_auto_expand = on,
         "timer_sound" => c.timer_sound = on,
+        "auto_audio_output" => c.auto_audio_output = on,
         "battery_alerts" => c.battery_alerts = on,
         "weather" => c.weather = on,
         "rain_alerts" => c.rain_alerts = on,
@@ -167,7 +170,7 @@ mod tests {
     fn every_option_here_is_one_the_platform_layer_can_write() {
         // the keys of the page and the keys the configuration accepts are the same list
         let page: std::collections::BTreeSet<&str> = (0..TABS.len()).flat_map(|t| toggles(t).iter().map(|(k, _)| *k)).collect();
-        assert_eq!(page.len(), 18, "no option on two tabs");
+        assert_eq!(page.len(), 19, "no option on two tabs");
         assert_eq!(TABS[RULES_TAB], "Rules");
         let nums: Vec<&str> = (0..TABS.len()).flat_map(|t| steppers(t).iter().map(|s| s.0)).collect();
         assert_eq!(nums, ["notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes"]);
