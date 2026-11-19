@@ -267,6 +267,7 @@ impl ApplicationHandler<Wake> for Shell {
                     }
                     (ElementState::Released, MouseButton::Left) => self.app.pointer_up(),
                     (ElementState::Pressed, MouseButton::Right) => self.app.right_click(),
+                    (ElementState::Pressed, MouseButton::Middle) => self.app.middle_click(),
                     _ => {}
                 }
                 if let Some(w) = &self.window {

@@ -309,6 +309,12 @@ impl App {
         self.island.right_click(now);
     }
 
+    pub fn middle_click(&mut self) {
+        let now = self.now();
+        let cmds = self.island.middle_click(now);
+        self.exec(cmds);
+    }
+
     pub fn scroll(&mut self, dx: f64, dy: f64) {
         let now = self.now();
         let cmds = self.island.scroll(now, dx, dy);

@@ -23,6 +23,9 @@ pub const BUBBLE_GAP: f64 = 6.0;
 pub const ICON_W: f64 = 19.0;
 const REPLY_IDLE_MS: i64 = 20_000;
 const BAR_IDLE_MS: i64 = 30_000;
+/// How far a sideways swipe has to go (in scroll units) to skip a track, and the pause after one.
+const SWIPE_TRACK: f64 = 3.0;
+const SWIPE_COOLDOWN_MS: i64 = 700;
 const SNOOZE_MS: i64 = 10 * 60_000;
 /// Notifications the island makes itself (confirmations, reminders, the recap) have ids from here.
 const OWN_ID_BASE: u32 = 3_000_000;
@@ -344,6 +347,8 @@ pub struct Island {
     pub(crate) reply: Option<Reply>,
     pub(crate) bar: Option<Bar>,
     pub(crate) options_tab: usize,
+    swipe_acc: f64,
+    swipe_until: i64,
     pub(crate) reminders: Vec<Reminder>,
     next_own_id: u32,
     /// Keyboard navigation: the focused control among the drawn ones.
@@ -448,6 +453,8 @@ impl Island {
             reply: None,
             bar: None,
             options_tab: 0,
+            swipe_acc: 0.0,
+            swipe_until: 0,
             reminders: vec![],
             next_own_id: OWN_ID_BASE,
             kb: None,
@@ -1152,6 +1159,15 @@ impl Island {
         vec![]
     }
 
+    /// The middle button on the small pill mutes the sound.
+    pub fn middle_click(&mut self, now: i64) -> Vec<Command> {
+        self.now = now;
+        if self.shown.is_compact() {
+            return vec![Command::ToggleMute];
+        }
+        vec![]
+    }
+
     pub fn right_click(&mut self, now: i64) {
         self.now = now;
         // close an open page, or swap the main activity and the bubble
@@ -1171,11 +1187,23 @@ impl Island {
             if self.shown.size().1 > 40.0 {
                 self.cycle_page(if dx > 0.0 { 1 } else { -1 });
                 self.expand_until = now + 4000;
+                return vec![];
+            }
+            // over the small pill with music: next / previous track (a swipe is many small events: add them up,
+            // act once past a threshold, then leave a moment before the next one)
+            if self.data.media.is_some() && now >= self.swipe_until {
+                self.swipe_acc += dx;
+                if self.swipe_acc.abs() >= SWIPE_TRACK {
+                    let next = self.swipe_acc > 0.0;
+                    self.swipe_acc = 0.0;
+                    self.swipe_until = now + SWIPE_COOLDOWN_MS;
+                    return vec![if next { Command::MediaNext } else { Command::MediaPrevious }];
+                }
             }
             return vec![];
         }
-        // vertical scroll over a media face changes the volume
-        if matches!(self.shown, Face::MediaFull | Face::MediaLyric | Face::MediaMini | Face::Osd | Face::Qs) {
+        // vertical scroll over the pill or a media face changes the volume
+        if self.shown.is_compact() || matches!(self.shown, Face::MediaFull | Face::MediaLyric | Face::MediaMini | Face::Osd | Face::Qs) {
             let v = (self.data.volume.unwrap_or(0.5) + (dy as f32) * 0.02).clamp(0.0, 1.0);
             self.data.volume = Some(v);
             return vec![Command::SetVolume(v)];
@@ -2792,6 +2820,41 @@ mod tests {
         k.push(T0, Input::Osd { kind: OsdKind::Volume, level: 0.5, muted: false });
         run(&mut k, 600);
         assert_eq!(k.current_face(), Face::Osd, "and with it on, it shows");
+    }
+
+    #[test]
+    fn scrolling_over_the_small_pill_changes_the_volume_and_the_middle_button_mutes() {
+        let mut i = Island::new(Config::default());
+        i.data.volume = Some(0.50);
+        run(&mut i, 600);
+        assert!(i.current_face().is_compact());
+        let cmds = i.scroll(i.now, 0.0, 2.0);
+        assert!(matches!(cmds.as_slice(), [Command::SetVolume(v)] if (*v - 0.54).abs() < 1e-6), "{cmds:?}");
+        let cmds = i.scroll(i.now, 0.0, -50.0);
+        assert!(matches!(cmds.as_slice(), [Command::SetVolume(v)] if *v == 0.0), "down to zero, no further");
+        assert_eq!(i.middle_click(i.now), vec![Command::ToggleMute]);
+        // not while a page is open: there the middle button does nothing
+        i.push(i.now, Input::OpenPage(Page::Cal));
+        run(&mut i, 600);
+        assert!(i.middle_click(i.now).is_empty());
+    }
+
+    #[test]
+    fn a_sideways_swipe_over_the_pill_skips_a_track_once() {
+        let mut i = Island::new(Config::default());
+        i.data = data();
+        run(&mut i, 600);
+        assert_eq!(i.current_face(), Face::MediaMini);
+        assert!(i.scroll(i.now, 1.0, 0.0).is_empty(), "a small movement is added up, not acted on");
+        assert!(i.scroll(i.now, 1.0, 0.0).is_empty());
+        assert_eq!(i.scroll(i.now, 1.5, 0.0), vec![Command::MediaNext], "past the threshold: next");
+        assert!(i.scroll(i.now + 100, 5.0, 0.0).is_empty(), "the rest of the same swipe does nothing");
+        i.now += 800;
+        assert_eq!(i.scroll(i.now, -4.0, 0.0), vec![Command::MediaPrevious], "the other way: previous");
+        // without music a sideways swipe does nothing
+        let mut j = Island::new(Config::default());
+        run(&mut j, 600);
+        assert!(j.scroll(j.now, 9.0, 0.0).is_empty());
     }
 
     #[test]

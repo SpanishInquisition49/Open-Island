@@ -43,6 +43,7 @@ use wayland_protocols::wp::{
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
+const BTN_MIDDLE: u32 = 0x112;
 
 struct Wl {
     registry_state: RegistryState,
@@ -200,6 +201,7 @@ impl PointerHandler for Wl {
                 PointerEventKind::Press { button, .. } => match button {
                     BTN_LEFT => self.app.pointer_down(x, y),
                     BTN_RIGHT => self.app.right_click(),
+                    BTN_MIDDLE => self.app.middle_click(),
                     _ => {}
                 },
                 PointerEventKind::Release { button, .. } if button == BTN_LEFT => self.app.pointer_up(),
