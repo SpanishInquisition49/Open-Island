@@ -303,6 +303,45 @@ delegate_keyboard!(Wl);
 delegate_layer!(Wl);
 delegate_registry!(Wl);
 
+/// Reads the outputs on a queue of its own (the main one has no state to take their events yet) and returns the one
+/// whose connector name is `name` (`eDP-1`); matching is not case sensitive.
+fn pick_output(conn: &Connection, name: &str) -> Option<wl_output::WlOutput> {
+    struct Probe {
+        registry_state: RegistryState,
+        output_state: OutputState,
+    }
+    impl OutputHandler for Probe {
+        fn output_state(&mut self) -> &mut OutputState {
+            &mut self.output_state
+        }
+        fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+        fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+        fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    }
+    impl ProvidesRegistryState for Probe {
+        fn registry(&mut self) -> &mut RegistryState {
+            &mut self.registry_state
+        }
+        registry_handlers![OutputState];
+    }
+    delegate_output!(Probe);
+    delegate_registry!(Probe);
+
+    let (globals, mut queue) = registry_queue_init::<Probe>(conn).ok()?;
+    let mut probe = Probe { registry_state: RegistryState::new(&globals), output_state: OutputState::new(&globals, &queue.handle()) };
+    // the outputs announce themselves, then describe themselves: two round trips
+    queue.roundtrip(&mut probe).ok()?;
+    queue.roundtrip(&mut probe).ok()?;
+    let found = probe.output_state.outputs().find(|o| probe.output_state.info(o).and_then(|i| i.name).is_some_and(|n| n.eq_ignore_ascii_case(name)));
+    if found.is_none() {
+        let names: Vec<String> = probe.output_state.outputs().filter_map(|o| probe.output_state.info(&o).and_then(|i| i.name)).collect();
+        log::warn!("the screens are: {}", names.join(", "));
+    } else {
+        log::info!("the island is pinned to {name}");
+    }
+    found
+}
+
 pub fn run() -> Result<(), String> {
     let conn = Connection::connect_to_env().map_err(|e| e.to_string())?;
     let (globals, event_queue) = registry_queue_init::<Wl>(&conn).map_err(|e| e.to_string())?;
@@ -311,7 +350,13 @@ pub fn run() -> Result<(), String> {
     let layer_shell = LayerShell::bind(&globals, &qh).map_err(|_| "the compositor has no wlr-layer-shell".to_string())?;
 
     let surface = compositor.create_surface(&qh);
-    let layer = layer_shell.create_layer_surface(&qh, surface.clone(), Layer::Overlay, Some("open-island"), None);
+    // the `screen` option: a connector name pins the island to that screen, "focused" lets the compositor choose
+    let screen = crate::config::load().screen;
+    let output = if screen == "focused" { None } else { pick_output(&conn, &screen) };
+    if output.is_none() && screen != "focused" {
+        log::warn!("screen {screen:?} not found: the island goes where the compositor puts it");
+    }
+    let layer = layer_shell.create_layer_surface(&qh, surface.clone(), Layer::Overlay, Some("open-island"), output.as_ref());
     layer.set_anchor(Anchor::TOP);
     layer.set_exclusive_zone(-1);
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
@@ -325,9 +370,6 @@ pub fn run() -> Result<(), String> {
     let fractional = globals.bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ()).ok().map(|m| m.get_fractional_scale(&surface, &qh, ()));
     if viewport.is_none() || fractional.is_none() {
         log::warn!("no fractional scaling: the island will look soft on scaled displays");
-    }
-    if let Some(screen) = Some(crate::config::load().screen).filter(|s| s != "focused") {
-        log::warn!("screen = {screen}: pinning to a screen is not done on Wayland yet; the compositor puts the island on the focused one");
     }
     layer.commit();
 

@@ -233,7 +233,7 @@ or in `config.json`, or from a script with `open-island msg set <option> <value>
 | tab | option | default |
 |---|---|---|
 | Island | `clock_in_pill`, `status_icons`, `clipboard_history`, `hide_on_fullscreen`, `weather`, `timer_sound` | on |
-| Island | `timer_presets` (`["5m","10m","25m"]`), `screen` (`focused` or a name such as `eDP-1`; pinning works on X11/Windows/macOS, not yet on Wayland), `timer_sound_file` | |
+| Island | `timer_presets` (`["5m","10m","25m"]`), `screen` (`focused` or a name such as `eDP-1`; pinning by connector name, on Wayland too; an unknown name is logged and the compositor chooses), `timer_sound_file` | |
 | Alerts | `show_notifications`, `show_osd`, `battery_alerts`, `meeting_alerts`, `rain_alerts` | on |
 | Alerts | `quiet_in_meetings`, `quiet_on_mic`, `quiet_on_screen_share` (extras of this island) | on |
 | Alerts | `notification_seconds` (2-30, 5), `osd_seconds` (0.5-5, 1.6), `low_battery_percent` (5-50, 15), `meeting_lead_minutes` (1-60, 10) | |
