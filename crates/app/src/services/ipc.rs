@@ -86,6 +86,26 @@ fn parse(line: &str) -> Option<Input> {
             })
         }
         "hits" => Input::DumpHits,
+        // `key enter|escape|backspace|left|right|up|down|home|end|tab` or `key text <what to type>`: for tests, the
+        // same input a keyboard gives when the island holds it
+        "key" => {
+            use island_ui::model::KeyInput as K;
+            Input::Key(match payload.split_once(' ').map_or((payload, ""), |(a, b)| (a, b)) {
+                ("enter", _) => K::Enter,
+                ("escape", _) => K::Escape,
+                ("backspace", _) => K::Backspace,
+                ("delete", _) => K::Delete,
+                ("left", _) => K::Left,
+                ("right", _) => K::Right,
+                ("up", _) => K::Up,
+                ("down", _) => K::Down,
+                ("home", _) => K::Home,
+                ("end", _) => K::End,
+                ("tab", _) => K::NextPage,
+                ("text", t) if !t.is_empty() => K::Text(t.to_string()),
+                _ => return None,
+            })
+        }
         "click" => {
             let mut it = payload.split_whitespace().filter_map(|v| v.parse::<f64>().ok());
             Input::Click(it.next()?, it.next()?)
@@ -246,6 +266,9 @@ mod tests {
             Some(Input::Activity(island_core::progress::State::Run, a)) if a.label == "CI" && a.detail == "building" && a.icon.as_deref() == Some("git-branch") && a.tint == Some((0xff, 0x9f, 0x0a)) && a.frac == Some(0.4)));
         assert!(matches!(parse(r#"activity fail {"label":"CI","detail":"2 failed"}"#), Some(Input::Activity(island_core::progress::State::Fail, a)) if a.detail == "2 failed" && a.icon.is_none() && a.tint.is_none()));
         assert!(matches!(parse("activity clear"), Some(Input::ProgressClear)));
+        assert!(matches!(parse("key enter"), Some(Input::Key(island_ui::model::KeyInput::Enter))));
+        assert!(matches!(parse("key text 10m tea"), Some(Input::Key(island_ui::model::KeyInput::Text(t))) if t == "10m tea"));
+        assert!(parse("key wobble").is_none() && parse("key text").is_none());
         assert!(parse("activity wobble {}").is_none() && parse("activity run {broken").is_none());
         let opt = |l: &str| parse_command(l);
         assert_eq!(opt("set lyrics off"), Some(island_ui::model::Command::SetOption { key: "lyrics".into(), value: island_ui::model::OptionValue::Bool(false) }));
