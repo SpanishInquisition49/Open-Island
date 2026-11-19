@@ -89,15 +89,25 @@ pub fn command(rep: &Reporter, c: Command) {
     let rep = rep.clone();
     std::thread::spawn(move || {
         let settings = crate::config::load();
-        let outcome = match (settings.latitude, settings.longitude) {
-            (Some(lat), Some(lon)) => match geocode(&location) {
-                Some(to) => plan(mode, (lat, lon), to, start_ms, margin_secs),
+        // from where the machine is (a GeoClue fix of the last quarter hour, asked for when there is none), else the settings
+        #[cfg(target_os = "linux")]
+        let here = super::location::recent().or_else(|| super::location::fix(6).map(|(la, lo, _)| (la, lo)));
+        #[cfg(not(target_os = "linux"))]
+        let here: Option<(f64, f64)> = None;
+        let from = here.or(settings.latitude.zip(settings.longitude));
+        let mut dest_found = None;
+        let outcome = match from {
+            Some(from) => match geocode(&location) {
+                Some(to) => {
+                    dest_found = Some(to);
+                    plan(mode, from, to, start_ms, margin_secs)
+                }
                 None => Err("place not found on the map".to_string()),
             },
-            _ => Err("set your location in the settings".to_string()),
+            None => Err("set your location in the settings".to_string()),
         };
         let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-        let info = TripInfo { event_id, mode, trip: outcome.as_ref().ok().cloned(), error: outcome.err(), at_ms };
+        let info = TripInfo { event_id, mode, trip: outcome.as_ref().ok().cloned(), error: outcome.err(), at_ms, dest: dest_found };
         rep.patch(move |d| {
             d.trips.retain(|t| !(t.event_id == info.event_id && t.mode == info.mode));
             d.trips.push(info);

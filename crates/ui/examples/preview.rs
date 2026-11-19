@@ -234,7 +234,7 @@ fn main() {
             let day = NOW / 86_400_000 * 86_400_000;
             let ev = |t: &str, h: i64, m: i64, loc: &str| island_core::calendar::Event { id: t.into(), title: t.into(), start_ms: day + (h * 60 + m) * 60_000, end_ms: day + (h * 60 + m + 60) * 60_000, color: Some((90, 160, 255)), calendar: "Uni".into(), location: loc.into(), ..Default::default() };
             d.events = vec![ev("Reti di calcolatori", 8, 30, "Aula 12, Polo Fibonacci, Pisa"), ev("Studio di gruppo", 17, 0, "Biblioteca, Via Santa Maria 36, Pisa")];
-            d.trips = vec![island_ui::model::TripInfo { event_id: "Studio di gruppo".into(), mode: island_core::travel::Mode::Car, trip: Some(island_core::travel::Trip { secs: 840, meters: Some(5200), leave_ms: Some(day + (16 * 60 + 41) * 60_000), transfers: None }), error: None, at_ms: NOW }];
+            d.trips = vec![island_ui::model::TripInfo { event_id: "Studio di gruppo".into(), mode: island_core::travel::Mode::Car, trip: Some(island_core::travel::Trip { secs: 840, meters: Some(5200), leave_ms: Some(day + (16 * 60 + 41) * 60_000), transfers: None }), error: None, at_ms: NOW, dest: None }];
             i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
         })),
         ("page-activity", Box::new(|i, d| {
@@ -264,6 +264,33 @@ fn main() {
         })),
         ("media-teams-mini", Box::new(|_, d| {
             d.media = Some(Media { track_id: "z".into(), title: "Teams and Channels | 26 - decorators and OOP in Python | Microsoft Teams".into(), artist: String::new(), playing: true, position_ms: 9000.0, sampled_at_ms: NOW, length_ms: 7000.0, art: None, can_seek: true, players: 3, player: "Zen".into() });
+        })),
+        ("page-map", Box::new(|i, d| {
+            let day = NOW / 86_400_000 * 86_400_000;
+            d.utc_offset_secs = 3600;
+            i.data.utc_offset_secs = 3600;
+            d.position = Some(island_ui::model::Position { lat: 43.7255, lon: 10.3908, accuracy_m: 380.0, at_ms: NOW, source: island_ui::model::PosSource::Geoclue });
+            d.events = vec![island_core::calendar::Event { id: "e".into(), title: "Studio di gruppo".into(), start_ms: day + 17 * 3_600_000, end_ms: day + 18 * 3_600_000, location: "Biblioteca, Via Santa Maria 36, Pisa".into(), ..Default::default() }];
+            d.trips = vec![island_ui::model::TripInfo { event_id: "e".into(), mode: island_core::travel::Mode::Car, trip: Some(island_core::travel::Trip { secs: 480, meters: Some(2300), leave_ms: Some(day + 16 * 3_600_000), transfers: None }), error: None, at_ms: NOW, dest: Some((43.7167, 10.4017)) }];
+            // stand-in tiles: a dark ground with a street grid, so the layout can be judged without the network
+            let tile = |shade: u8| {
+                let mut rgba = vec![0u8; 512 * 512 * 4];
+                for yy in 0..512usize {
+                    for xx in 0..512usize {
+                        let street = xx % 128 < 6 || yy % 160 < 6;
+                        let v = if street { 70 } else { 22 + shade };
+                        let o = (yy * 512 + xx) * 4;
+                        rgba[o..o + 4].copy_from_slice(&[v, v, v + 4, 255]);
+                    }
+                }
+                island_ui::model::Image { id: 9000 + shade as u64, width: 512, height: 512, rgba: std::sync::Arc::new(rgba) }
+            };
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Map));
+            i.data = d.clone();
+            let v = i.map_view_for_preview();
+            for (n, t) in island_core::map::tiles(v.0, v.1, v.2, island_ui::island::MAP_W, island_ui::island::MAP_H).into_iter().enumerate() {
+                i.push(NOW, Input::Tile { z: t.z, x: t.x, y: t.y, image: tile((n % 3) as u8 * 3) });
+            }
         })),
         ("page-audio", Box::new(|i, d| {
             let sink = |n: &str, l: &str| island_ui::model::Sink { name: n.into(), label: l.into() };

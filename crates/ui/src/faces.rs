@@ -159,6 +159,7 @@ impl Island {
             Face::Today => self.face_today(p, w, h),
             Face::Send => self.face_send(p, w, h),
             Face::Activity => self.face_activity(p, w, h),
+            Face::Map => self.face_map(p, w, h),
             Face::Bar => self.face_bar(p, w, h),
             Face::Osd => self.face_osd(p, w, h),
             Face::Power => self.face_power(p, w, h),
@@ -1531,6 +1532,107 @@ impl Island {
         }
     }
 
+    /// The map: where the machine is, and where the next event is.
+    fn face_map(&self, p: P, w: f64, _h: f64) {
+        use island_core::map;
+        let hy = self.page_header(p, w, "Map");
+        let view = self.map_view();
+        let area = rect(14.0, 14.0 + 34.0, MAP_W, MAP_H);
+        p.stagger(1);
+        // the ground
+        p.rrect(area, 14.0, theme::CHIP);
+        let Some(v) = view else {
+            p.text("Looking for where you are…", area.center().x, area.center().y - 8.0, 12.0, REG, theme::DIM, Align::Center, 300.0);
+            p.text("It asks GeoClue; the location in the settings is the fallback", area.center().x, area.center().y + 12.0, 10.0, REG, theme::DIM, Align::Center, 360.0);
+            let rb = p.button_width("Retry");
+            p.button(rect(w - 14.0 - rb, hy - 14.0, rb, 28.0), "Retry", Action::MapRefresh);
+            return;
+        };
+        let t = p.transform;
+        p.scene.push_clip_layer(Fill::NonZero, t, &RoundedRect::from_rect(area, 14.0));
+        for tile in map::tiles(v.center.0, v.center.1, v.zoom, MAP_W, MAP_H) {
+            let (x, y) = (area.x0 + tile.px, area.y0 + tile.py);
+            match self.tiles.get(&(tile.z, tile.x, tile.y)) {
+                Some(img) => draw_tile(p, img, x, y, map::TILE),
+                None => p.rrect(rect(x + 1.0, y + 1.0, map::TILE - 2.0, map::TILE - 2.0), 0.0, with_alpha(theme::FG, 0.04)),
+            }
+        }
+        let at = |lat: f64, lon: f64| {
+            let (px, py) = map::project(v.center, v.zoom, MAP_W, MAP_H, lat, lon);
+            (area.x0 + px, area.y0 + py)
+        };
+        let me = at(v.me.0, v.me.1);
+        if let Some((d, title)) = &v.dest {
+            let dp = at(d.0, d.1);
+            p.line(me, dp, 2.0, &[6.0, 6.0], with_alpha(theme::RAIN, 0.95));
+            p.circle(dp.0, dp.1, 7.0, theme::ORANGE);
+            p.circle(dp.0, dp.1, 2.5, theme::BG);
+            // the name next to the pin, on a dark plate so it reads over any map
+            let tw = (p.fonts.measure(title, 10.5, SEMI) as f64).min(150.0) + 12.0;
+            let label = rect((dp.0 - tw / 2.0).clamp(area.x0 + 4.0, area.x1 - tw - 4.0), (dp.1 - 30.0).clamp(area.y0 + 4.0, area.y1 - 22.0), tw, 18.0);
+            p.rrect(label, 9.0, with_alpha(theme::BG, 0.85));
+            p.text(title, label.center().x, label.center().y, 10.5, SEMI, theme::FG, Align::Center, 150.0);
+        }
+        // me: the doubt around the fix, then the dot
+        let r = map::metres_to_px(v.accuracy_m, v.me.0, v.zoom).clamp(0.0, 220.0);
+        if r > 8.0 {
+            p.circle(me.0, me.1, r, with_alpha(theme::RAIN, 0.16));
+            p.circle_stroke(me.0, me.1, r, 1.0, with_alpha(theme::RAIN, 0.6));
+        }
+        p.circle(me.0, me.1, 7.5, theme::FG);
+        p.circle(me.0, me.1, 5.5, theme::RAIN);
+        // distance and time to the event, top left
+        if let Some((d, _)) = &v.dest {
+            let dist = map::fmt_distance(map::distance_m(v.me, *d));
+            let trip = self.trip_event().and_then(|e| self.trip_info(&e.id, self.cfg.travel_mode)).and_then(|t| t.trip.as_ref());
+            let text = match trip {
+                Some(t) => format!("{dist} · {} {}", island_core::travel::fmt_secs(t.secs), self.cfg.travel_mode.name()),
+                None => dist,
+            };
+            let cw = p.fonts.measure(&text, 11.0, SEMI) as f64 + 16.0;
+            let chip = rect(area.x0 + 8.0, area.y0 + 8.0, cw, 22.0);
+            p.rrect(chip, 11.0, with_alpha(theme::BG, 0.85));
+            p.text(&text, chip.center().x, chip.center().y, 11.0, SEMI, theme::FG, Align::Center, 260.0);
+            p.hit(chip, Action::MapRoute);
+        }
+        // the zoom, on the right
+        for (n, (icon, d)) in [("plus", 1i8), ("minus", -1)].into_iter().enumerate() {
+            let b = rect(area.x1 - 38.0, area.y0 + 8.0 + n as f64 * 34.0, 30.0, 30.0);
+            p.rrect(b, 15.0, with_alpha(theme::BG, 0.85));
+            p.icon(icon, b.center().x, b.center().y, 14.0, if p.hovered(b) { theme::ACCENT } else { theme::FG });
+            p.hit(b, Action::MapZoom(d));
+        }
+        // the credit the tile providers ask for
+        let credit = "© OpenStreetMap © CARTO";
+        let cw = p.fonts.measure(credit, 8.5, REG) as f64 + 10.0;
+        p.rrect(rect(area.x1 - cw - 4.0, area.y1 - 17.0, cw, 13.0), 6.5, with_alpha(theme::BG, 0.7));
+        p.text(credit, area.x1 - cw / 2.0 - 4.0, area.y1 - 10.5, 8.5, REG, theme::DIM, Align::Center, 160.0);
+        p.scene.pop_layer();
+        p.hit(area, Action::MapOpen);
+        // under the map: the numbers, and what can be done with them
+        p.stagger(2);
+        let y = area.y1 + 8.0 + 15.0;
+        let acc = if v.from_settings {
+            "the location set in the settings".to_string()
+        } else if v.accuracy_m >= 1000.0 {
+            format!("± {:.1} km", v.accuracy_m / 1000.0)
+        } else {
+            format!("± {} m", v.accuracy_m.round() as i64)
+        };
+        let mut x = w - 14.0;
+        for (icon, action) in [("refresh", Action::MapRefresh), ("clipboard-text", Action::MapCopy), ("external-link", Action::MapOpen)] {
+            p.icon_button(x - 14.0, y, 30.0, icon, 15.0, action);
+            x -= 34.0;
+        }
+        if v.dest.is_some() {
+            let label = if self.map_both { "Me" } else { "Both" };
+            let bw = p.button_width(label);
+            p.button(rect(x - bw, y - 14.0, bw, 28.0), label, Action::MapView);
+            x -= bw + 8.0;
+        }
+        p.text(&format!("{:.5}, {:.5}  {acc}", v.me.0, v.me.1), 20.0, y, 11.0, REG, theme::DIM, Align::Left, (x - 28.0) as f32);
+    }
+
     /// Where the attention went today, and the last half hour.
     fn face_activity(&self, p: P, w: f64, _h: f64) {
         let hy = self.page_header(p, w, "Activity");
@@ -1943,6 +2045,7 @@ fn page_icon(p: Page) -> &'static str {
         Page::Today => "clock",
         Page::Send => "send",
         Page::Activity => "chart-donut",
+        Page::Map => "map-pin",
     }
 }
 
@@ -1978,6 +2081,21 @@ fn ago(delta_ms: i64) -> String {
 }
 
 /// An image drawn into a rounded square (`cover` fit).
+/// A map tile (256 logical pixels square) at a place in the page; the caller clips.
+fn draw_tile(p: P, img: &Image, x: f64, y: f64, size: f64) {
+    use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+    let data = ImageData {
+        data: Blob::new(img.rgba.clone() as std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: img.width,
+        height: img.height,
+    };
+    let s = size / img.width.max(1) as f64;
+    let t = p.transform;
+    p.scene.draw_image(&ImageBrush::new(data), t * Affine::translate((x, y)) * Affine::scale(s));
+}
+
 fn draw_image(p: P, img: &Image, x: f64, y: f64, size: f64, radius: f64) {
     use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
     let data = ImageData {

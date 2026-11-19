@@ -54,6 +54,8 @@ pub struct Config {
     pub travel_mode: island_core::travel::Mode,
     /// How much earlier than needed to leave.
     pub travel_margin_ms: i64,
+    /// Where the map tiles come from, with {z} {x} {y}.
+    pub map_tile_url: String,
     /// Notifications are held after this many minutes in a row on work apps (0: never).
     pub deep_work_minutes: i64,
     /// Names of apps that count as work (part of the name, any case).
@@ -106,6 +108,7 @@ impl Default for Config {
             travel_times: true,
             travel_mode: island_core::travel::Mode::Car,
             travel_margin_ms: 5 * 60_000,
+            map_tile_url: island_core::map::DEFAULT_TILES.to_string(),
             deep_work_minutes: 20,
             deep_work_apps: island_core::activity::DEEP_WORK_APPS.iter().map(|s| s.to_string()).collect(),
             break_minutes: 0,
@@ -137,6 +140,10 @@ impl Default for Config {
 }
 
 /// What a click on a drawn region does.
+/// Size of the map on the map page, in logical pixels.
+pub const MAP_W: f64 = 392.0;
+pub const MAP_H: f64 = 190.0;
+
 /// Rows of the clipboard page.
 pub const CLIP_ROWS: usize = 7;
 
@@ -191,6 +198,15 @@ pub enum Action {
     NotifOpen,
     ClipRestore(usize),
     ClipPin(usize),
+    /// Zoom the map in or out.
+    MapZoom(i8),
+    /// Switch the map between "around me" and "me and the next event".
+    MapView,
+    MapCopy,
+    MapOpen,
+    /// Directions to the next event, in the browser.
+    MapRoute,
+    MapRefresh,
     ActivityTab(usize),
     /// Put a line of the rewind page back on the clipboard.
     RewindCopy(usize),
@@ -281,6 +297,19 @@ pub struct RewindRow {
     pub text: String,
     /// The text to put back on the clipboard when the row is clicked.
     pub copy: Option<String>,
+}
+
+/// What the map page draws.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapView {
+    pub center: (f64, f64),
+    pub zoom: u8,
+    pub me: (f64, f64),
+    pub accuracy_m: f64,
+    /// The position is the one set for the weather, not a fix.
+    pub from_settings: bool,
+    /// The next event's place and its title.
+    pub dest: Option<((f64, f64), String)>,
 }
 
 /// A reminder set from the command bar.
@@ -449,6 +478,12 @@ pub struct Island {
     log_track: String,
     last_copy: String,
     pub(crate) activity_tab: usize,
+    pub(crate) map_zoom_delta: i8,
+    pub(crate) map_both: bool,
+    map_asked_at: i64,
+    /// Map tiles that arrived (and which were asked for), by zoom, x, y.
+    pub(crate) tiles: std::collections::HashMap<(u8, i64, i64), Image>,
+    tiles_asked: std::collections::HashSet<(u8, i64, i64)>,
     break_told: Option<i64>,
     /// Trips already asked for (event, way) and when; events already told to leave for.
     trip_asked: std::collections::HashMap<(String, island_core::travel::Mode), i64>,
@@ -577,6 +612,11 @@ impl Island {
             log_track: String::new(),
             last_copy: String::new(),
             activity_tab: 0,
+            map_zoom_delta: 0,
+            map_both: true,
+            map_asked_at: i64::MIN / 2,
+            tiles: Default::default(),
+            tiles_asked: Default::default(),
             break_told: None,
             trip_asked: Default::default(),
             leave_told: Default::default(),
@@ -688,6 +728,14 @@ impl Island {
                 self.page = p.or(Some(Page::Home));
                 self.hover_page = self.page;
                 self.expand_until = now + KB_IDLE_MS;
+            }
+            Input::Tile { z, x, y, image } => {
+                if self.tiles.len() >= 80 {
+                    // the oldest are not tracked: dropping everything is cheap, the visible ones come back at once
+                    self.tiles.clear();
+                    self.tiles_asked.clear();
+                }
+                self.tiles.insert((z, x, y), image);
             }
             Input::Focused { app, title } => {
                 let ds = self.day_start(now);
@@ -988,6 +1036,11 @@ impl Island {
     /// Opens a tab of the options page (0 Island, 1 Alerts, 2 Music).
     pub fn show_options_tab(&mut self, tab: usize) {
         self.options_tab = tab.min(crate::options::TABS.len() - 1);
+    }
+
+    /// The centre and zoom of the map page (for the preview tool).
+    pub fn map_view_for_preview(&self) -> (f64, f64, u8) {
+        self.map_view().map_or((0.0, 0.0, 3), |v| (v.center.0, v.center.1, v.zoom))
     }
 
     /// Opens a tab of the activity page (0 today, 1 rewind).
@@ -1398,6 +1451,7 @@ impl Island {
         );
         if let Some(at) = v.iter().position(|p| *p == Page::Home) {
             v.insert(at + 1, Page::Today);
+            v.insert(at + 2, Page::Map);
         }
         if self.cfg.clipboard_history {
             v.push(Page::Clip);
@@ -1660,6 +1714,35 @@ impl Island {
                     return vec![Command::RestoreClipboard(t)];
                 }
             }
+            Action::MapZoom(d) => self.map_zoom_delta = (self.map_zoom_delta + d).clamp(-10, 10),
+            Action::MapView => {
+                self.map_both = !self.map_both;
+                self.map_zoom_delta = 0;
+            }
+            Action::MapRefresh => {
+                self.map_asked_at = now;
+                return vec![Command::RefreshPosition];
+            }
+            Action::MapCopy => {
+                if let Some(v) = self.map_view() {
+                    let text = format!("{:.6}, {:.6}", v.me.0, v.me.1);
+                    self.say("Position copied", &text);
+                    return vec![Command::RestoreClipboard(text)];
+                }
+            }
+            Action::MapOpen => {
+                if let Some(v) = self.map_view() {
+                    return vec![Command::OpenUrl(island_core::map::osm_url(v.me.0, v.me.1, v.zoom))];
+                }
+            }
+            Action::MapRoute => {
+                if let Some(v) = self.map_view() {
+                    if let Some((d, _)) = v.dest {
+                        let engine = if self.cfg.travel_mode == island_core::travel::Mode::Car { "car" } else { "foot" };
+                        return vec![Command::OpenUrl(island_core::map::directions_url(engine, v.me, d))];
+                    }
+                }
+            }
             Action::ClipPin(i) => {
                 if let Some(t) = self.data.clipboard.get(i).cloned() {
                     return vec![Command::PinClipboard(t)];
@@ -1707,6 +1790,7 @@ impl Island {
             Face::Audio => h = self.audio_height(),
             Face::Today => h = self.today_height(),
             Face::Send => h = self.send_height(),
+            Face::Map => h = 14.0 + 34.0 + MAP_H + 8.0 + 34.0 + 10.0,
             Face::Activity => h = 14.0 + 34.0 + 8.0 + 6.0 * 30.0 + 10.0,
             Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
             Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
@@ -1986,6 +2070,41 @@ impl Island {
         self.push(now, Input::Notification(n));
     }
 
+    /// What the map page shows: the centre and zoom, where the machine is, and the next event's place when it is known.
+    pub(crate) fn map_view(&self) -> Option<MapView> {
+        use island_core::map;
+        let pos = self.data.position.as_ref()?;
+        let me = (pos.lat, pos.lon);
+        let dest = self.trip_event().and_then(|e| {
+            let at = self.data.trips.iter().filter(|t| t.event_id == e.id).find_map(|t| t.dest)?;
+            Some((at, e.title.clone(), e.id.clone()))
+        });
+        let (center, base) = match (&dest, self.map_both) {
+            (Some((d, _, _)), true) => (map::midpoint(me, *d), map::zoom_to_fit(me, *d, MAP_W, MAP_H, 40.0)),
+            _ => (me, map::zoom_for_accuracy(pos.accuracy_m)),
+        };
+        let zoom = (base as i16 + self.map_zoom_delta as i16).clamp(map::MIN_ZOOM as i16, map::MAX_ZOOM as i16) as u8;
+        Some(MapView { center, zoom, me, accuracy_m: pos.accuracy_m, from_settings: pos.source == PosSource::Settings, dest: dest.map(|(d, t, _)| (d, t)) })
+    }
+
+    /// Asks for the map tiles in view, and for a position when there is none or it is old.
+    fn map_needs(&mut self, now: i64) {
+        if self.page != Some(Page::Map) {
+            return;
+        }
+        if now - self.map_asked_at > 120_000 && self.data.position.as_ref().is_none_or(|p| p.source == PosSource::Settings || now - p.at_ms > 120_000) {
+            self.map_asked_at = now;
+            self.pending.push(Command::RefreshPosition);
+        }
+        let Some(v) = self.map_view() else { return };
+        for t in island_core::map::tiles(v.center.0, v.center.1, v.zoom, MAP_W, MAP_H) {
+            let key = (t.z, t.x, t.y);
+            if !self.tiles.contains_key(&key) && self.tiles_asked.insert(key) {
+                self.pending.push(Command::LoadTile { z: t.z, x: t.x, y: t.y, template: self.cfg.map_tile_url.clone() });
+            }
+        }
+    }
+
     /// One card when a program starts to hog the machine (and again only after ten minutes, or for another program).
     fn culprit_card(&mut self, now: i64) {
         let Some(c) = self.data.culprit.clone() else { return };
@@ -2127,6 +2246,7 @@ impl Island {
         self.break_card(now);
         self.update_quiet(now);
         self.trips(now);
+        self.map_needs(now);
         self.heads_up(now);
         self.culprit_card(now);
         self.network_card(now);
@@ -2521,7 +2641,7 @@ pub(crate) fn notif_code(n: &Incoming) -> Option<String> {
 
 /// Faces that are pages: they carry the dock at the bottom.
 pub(crate) fn has_dock(f: Face) -> bool {
-    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options | Face::Audio | Face::Today | Face::Send | Face::Activity)
+    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options | Face::Audio | Face::Today | Face::Send | Face::Activity | Face::Map)
 }
 
 pub(crate) fn page_of(f: Face) -> Option<Page> {
@@ -2543,6 +2663,7 @@ pub(crate) fn page_of(f: Face) -> Option<Page> {
         Face::Today => Page::Today,
         Face::Send => Page::Send,
         Face::Activity => Page::Activity,
+        Face::Map => Page::Map,
         Face::FocusFull => Page::Focus,
         _ => return None,
     })
@@ -3731,7 +3852,7 @@ mod tests {
         i.push(T0, Input::OpenPage(Page::Qs));
         draw_frames(&mut i, 200);
         let gotos: Vec<Page> = i.hits.iter().filter_map(|h| if let Action::Goto(p) = h.action { Some(p) } else { None }).collect();
-        assert_eq!(gotos, vec![Page::Home, Page::Today, Page::Cal, Page::Qs, Page::Sys, Page::Activity, Page::Clip, Page::Options, Page::Settings], "no media, timer, notifications or forecast yet");
+        assert_eq!(gotos, vec![Page::Home, Page::Today, Page::Map, Page::Cal, Page::Qs, Page::Sys, Page::Activity, Page::Clip, Page::Options, Page::Settings], "no media, timer, notifications or forecast yet");
         let home = i.hits.iter().find(|h| h.action == Action::Goto(Page::Sys)).unwrap().rect;
         i.pointer_down(i.now, home.center().x + i.pill_origin.0, home.center().y + i.pill_origin.1);
         assert_eq!(i.page, Some(Page::Sys));
@@ -4342,7 +4463,7 @@ mod tests {
         run(&mut i, 1000);
         assert!(i.take_commands().iter().any(|c| matches!(c, Command::PlanTrip { mode: Mode::Transit, .. })), "the other way is asked for at once");
         // the way is known: leave in two minutes
-        i.data.trips = vec![TripInfo { event_id: "near".into(), mode: Mode::Transit, trip: Some(Trip { secs: 1500, meters: None, leave_ms: Some(i.now + 2 * 60_000), transfers: Some(1) }), error: None, at_ms: i.now }];
+        i.data.trips = vec![TripInfo { event_id: "near".into(), mode: Mode::Transit, trip: Some(Trip { secs: 1500, meters: None, leave_ms: Some(i.now + 2 * 60_000), transfers: Some(1) }), error: None, at_ms: i.now, dest: None }];
         run(&mut i, 1000);
         let card = i.notif.clone().expect("a card");
         assert_eq!(card.summary, "Leave in 2 min for Seminar");
@@ -4480,6 +4601,51 @@ mod tests {
         i.data.media.as_mut().unwrap().artist = " ".into();
         i.draw(&mut without, &f, (420.0, 200.0), 1.0);
         let _ = (with_empty, without);
+    }
+
+    #[test]
+    fn the_map_page_asks_for_a_position_and_the_tiles_in_view_and_offers_what_to_do() {
+        let mut i = Island::new(Config::default());
+        i.push(T0, Input::OpenPage(Page::Map));
+        run(&mut i, 1000);
+        assert!(i.take_commands().contains(&Command::RefreshPosition), "no position yet: ask for one");
+        assert!(i.map_view().is_none());
+        draw_frames(&mut i, 50);
+        assert_eq!(i.current_face(), Face::Map);
+        i.data.position = Some(Position { lat: 43.7255, lon: 10.3908, accuracy_m: 300.0, at_ms: i.now, source: PosSource::Geoclue });
+        i.push(i.now, Input::OpenPage(Page::Map));
+        run(&mut i, 500);
+        let cmds = i.take_commands();
+        let loads: Vec<&Command> = cmds.iter().filter(|c| matches!(c, Command::LoadTile { .. })).collect();
+        assert!(loads.len() >= 2 && loads.len() <= 9, "the tiles of the view: {}", loads.len());
+        assert!(matches!(loads[0], Command::LoadTile { z: 16, template, .. } if template.contains("{z}")), "close, for a precise fix");
+        run(&mut i, 500);
+        assert!(!i.take_commands().iter().any(|c| matches!(c, Command::LoadTile { .. })), "each tile is asked for once");
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::MapZoom(1)));
+        run(&mut i, 300);
+        assert!(i.take_commands().iter().any(|c| matches!(c, Command::LoadTile { z: 17, .. })), "zooming asks for the new tiles");
+        draw_frames(&mut i, 50);
+        assert!(press(&mut i, Action::MapCopy));
+        assert!(i.take_commands().contains(&Command::RestoreClipboard("43.725500, 10.390800".into())));
+        run(&mut i, 4000); // the card that says it is copied goes away
+        i.push(i.now, Input::OpenPage(Page::Map));
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::MapOpen));
+        assert!(i.take_commands().iter().any(|c| matches!(c, Command::OpenUrl(u) if u.starts_with("https://www.openstreetmap.org/?mlat=43.7255"))));
+        // the next event with a known place: both on the map, and a way to get directions
+        let ev = Event { id: "e".into(), title: "Seminar".into(), start_ms: i.now + 3_600_000, end_ms: i.now + 7_200_000, location: "Via Roma 1, Pisa".into(), ..Default::default() };
+        i.data.events = vec![ev];
+        i.data.trips = vec![TripInfo { event_id: "e".into(), mode: island_core::travel::Mode::Car, trip: None, error: None, at_ms: i.now, dest: Some((43.7167, 10.4017)) }];
+        i.map_zoom_delta = 0;
+        run(&mut i, 4000);
+        let v = i.map_view().unwrap();
+        assert!(v.dest.is_some() && v.zoom >= 12 && v.zoom <= 16, "fits both: {}", v.zoom);
+        i.push(i.now, Input::OpenPage(Page::Map));
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::MapRoute));
+        assert!(i.take_commands().iter().any(|c| matches!(c, Command::OpenUrl(u) if u.contains("directions?engine=fossgis_osrm_car"))));
+        assert!(i.pages().windows(2).any(|w| w == [Page::Today, Page::Map]), "the dock has it after Today");
     }
 
     #[test]

@@ -27,6 +27,7 @@ fn page(name: &str) -> Option<island_core::face::Page> {
         "audio" | "sound" => Page::Audio,
         "today" | "day" => Page::Today,
         "send" => Page::Send,
+        "map" | "where" | "position" => Page::Map,
         "activity" | "rewind" | "attention" => Page::Activity,
         "focus" => Page::Focus,
         "settings" | "config" => Page::Settings,

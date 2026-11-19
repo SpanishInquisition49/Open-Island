@@ -254,6 +254,9 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     u.away_recap = b("away_recap", u.away_recap);
     u.culprit_alerts = b("culprit_alerts", u.culprit_alerts);
     u.travel_times = b("travel_times", u.travel_times);
+    if let Some(url) = v.get("map_tile_url").and_then(|x| x.as_str()).map(str::trim).filter(|u| u.starts_with("https://") && u.contains("{z}") && u.contains("{x}") && u.contains("{y}")) {
+        u.map_tile_url = url.to_string();
+    }
     if let Some(m) = v.get("deep_work_minutes").and_then(|x| x.as_i64()).filter(|m| (0..=240).contains(m)) {
         u.deep_work_minutes = m;
     }
@@ -514,6 +517,8 @@ mod tests {
         let d = parse(r#"{"deep_work_minutes":45,"break_minutes":90,"deep_work_apps":["Kitty"," ","Obsidian"]}"#).unwrap();
         assert_eq!((d.ui.deep_work_minutes, d.ui.break_minutes, d.ui.deep_work_apps.clone()), (45, 90, vec!["kitty".to_string(), "obsidian".to_string()]));
         assert_eq!(parse(r#"{"deep_work_minutes":999,"deep_work_apps":[]}"#).unwrap().ui.deep_work_minutes, UiConfig::default().deep_work_minutes);
+        assert_eq!(parse(r#"{"map_tile_url":"https://tile.openstreetmap.org/{z}/{x}/{y}.png"}"#).unwrap().ui.map_tile_url, "https://tile.openstreetmap.org/{z}/{x}/{y}.png");
+        assert_eq!(parse(r#"{"map_tile_url":"http://x/{z}/{x}/{y}"}"#).unwrap().ui.map_tile_url, UiConfig::default().map_tile_url, "https only, with the three fields");
         let t = parse(r#"{"travel_mode":"Transit","travel_margin_minutes":10,"travel_times":false}"#).unwrap();
         assert_eq!((t.ui.travel_mode, t.ui.travel_margin_ms, t.ui.travel_times), (island_core::travel::Mode::Transit, 600_000, false));
         assert_eq!(parse(r#"{"travel_mode":"rocket"}"#).unwrap().ui.travel_mode, island_core::travel::Mode::Car);

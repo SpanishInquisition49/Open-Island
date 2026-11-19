@@ -361,3 +361,21 @@ pointer for two minutes. Nothing leaves the machine; only today's totals per app
 - **Break nudge**: `break_minutes` (default 0 = off) gives a card after that long on one app, then again after another period.
 
 Other compositors than niri give no focus events yet, so the page stays empty there (the options still apply).
+
+## The map
+
+The map icon in the dock (after Today; `open-island msg page map`) shows where the machine is on a dark map, with the circle of
+doubt of the fix, and the place of the next event as an orange pin joined to you by a dashed line, with the distance and the
+travel time of the chosen way (a click on that chip opens directions on openstreetmap.org). **+ / -** zoom, **Me / Both**
+switches between around me and fitting both, and the buttons below copy the coordinates, open the spot in the browser and look
+for a new fix. A click on the map opens it in the browser too.
+
+The position comes from GeoClue (the `where-am-i` client that ships with it, which is allowed to ask without a configuration
+change): Wi-Fi when the machine has it, else GeoIP, which can be 25 km off; the circle shows how sure it is. Without GeoClue
+the location set for the weather is used (the page says so). The trips to events now start from the fix too (a fix of the last
+quarter hour, asked for when there is none), not from the weather location.
+
+Tiles come from CARTO's dark map (OpenStreetMap data, credit drawn on the map), 256 px at a time, kept in
+`~/.cache/open-island/tiles` for two weeks. What leaves the machine when the page is open is the tile addresses, which say
+roughly where you are looking. `map_tile_url` in `config.json` changes the provider (an https URL with `{z}`, `{x}` and `{y}`,
+e.g. `https://tile.openstreetmap.org/{z}/{x}/{y}.png`; mind the provider's usage policy).

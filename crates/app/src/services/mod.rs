@@ -19,6 +19,9 @@ pub mod audio_mixer;
 #[cfg(target_os = "linux")]
 pub mod culprit;
 #[cfg(target_os = "linux")]
+pub mod location;
+pub mod tiles;
+#[cfg(target_os = "linux")]
 pub mod netwatch;
 pub mod travel;
 #[cfg(target_os = "linux")]
@@ -152,6 +155,7 @@ pub fn start(tx: Sender<Msg>, waker: Arc<dyn Fn() + Send + Sync>) -> Sender<Comm
         audio_route::start(rep.clone());
         audio_mixer::start(rep.clone());
         culprit::start(rep.clone());
+        location::start(rep.clone());
         netwatch::start(rep.clone());
         linux::start(rep.clone(), cmd_rx, settings, dnd);
     }

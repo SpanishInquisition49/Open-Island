@@ -67,6 +67,21 @@ impl<A: Clone> Painter<'_, A> {
         self.scene.stroke(&Stroke::new(width), self.transform, color, None, &shape);
     }
 
+    /// A straight line of a given width and dash pattern (empty: solid).
+    pub fn line(&mut self, a: (f64, f64), b: (f64, f64), width: f64, dash: &[f64], color: Color) {
+        let color = self.c(color);
+        let mut stroke = Stroke::new(width).with_caps(vello::kurbo::Cap::Round);
+        if !dash.is_empty() {
+            stroke = stroke.with_dashes(0.0, dash.iter().copied());
+        }
+        self.scene.stroke(&stroke, self.transform, color, None, &vello::kurbo::Line::new(a, b));
+    }
+
+    pub fn circle_stroke(&mut self, cx: f64, cy: f64, r: f64, width: f64, color: Color) {
+        let color = self.c(color);
+        self.scene.stroke(&Stroke::new(width), self.transform, color, None, &vello::kurbo::Circle::new((cx, cy), r));
+    }
+
     pub fn circle(&mut self, cx: f64, cy: f64, r: f64, color: Color) {
         let shape = vello::kurbo::Circle::new((cx, cy), r);
         let color = self.c(color);

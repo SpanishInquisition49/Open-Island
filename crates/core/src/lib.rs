@@ -16,6 +16,7 @@ pub mod ics;
 pub mod localsend;
 pub mod lyrics;
 pub mod netstate;
+pub mod map;
 pub mod notify;
 pub mod timeline;
 pub mod pomodoro;

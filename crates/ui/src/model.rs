@@ -90,6 +90,25 @@ pub struct Sink {
     pub label: String,
 }
 
+/// Where the machine is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Position {
+    pub lat: f64,
+    pub lon: f64,
+    /// Radius of doubt in metres (0 when it is a place the person set).
+    pub accuracy_m: f64,
+    pub at_ms: i64,
+    pub source: PosSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PosSource {
+    /// GeoClue (Wi-Fi or GeoIP, as the system sees it).
+    Geoclue,
+    /// The location set for the weather.
+    Settings,
+}
+
 /// What it takes to get to an event by one way of travelling.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TripInfo {
@@ -99,6 +118,8 @@ pub struct TripInfo {
     /// Why there is no trip.
     pub error: Option<String>,
     pub at_ms: i64,
+    /// The coordinates of the place, once found.
+    pub dest: Option<(f64, f64)>,
 }
 
 /// An application recording from the microphone.
@@ -248,6 +269,7 @@ pub struct Data {
     pub vpn: bool,
     /// Trips to events with a place, as the service worked them out.
     pub trips: Vec<TripInfo>,
+    pub position: Option<Position>,
     /// Who is using the microphone and the camera right now (read while the system page is open).
     pub mic_users: Vec<MicUser>,
     pub camera_users: Vec<(String, Vec<u32>)>,
@@ -362,6 +384,8 @@ pub enum Input {
     Returned { away_ms: i64 },
     /// No keyboard or pointer input for this long (the person is probably away).
     Idled { after_ms: i64 },
+    /// A map tile arrived.
+    Tile { z: u8, x: i64, y: i64, image: Image },
     /// The window with the focus changed (app id and title).
     Focused { app: String, title: String },
     /// Files to send: opens the page that lists the devices (from `open-island send`, or a file dropped on the island).
@@ -440,6 +464,10 @@ pub enum Command {
     QuitProcs(Vec<u32>),
     /// Switch the connection off and on again.
     ReconnectNetwork,
+    /// Look for where the machine is.
+    RefreshPosition,
+    /// Fetch a map tile (the template has {z} {x} {y}).
+    LoadTile { z: u8, x: i64, y: i64, template: String },
     /// Mute or unmute one application's microphone stream.
     MuteMicStream { stream: u32, mute: bool },
     /// Work out how to get to an event that arrives by `start_ms` (the place is sent to public map services).
