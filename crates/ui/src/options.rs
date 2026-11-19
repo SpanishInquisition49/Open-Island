@@ -44,7 +44,8 @@ pub fn steppers(tab: usize) -> &'static [Stepper] {
             ("notification_seconds", "Card time", "s", 1.0, 2.0, 30.0),
             ("osd_seconds", "Bar time", "s", 0.1, 0.5, 5.0),
             ("low_battery_percent", "Low battery", "%", 1.0, 5.0, 50.0),
-            ("meeting_lead_minutes", "Lead time", "min", 1.0, 1.0, 60.0),
+            ("meeting_lead_minutes", "Card before event", "min", 1.0, 1.0, 60.0),
+            ("meeting_pill_minutes", "Pill before event", "min", 1.0, 1.0, 120.0),
         ],
         _ => &[],
     }
@@ -111,6 +112,7 @@ pub fn get_num(c: &Config, key: &str) -> f64 {
         "osd_seconds" => c.osd_ms as f64 / 1000.0,
         "low_battery_percent" => c.low_battery as f64,
         "meeting_lead_minutes" => c.meeting_lead_ms as f64 / 60_000.0,
+        "meeting_pill_minutes" => c.meeting_pill_ms as f64 / 60_000.0,
         _ => 0.0,
     }
 }
@@ -121,6 +123,7 @@ pub fn set_num(c: &mut Config, key: &str, v: f64) {
         "osd_seconds" => c.osd_ms = (v * 1000.0).round() as i64,
         "low_battery_percent" => c.low_battery = v as f32,
         "meeting_lead_minutes" => c.meeting_lead_ms = (v * 60_000.0).round() as i64,
+        "meeting_pill_minutes" => c.meeting_pill_ms = (v * 60_000.0).round() as i64,
         _ => {}
     }
 }
@@ -173,7 +176,7 @@ mod tests {
         assert_eq!(page.len(), 19, "no option on two tabs");
         assert_eq!(TABS[RULES_TAB], "Rules");
         let nums: Vec<&str> = (0..TABS.len()).flat_map(|t| steppers(t).iter().map(|s| s.0)).collect();
-        assert_eq!(nums, ["notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes"]);
+        assert_eq!(nums, ["notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes"]);
     }
 
     #[test]

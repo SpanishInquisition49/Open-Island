@@ -285,6 +285,9 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     if let Some(m) = v.get("meeting_lead_minutes").and_then(|x| x.as_i64()).filter(|m| (1..=120).contains(m)) {
         u.meeting_lead_ms = m * 60_000;
     }
+    if let Some(m) = v.get("meeting_pill_minutes").and_then(|x| x.as_i64()).filter(|m| (1..=240).contains(m)) {
+        u.meeting_pill_ms = m * 60_000;
+    }
     if let Some(m) = v.get("notification_seconds").and_then(|x| x.as_i64()).filter(|m| (2..=60).contains(m)) {
         u.notification_ms = m * 1000;
     }
@@ -301,7 +304,7 @@ pub const BOOL_OPTIONS: &[&str] = &[
 ];
 
 /// The numeric options: key, smallest, largest, and whether it is a whole number.
-pub const NUM_OPTIONS: &[(&str, f64, f64, bool)] = &[("notification_seconds", 2.0, 30.0, true), ("osd_seconds", 0.5, 5.0, false), ("low_battery_percent", 5.0, 50.0, true), ("meeting_lead_minutes", 1.0, 60.0, true)];
+pub const NUM_OPTIONS: &[(&str, f64, f64, bool)] = &[("notification_seconds", 2.0, 30.0, true), ("osd_seconds", 0.5, 5.0, false), ("low_battery_percent", 5.0, 50.0, true), ("meeting_lead_minutes", 1.0, 60.0, true), ("meeting_pill_minutes", 1.0, 120.0, true)];
 
 /// Adds a notification rule (once): `hide` drops the notifications, otherwise they only lose their sound.
 pub fn add_filter(o: &mut serde_json::Map<String, serde_json::Value>, app: &str, content: &str, hide: bool) {
@@ -482,6 +485,9 @@ mod tests {
         assert!(matches!(&s.calendars[2].kind, CalendarKind::CalDav { server, .. } if server == ICLOUD_SERVER));
         assert_eq!(s.ui.timer_presets, vec![300, 600]);
         assert_eq!(s.ui.meeting_lead_ms, 15 * 60_000);
+        assert_eq!(s.ui.meeting_pill_ms, UiConfig::default().meeting_pill_ms);
+        assert_eq!(parse(r#"{"meeting_pill_minutes":45}"#).unwrap().ui.meeting_pill_ms, 45 * 60_000);
+        assert_eq!(parse(r#"{"meeting_pill_minutes":0}"#).unwrap().ui.meeting_pill_ms, UiConfig::default().meeting_pill_ms);
         assert!(!s.ui.lyrics);
         assert!(!s.ui.quiet_on_mic && s.ui.quiet_in_meetings && s.ui.quiet_on_screen_share, "quiet: only what is switched off is off");
     }

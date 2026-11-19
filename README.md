@@ -238,7 +238,7 @@ or in `config.json`, or from a script with `open-island msg set <option> <value>
 | Island | `timer_presets` (`["5m","10m","25m"]`), `screen` (`focused` or a name such as `eDP-1`; pinning by connector name, on Wayland too; an unknown name is logged and the compositor chooses), `timer_sound_file` | |
 | Alerts | `show_notifications`, `show_osd`, `battery_alerts`, `meeting_alerts`, `rain_alerts` | on |
 | Alerts | `quiet_in_meetings`, `quiet_on_mic`, `quiet_on_screen_share` (extras of this island) | on |
-| Alerts | `notification_seconds` (2-30, 5), `osd_seconds` (0.5-5, 1.6), `low_battery_percent` (5-50, 15), `meeting_lead_minutes` (1-60, 10) | |
+| Alerts | `notification_seconds` (2-30, 5), `osd_seconds` (0.5-5, 1.6), `low_battery_percent` (5-50, 15), `meeting_lead_minutes` (1-60, 10: the card), `meeting_pill_minutes` (1-120, 10: the pill on the side) | |
 | Music | `media_auto_expand`, `lyrics`, `lyrics_in_pill` (off), `art_tint` | on |
 
 Not carried over, because they are about running inside Noctalia: `style` (the island is always black), `update_check`.

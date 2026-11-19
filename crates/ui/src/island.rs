@@ -47,6 +47,8 @@ pub struct Config {
     pub notification_ms: i64,
     pub osd_ms: i64,
     pub meeting_lead_ms: i64,
+    /// How long before an event the pill on the side reminds of it (the card is `meeting_lead_ms` before).
+    pub meeting_pill_ms: i64,
     pub meeting_alerts: bool,
     pub rain_alerts: bool,
     pub battery_alerts: bool,
@@ -85,6 +87,7 @@ impl Default for Config {
             notification_ms: 5000,
             osd_ms: 1600,
             meeting_lead_ms: 10 * 60_000,
+            meeting_pill_ms: 10 * 60_000,
             meeting_alerts: true,
             rain_alerts: true,
             battery_alerts: true,
@@ -1301,7 +1304,7 @@ impl Island {
         if !self.cfg.meeting_alerts {
             return None;
         }
-        calendar::soon(&self.data.events, self.now, self.cfg.meeting_lead_ms)
+        calendar::soon(&self.data.events, self.now, self.cfg.meeting_pill_ms)
     }
 
     pub(crate) fn focus_active(&self) -> bool {
@@ -3825,6 +3828,21 @@ mod tests {
         assert!(i.send_files.is_empty(), "the files went");
         draw_frames(&mut i, 300);
         assert_ne!(i.current_face(), Face::Send, "the page closes once the files are on their way");
+    }
+
+    #[test]
+    fn the_pill_reminds_earlier_than_the_card_when_asked() {
+        let mut cfg = Config::default();
+        cfg.meeting_lead_ms = 10 * 60_000;
+        cfg.meeting_pill_ms = 45 * 60_000;
+        let mut i = Island::new(cfg);
+        i.data.events = vec![Event { id: "e".into(), title: "Seminar".into(), start_ms: T0 + 30 * 60_000, end_ms: T0 + 60 * 60_000, all_day: false, url: None, color: None, calendar: "c".into() }];
+        i.push(T0, Input::OpenKeyboard(None));
+        i.now = T0;
+        assert!(i.soon().is_some(), "30 min away: inside the 45 min of the pill");
+        assert!(i.announcer.new_heads_up(&i.data.events, T0, i.cfg.meeting_lead_ms).is_none(), "but outside the 10 min of the card");
+        i.cfg.meeting_pill_ms = 20 * 60_000;
+        assert!(i.soon().is_none(), "a shorter pill lead hides it");
     }
 
     #[test]
