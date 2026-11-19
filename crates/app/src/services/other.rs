@@ -20,6 +20,8 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, _settings: std::sync::Arc
             match c {
                 Command::OpenUrl(u) if u.starts_with("http://") || u.starts_with("https://") => open_url(&u),
                 Command::RestoreClipboard(t) => super::generic::restore_clipboard(&t),
+                Command::ScanPeers => super::send::scan(rep2.clone()),
+                Command::SendFiles { peer, paths } => super::send::send(rep2.clone(), peer, paths),
                 Command::PinClipboard(t) => super::clipboard_history::toggle_pin(&rep2, &t),
                 Command::ForgetClipboard(t) => super::clipboard_history::forget(&rep2, &t),
                 #[cfg(target_os = "windows")]

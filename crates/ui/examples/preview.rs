@@ -221,6 +221,12 @@ fn main() {
             d.events = vec![ev("Reti di calcolatori", 8, 30, 120, false), ev("Pranzo", 12, 30, 60, false), ev("Ricevimento", 15, 0, 45, true), ev("Studio di gruppo", 17, 0, 90, false)];
             i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
         })),
+        ("page-send", Box::new(|i, d| {
+            let peer = |a: &str, m: &str, k: &str| island_core::localsend::Peer { alias: a.into(), ip: "192.168.1.9".into(), port: 53317, https: true, model: m.into(), kind: k.into() };
+            d.peers = vec![peer("Pixel di Gabriele", "Pixel 8", "mobile"), peer("Studio-PC", "Windows", "desktop")];
+            d.peers_scanning = true;
+            i.push(NOW, Input::SendFiles(vec!["/tmp/preview-report.pdf".into()]));
+        })),
         ("page-audio", Box::new(|i, d| {
             let sink = |n: &str, l: &str| island_ui::model::Sink { name: n.into(), label: l.into() };
             d.sinks = vec![sink("speaker", "Built-in Speakers"), sink("bluez_output.x", "WH-1000XM5")];

@@ -157,6 +157,7 @@ impl Island {
             Face::Options => self.face_options(p, w, h),
             Face::Audio => self.face_audio(p, w, h),
             Face::Today => self.face_today(p, w, h),
+            Face::Send => self.face_send(p, w, h),
             Face::Bar => self.face_bar(p, w, h),
             Face::Osd => self.face_osd(p, w, h),
             Face::Power => self.face_power(p, w, h),
@@ -1436,6 +1437,55 @@ impl Island {
         }
     }
 
+    const SEND_ROWS: usize = 5;
+
+    pub(crate) fn send_height(&self) -> f64 {
+        let rows = self.data.peers.len().clamp(1, Self::SEND_ROWS) as f64;
+        14.0 + 34.0 + 8.0 + rows * 34.0 + if self.data.peers_scanning && !self.data.peers.is_empty() { 14.0 } else { 0.0 } + 10.0
+    }
+
+    /// "report.pdf" or "3 files · 4.2 MB"
+    pub(crate) fn send_summary(&self) -> String {
+        let sizes: u64 = self.send_files.iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
+        match self.send_files.as_slice() {
+            [one] => format!("{} · {}", one.rsplit(['/', '\\']).next().unwrap_or(one), island_core::localsend::size_text(sizes)),
+            many => format!("{} files · {}", many.len(), island_core::localsend::size_text(sizes)),
+        }
+    }
+
+    fn face_send(&self, p: P, w: f64, _h: f64) {
+        let hy = self.page_header(p, w, "Send to…");
+        let summary = self.send_summary();
+        p.text(&summary, w - 14.0, hy, 11.0, REG, theme::DIM, Align::Right, (w - 130.0) as f32);
+        let mut y = 14.0 + 34.0 + 8.0;
+        if self.data.peers.is_empty() {
+            p.stagger(1);
+            let t = if self.data.peers_scanning { "Looking for devices with LocalSend…" } else { "No device found. Open LocalSend on the other one." };
+            p.text(t, w / 2.0, y + 16.0, 12.0, REG, theme::DIM, Align::Center, (w - 40.0) as f32);
+            return;
+        }
+        for (n, peer) in self.data.peers.iter().take(Self::SEND_ROWS).enumerate() {
+            p.stagger(1 + n);
+            let r = rect(14.0, y, w - 28.0, 30.0);
+            p.rrect(r, 11.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
+            let icon = match peer.kind.as_str() {
+                "mobile" => "device-mobile",
+                "desktop" => "device-laptop",
+                _ => "devices",
+            };
+            p.icon(icon, r.x0 + 18.0, r.center().y, 15.0, theme::FG);
+            p.text(&peer.alias, r.x0 + 34.0, r.center().y, 12.0, SEMI, theme::FG, Align::Left, (r.width() - 150.0) as f32);
+            if !peer.model.is_empty() {
+                p.text(&peer.model, r.x1 - 12.0, r.center().y, 10.0, REG, theme::DIM, Align::Right, 110.0);
+            }
+            p.hit(r, Action::SendTo(n));
+            y += 34.0;
+        }
+        if self.data.peers_scanning {
+            p.text("still looking…", w / 2.0, y + 4.0, 10.0, REG, theme::DIM, Align::Center, 200.0);
+        }
+    }
+
     /// Rows the today page lists at most (the now line is one more).
     const TODAY_ROWS: usize = 7;
 
@@ -1686,6 +1736,7 @@ fn page_icon(p: Page) -> &'static str {
         Page::Options => "toggle-right",
         Page::Audio => "volume",
         Page::Today => "clock",
+        Page::Send => "send",
     }
 }
 

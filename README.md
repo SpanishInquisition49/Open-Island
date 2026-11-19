@@ -277,3 +277,11 @@ PipeWire reports a change, so it follows headphones coming and going.
 The clock icon in the dock (right after home, `open-island msg page today`) lists the day in one column: calendar events and
 reminders in time order, what is over dimmed, and a line for "now" between it and what is still to come. The header says what
 is next and in how long; an event with a link has a join button on its row.
+
+## Send files to another device (LocalSend)
+
+`open-island send report.pdf photo.jpg` opens a page that lists the devices on your network running
+[LocalSend](https://localsend.org) (phones, other computers; the app must be open there), found by looking at the /24 network
+for its port, and sends the files to the one you click. The progress pill shows it (the other side has to accept first), then a
+card says how it went. It speaks LocalSend's protocol v2 (self-signed HTTPS, which is why the certificate is not checked), so
+nothing else has to be installed on this machine. Not done: dropping a file on the island, and receiving.

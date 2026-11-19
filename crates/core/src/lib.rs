@@ -8,6 +8,7 @@ pub mod color;
 pub mod duration;
 pub mod face;
 pub mod ics;
+pub mod localsend;
 pub mod lyrics;
 pub mod notify;
 pub mod timeline;

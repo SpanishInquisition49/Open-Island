@@ -476,3 +476,13 @@ mod inspect_caldav {
         }
     }
 }
+
+/// An agent for talking to a device on the local network: LocalSend devices use a self-signed certificate, and a
+/// status like 403 ("declined") is an answer to read, not an error.
+pub fn lan_agent(timeout: Duration) -> ureq::Agent {
+    init_tls();
+    let tls = ureq::tls::TlsConfig::builder().disable_verification(true);
+    #[cfg(not(target_os = "linux"))]
+    let tls = tls.provider(ureq::tls::TlsProvider::NativeTls);
+    ureq::Agent::config_builder().tls_config(tls.build()).timeout_global(Some(timeout)).http_status_as_error(false).user_agent("open-island").build().into()
+}

@@ -26,6 +26,7 @@ fn page(name: &str) -> Option<island_core::face::Page> {
         "clip" | "clipboard" => Page::Clip,
         "audio" | "sound" => Page::Audio,
         "today" | "day" => Page::Today,
+        "send" => Page::Send,
         "focus" => Page::Focus,
         "settings" | "config" => Page::Settings,
         "timer" => Page::Timer,
@@ -88,6 +89,8 @@ fn parse(line: &str) -> Option<Input> {
             })
         }
         "hits" => Input::DumpHits,
+        // `send <path>[<tab><path>...]`: files to send to a device on the network
+        "send" if !payload.is_empty() => Input::SendFiles(payload.split('\t').map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()),
         // `key enter|escape|backspace|left|right|up|down|home|end|tab` or `key text <what to type>`: for tests, the
         // same input a keyboard gives when the island holds it
         "key" => {
@@ -280,6 +283,8 @@ mod tests {
         assert!(matches!(parse("cmd-end 99 130"), Some(Input::CommandEnd { id, code: 130 }) if id == "99"));
         assert!(parse("cmd-start 99 ten make").is_none() && parse("cmd-start 99 5").is_none() && parse("cmd-end 99").is_none());
         assert!(matches!(parse("timer 25m"), Some(Input::StartTimer(1500))));
+        assert!(matches!(parse("send /a b/c.txt\t/d.txt"), Some(Input::SendFiles(f)) if f == vec!["/a b/c.txt".to_string(), "/d.txt".to_string()]));
+        assert!(parse("send").is_none());
         assert!(matches!(parse("page cal"), Some(Input::OpenPage(_))));
         assert!(matches!(parse("page next"), Some(Input::CyclePage(1))));
         assert!(matches!(parse("page prev"), Some(Input::CyclePage(-1))));

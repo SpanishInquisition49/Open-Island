@@ -165,6 +165,8 @@ pub enum Action {
     NotifOpen,
     ClipRestore(usize),
     ClipPin(usize),
+    /// Send the files waiting on the send page to the device at this index.
+    SendTo(usize),
     ClipForget(usize),
 }
 
@@ -376,6 +378,8 @@ pub struct Island {
     /// A skip button was pressed: +1 next, -1 previous, dying away; the icon nudges in its direction.
     pub(crate) skip_press: f64,
     pub(crate) reminders: Vec<Reminder>,
+    /// Files waiting for a device to be picked (the send page).
+    pub(crate) send_files: Vec<String>,
     next_own_id: u32,
     /// Keyboard navigation: the focused control among the drawn ones.
     pub(crate) kb: Option<Kb>,
@@ -487,6 +491,7 @@ impl Island {
             disc_press: 0.0,
             skip_press: 0.0,
             reminders: vec![],
+            send_files: vec![],
             next_own_id: OWN_ID_BASE,
             kb: None,
             page_stack: vec![],
@@ -667,6 +672,14 @@ impl Island {
             Input::OpenPage(p) => {
                 self.activate(Action::Open(p));
                 self.expand_until = now + 5000;
+            }
+            Input::SendFiles(paths) => {
+                if !paths.is_empty() {
+                    self.send_files = paths;
+                    self.activate(Action::Open(Page::Send));
+                    self.expand_until = now + 30_000;
+                    self.pending.push(Command::ScanPeers);
+                }
             }
         }
     }
@@ -1488,6 +1501,14 @@ impl Island {
                     return vec![Command::RestoreClipboard(t)];
                 }
             }
+            Action::SendTo(i) => {
+                if let Some(peer) = self.data.peers.get(i).cloned() {
+                    let paths = std::mem::take(&mut self.send_files);
+                    let mut out = vec![Command::SendFiles { peer, paths }];
+                    out.extend(self.activate(Action::Back));
+                    return out;
+                }
+            }
             Action::ClipPin(i) => {
                 if let Some(t) = self.data.clipboard.get(i).cloned() {
                     return vec![Command::PinClipboard(t)];
@@ -1534,6 +1555,7 @@ impl Island {
             Face::Qs => h = self.qs_layout().height,
             Face::Audio => h = self.audio_height(),
             Face::Today => h = self.today_height(),
+            Face::Send => h = self.send_height(),
             Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
             Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
             Face::MediaMini | Face::TimerMini | Face::MeetMini => w += self.icon_count(true) as f64 * ICON_W,
@@ -2118,7 +2140,7 @@ fn side_page(s: Side) -> Page {
 
 /// Faces that are pages: they carry the dock at the bottom.
 pub(crate) fn has_dock(f: Face) -> bool {
-    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options | Face::Audio | Face::Today)
+    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options | Face::Audio | Face::Today | Face::Send)
 }
 
 pub(crate) fn page_of(f: Face) -> Option<Page> {
@@ -2138,6 +2160,7 @@ pub(crate) fn page_of(f: Face) -> Option<Page> {
         Face::Options => Page::Options,
         Face::Audio => Page::Audio,
         Face::Today => Page::Today,
+        Face::Send => Page::Send,
         Face::FocusFull => Page::Focus,
         _ => return None,
     })
@@ -3780,6 +3803,28 @@ mod tests {
         assert!(i.pages().windows(2).any(|w| w == [Page::Home, Page::Today]), "the dock shows it after the home page");
         draw_frames(&mut i, 200);
         assert_eq!(i.current_face(), Face::Today);
+    }
+
+    #[test]
+    fn files_to_send_open_a_page_of_devices_and_a_click_sends_them() {
+        let mut i = Island::new(Config::default());
+        let peer = |a: &str| island_core::localsend::Peer { alias: a.into(), ip: "10.0.0.2".into(), port: 53317, https: true, model: "Pixel 8".into(), kind: "mobile".into() };
+        i.push(T0, Input::SendFiles(vec![]));
+        assert!(i.take_commands().is_empty(), "no files, no page");
+        i.push(T0, Input::SendFiles(vec!["/tmp/a.txt".into(), "/tmp/b.txt".into()]));
+        assert!(i.take_commands().contains(&Command::ScanPeers), "the network is scanned at once");
+        i.data.peers_scanning = true;
+        draw_frames(&mut i, 200);
+        assert_eq!(i.current_face(), Face::Send);
+        i.data.peers = vec![peer("Pixel"), peer("Laptop")];
+        i.data.peers_scanning = false;
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::SendTo(1)));
+        let cmds = i.take_commands();
+        assert!(cmds.contains(&Command::SendFiles { peer: peer("Laptop"), paths: vec!["/tmp/a.txt".into(), "/tmp/b.txt".into()] }));
+        assert!(i.send_files.is_empty(), "the files went");
+        draw_frames(&mut i, 300);
+        assert_ne!(i.current_face(), Face::Send, "the page closes once the files are on their way");
     }
 
     #[test]

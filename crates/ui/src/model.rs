@@ -202,6 +202,9 @@ pub struct Data {
     pub sources: Vec<Sink>,
     pub source: Option<String>,
     pub streams: Vec<AppStream>,
+    /// Devices that can receive files (LocalSend) and whether the network is still being scanned.
+    pub peers: Vec<island_core::localsend::Peer>,
+    pub peers_scanning: bool,
     pub system: Option<SystemStats>,
     pub config: ConfigView,
     /// None when there is no focus script on this machine.
@@ -309,6 +312,8 @@ pub enum Input {
     Activity(island_core::progress::State, island_core::progress::Activity),
     /// Open the command bar (from a shortcut).
     OpenBar,
+    /// Files to send: opens the page that lists the devices (from `open-island send`, or a file dropped on the island).
+    SendFiles(Vec<String>),
     /// A shell started a command: it becomes a progress pill when it runs longer than `after_secs`.
     CommandStart { id: String, label: String, after_secs: u32 },
     /// The shell command ended with this exit code.
@@ -374,6 +379,10 @@ pub enum Command {
     SetSource(String),
     SetStreamVolume { id: u32, percent: u32 },
     ToggleStreamMute(u32),
+    /// Look for devices to send files to.
+    ScanPeers,
+    /// Send these files (paths) to a device.
+    SendFiles { peer: island_core::localsend::Peer, paths: Vec<String> },
     /// Re-read the quick-settings state (the page was just opened).
     RefreshQuick,
     /// Read the calendars again now.

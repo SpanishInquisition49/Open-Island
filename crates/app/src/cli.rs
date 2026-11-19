@@ -167,6 +167,43 @@ pub fn progress(args: &[String]) -> i32 {
 
 /// `activity run|done|fail|clear [label] [--detail text] [--icon name] [--color name|#hex] [--progress N]`: the
 /// status of something a script watches (a build, a deploy, a CI run), with its own icon, colour and status line.
+/// The control-socket line for `open-island send`: the files by absolute path, separated by tabs.
+pub fn send_line(args: &[String]) -> Result<String, String> {
+    if args.is_empty() {
+        return Err("usage: open-island send <file>...".into());
+    }
+    let mut paths = vec![];
+    for a in args {
+        let p = std::fs::canonicalize(a).map_err(|e| format!("{a}: {e}"))?;
+        if !p.is_file() {
+            return Err(format!("{a}: not a file"));
+        }
+        let s = p.to_string_lossy().into_owned();
+        if s.contains(['\t', '\n']) {
+            return Err(format!("{a}: a tab or a new line in the name"));
+        }
+        paths.push(s);
+    }
+    Ok(format!("send {}", paths.join("\t")))
+}
+
+/// `open-island send <file>...`: the island lists the devices on the network (LocalSend) and sends the files to the one you pick.
+pub fn send_files(args: &[String]) -> i32 {
+    match send_line(args) {
+        Ok(line) => {
+            if !ipc::send(&line) {
+                eprintln!("open-island is not running");
+                return 1;
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("open-island send: {e}");
+            2
+        }
+    }
+}
+
 pub fn activity(args: &[String]) -> i32 {
     let Some(state) = args.first().map(String::as_str).filter(|s| matches!(*s, "run" | "done" | "fail" | "clear")) else {
         eprintln!("usage: open-island activity run|done|fail|clear [label] [--detail text] [--icon name] [--color red|orange|green|blue|#rrggbb] [--progress 0-100]");
@@ -298,6 +335,20 @@ fn run(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn send_names_the_files_by_absolute_path_and_refuses_what_is_not_a_file() {
+        let dir = std::env::temp_dir().join(format!("oi-cli-send-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.txt");
+        std::fs::write(&f, "x").unwrap();
+        let line = send_line(&[f.to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(line, format!("send {}", std::fs::canonicalize(&f).unwrap().to_string_lossy()));
+        assert!(send_line(&[]).is_err());
+        assert!(send_line(&[dir.to_string_lossy().into_owned()]).unwrap_err().contains("not a file"));
+        assert!(send_line(&["/definitely/not/here".into()]).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn finds_the_last_percentage_in_terminal_output() {

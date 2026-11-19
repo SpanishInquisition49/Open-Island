@@ -23,6 +23,7 @@ pub mod sound;
 pub mod tz;
 pub mod ipc;
 pub mod net;
+pub mod send;
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(target_os = "linux")]
