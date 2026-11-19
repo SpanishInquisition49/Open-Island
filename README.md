@@ -247,3 +247,11 @@ On the Notifications page every row has a crossed bell: it hides that app's noti
 the Options page lists the rules (hidden or silent), removes them, and adds one by app name (hide the notifications, or
 only silence their sound). The same rules can be written by hand in `config.json` as `notification_filters` (with a
 `content` word to match, too).
+
+## Fonts and scripts
+
+The UI font (the configured one, else SF Pro, Inter, Segoe UI...) draws the text. A character it lacks is looked for in the
+other installed fonts, by script: kana and kanji in a Japanese font (Noto Sans CJK JP, Yu Gothic, Hiragino...), Hangul in a
+Korean one, Chinese in a Chinese one, then Arabic, Thai, symbols and the like in a Noto font or any font that has it. The
+font is loaded the first time it is needed. On Linux install `noto-fonts-cjk`; Windows and macOS ship with such fonts. There
+is no shaping, so Arabic and Indic scripts come out letter by letter, not joined. Colour emoji are not drawn.

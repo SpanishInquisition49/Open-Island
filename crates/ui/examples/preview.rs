@@ -224,6 +224,7 @@ fn main() {
         ("page-options", Box::new(|i, d| { d.config.timer_presets = "5 min, 10 min, 25 min".into(); d.config.screen = "focused".into(); i.push(NOW, Input::OpenPage(island_core::face::Page::Options)) })),
         ("page-options-rules", Box::new(|i, d| { d.config.filters = vec![island_ui::model::FilterView { app: "Zen Browser".into(), content: String::new(), show: false, sound: false }, island_ui::model::FilterView { app: "Telegram".into(), content: "unseen".into(), show: true, sound: false }]; i.push(NOW, Input::OpenPage(island_core::face::Page::Options)); i.show_options_tab(3); })),
         ("page-options-alerts", Box::new(|i, _| { i.push(NOW, Input::OpenPage(island_core::face::Page::Options)); i.show_options_tab(1); })),
+        ("media-japanese", Box::new(|i, d| { media(d, true); let m = d.media.as_mut().unwrap(); m.title = "夜に駆ける (Racing into the Night)".into(); m.artist = "YOASOBI · 요아소비 · 约会".into(); i.push(NOW, Input::OpenPage(island_core::face::Page::Media)); })),
         ("page-qs", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Qs)))),
         ("page-sys", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Sys)))),
         ("page-notifs", Box::new(|i, _| {
