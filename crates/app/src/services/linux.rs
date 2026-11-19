@@ -388,18 +388,26 @@ fn privacy(rep: Reporter) {
         let events = pactl_subscribe();
         let has_camera = video_devices_exist();
         let (mut camera, mut screen) = (false, false);
-        let (mut camera_at, mut screen_at) = (None::<std::time::Instant>, None::<std::time::Instant>);
+        let (mut camera_at, mut screen_at, mut mic_at) = (None::<std::time::Instant>, None::<std::time::Instant>, None::<std::time::Instant>);
         let stale = |t: &Option<std::time::Instant>, secs: u64| t.is_none_or(|t| t.elapsed() > Duration::from_secs(secs));
         loop {
             // the microphone is re-read when a recording stream appears or goes; the camera (a scan of /proc) and the
             // screen share (pw-dump) are slower and only looked at every few seconds
-            let mic_changed = match &events {
+            let mut mic_changed = match &events {
                 Some(rx) => rx.recv_timeout(Duration::from_secs(4)).map_or(true, |l| l.contains("source-output") || l.contains("source #")),
                 None => {
                     std::thread::sleep(Duration::from_secs(3));
                     true
                 }
             };
+            // a stream that was already there when the island started raises no event, and a busy bus (a call) never
+            // times out: read the microphone at the start and at least every few seconds
+            if stale(&mic_at, 4) {
+                mic_changed = true;
+            }
+            if mic_changed {
+                mic_at = Some(std::time::Instant::now());
+            }
             if has_camera && stale(&camera_at, 5) {
                 camera_at = Some(std::time::Instant::now());
                 camera = camera_in_use();
