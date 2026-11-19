@@ -81,10 +81,82 @@ pub fn plan(mode: Mode, from: (f64, f64), to: (f64, f64), start_ms: i64, margin_
 fn transit_plan(from: (f64, f64), to: (f64, f64), start_ms: i64, arrive_by: bool) -> Result<String, String> {
     let (f, t) = (format!("{},{}", from.0, from.1), format!("{},{}", to.0, to.1));
     let iso = tr::iso_utc(start_ms);
-    get(TRANSITOUS, &[("fromPlace", &f), ("toPlace", &t), ("time", &iso), ("arriveBy", if arrive_by { "true" } else { "false" }), ("numItineraries", "5")])
+    get(TRANSITOUS, &[("fromPlace", &f), ("toPlace", &t), ("time", &iso), ("arriveBy", if arrive_by { "true" } else { "false" }), ("numItineraries", "5"), ("maxDirectTime", "7200")])
+}
+
+/// The places for a name, near a point when there is one (the answers nearest to it come first).
+fn search(query: &str, near: Option<(f64, f64)>) -> Result<Vec<island_core::travel::Place>, String> {
+    if let Ok(mut last) = LAST_GEOCODE.lock() {
+        if let Some(t) = *last {
+            std::thread::sleep(Duration::from_millis(1100).saturating_sub(t.elapsed()));
+        }
+        *last = Some(Instant::now());
+    }
+    let view = near.map(|(la, lo)| format!("{},{},{},{}", lo - 0.3, la + 0.2, lo + 0.3, la - 0.2));
+    let mut q: Vec<(&str, &str)> = vec![("q", query), ("format", "jsonv2"), ("limit", "6")];
+    if let Some(v) = &view {
+        q.push(("viewbox", v));
+    }
+    get(NOMINATIM, &q).map(|j| tr::parse_places(&j))
+}
+
+/// The way from `from` to `to`, leaving now, with the line to draw.
+pub fn route_now(mode: Mode, from: (f64, f64), to: (f64, f64), now_ms: i64) -> Result<(Trip, Vec<tr::Segment>), String> {
+    let straight = |walk: bool| vec![tr::Segment { points: vec![from, to], walk }];
+    match mode {
+        Mode::Car => {
+            let url = format!("{OSRM}/{},{};{},{}", from.1, from.0, to.1, to.0);
+            let j = get(&url, &[("overview", "full"), ("geometries", "geojson")])?;
+            let (secs, meters) = tr::parse_osrm(&j).ok_or("no road route")?;
+            let path = tr::parse_osrm_path(&j);
+            Ok((Trip { secs, meters: Some(meters), leave_ms: Some(now_ms), transfers: None }, if path.len() >= 2 { vec![tr::Segment { points: path, walk: false }] } else { straight(false) }))
+        }
+        Mode::Walk | Mode::Transit => {
+            let j = transit_plan(from, to, now_ms, false).ok();
+            if mode == Mode::Transit {
+                if let Some((trip, segs)) = j.as_deref().and_then(tr::parse_transit_now) {
+                    return Ok((trip, segs));
+                }
+            }
+            // a walk: the planner's own, else a straight line and an estimate (a short trip has no bus worth taking)
+            let (secs, segs) = j.as_deref().and_then(tr::parse_walk_path).unwrap_or_else(|| (tr::walk_estimate(from, to), straight(true)));
+            Ok((Trip { secs, meters: None, leave_ms: Some(now_ms), transfers: None }, segs))
+        }
+    }
 }
 
 pub fn command(rep: &Reporter, c: Command) {
+    match c {
+        Command::SearchPlaces { query, near } => {
+            let rep = rep.clone();
+            std::thread::spawn(move || {
+                let found = search(&query, near).unwrap_or_default();
+                rep.patch(move |d| {
+                    d.places = Some(found);
+                    d.places_searching = false;
+                });
+            });
+            return;
+        }
+        Command::PlanRoute { dest, mode, from } => {
+            let rep = rep.clone();
+            std::thread::spawn(move || {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+                let outcome = route_now(mode, from, (dest.lat, dest.lon), now);
+                let info = match outcome {
+                    Ok((trip, segments)) => island_ui::model::RouteInfo { dest, mode, trip: Some(trip), error: None, segments },
+                    Err(e) => island_ui::model::RouteInfo { dest, mode, trip: None, error: Some(e), segments: vec![] },
+                };
+                rep.patch(move |d| {
+                    // an answer for a place that is no longer the one picked is dropped
+                    d.route = Some(info);
+                    d.route_pending = false;
+                });
+            });
+            return;
+        }
+        _ => {}
+    }
     let Command::PlanTrip { event_id, location, start_ms, mode, margin_secs } = c else { return };
     let rep = rep.clone();
     std::thread::spawn(move || {
@@ -119,6 +191,22 @@ pub fn command(rep: &Reporter, c: Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs the network: cargo test -- --ignored live_search_and_route"]
+    fn live_search_and_route() {
+        let here = (43.7255, 10.3908);
+        let found = search("Pisa Centrale", Some(here)).expect("a search");
+        eprintln!("found {:?}", found.iter().map(|p| (p.name.clone(), p.detail.clone())).collect::<Vec<_>>());
+        assert!(!found.is_empty());
+        let to = (found[0].lat, found[0].lon);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+        for mode in [Mode::Car, Mode::Walk, Mode::Transit] {
+            let (trip, segs) = route_now(mode, here, to, now).unwrap_or_else(|e| panic!("{mode:?}: {e}"));
+            eprintln!("{mode:?}: {} {} segments, {} points", tr::fmt_secs(trip.secs), segs.len(), segs.iter().map(|s| s.points.len()).sum::<usize>());
+            assert!(segs.iter().all(|s| s.points.len() >= 2) && trip.secs > 0);
+        }
+    }
 
     #[test]
     #[ignore = "needs the network: cargo test -- --ignored live_trip"]

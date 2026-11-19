@@ -77,6 +77,24 @@ impl<A: Clone> Painter<'_, A> {
         self.scene.stroke(&stroke, self.transform, color, None, &vello::kurbo::Line::new(a, b));
     }
 
+    /// A line through several points (a route), round at the joins.
+    pub fn polyline(&mut self, pts: &[(f64, f64)], width: f64, dash: &[f64], color: Color) {
+        if pts.len() < 2 {
+            return;
+        }
+        let mut path = vello::kurbo::BezPath::new();
+        path.move_to(pts[0]);
+        for p in &pts[1..] {
+            path.line_to(*p);
+        }
+        let color = self.c(color);
+        let mut stroke = Stroke::new(width).with_caps(vello::kurbo::Cap::Round).with_join(vello::kurbo::Join::Round);
+        if !dash.is_empty() {
+            stroke = stroke.with_dashes(0.0, dash.iter().copied());
+        }
+        self.scene.stroke(&stroke, self.transform, color, None, &path);
+    }
+
     pub fn circle_stroke(&mut self, cx: f64, cy: f64, r: f64, width: f64, color: Color) {
         let color = self.c(color);
         self.scene.stroke(&Stroke::new(width), self.transform, color, None, &vello::kurbo::Circle::new((cx, cy), r));

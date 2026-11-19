@@ -90,6 +90,17 @@ pub struct Sink {
     pub label: String,
 }
 
+/// A route to a place the person picked on the map.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RouteInfo {
+    pub dest: island_core::travel::Place,
+    pub mode: island_core::travel::Mode,
+    pub trip: Option<island_core::travel::Trip>,
+    pub error: Option<String>,
+    /// The line to draw: a road route, or the legs of a public transport trip.
+    pub segments: Vec<island_core::travel::Segment>,
+}
+
 /// Where the machine is.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Position {
@@ -273,6 +284,12 @@ pub struct Data {
     /// Trips to events with a place, as the service worked them out.
     pub trips: Vec<TripInfo>,
     pub position: Option<Position>,
+    /// The places a search on the map found (None: nothing searched), and whether a search is under way.
+    pub places: Option<Vec<island_core::travel::Place>>,
+    pub places_searching: bool,
+    /// The route to the place picked on the map, and whether one is being worked out.
+    pub route: Option<RouteInfo>,
+    pub route_pending: bool,
     /// Who is using the microphone and the camera right now (read while the system page is open).
     pub mic_users: Vec<MicUser>,
     pub camera_users: Vec<(String, Vec<u32>)>,
@@ -469,6 +486,10 @@ pub enum Command {
     ReconnectNetwork,
     /// Look for where the machine is.
     RefreshPosition,
+    /// Search places by name, near a point when known.
+    SearchPlaces { query: String, near: Option<(f64, f64)> },
+    /// Work out the way from a point to a place, leaving now.
+    PlanRoute { dest: island_core::travel::Place, mode: island_core::travel::Mode, from: (f64, f64) },
     /// Fetch a map tile (the template has {z} {x} {y}).
     LoadTile { z: u8, x: i64, y: i64, template: String, dark: bool },
     /// Mute or unmute one application's microphone stream.

@@ -209,6 +209,10 @@ pub enum Action {
     MapPan,
     /// Back to following the position.
     MapRecenter,
+    /// Pick a place of the search results.
+    MapPick(usize),
+    /// Forget the picked place and its route.
+    MapClearDest,
     MapCopy,
     MapOpen,
     /// Directions to the next event, in the browser.
@@ -344,6 +348,8 @@ pub enum Field {
     MapTiles,
     /// The API key of the map tile provider (kept in the config file, never shown).
     MapKey,
+    /// A place to search on the map.
+    MapSearch,
     /// An app (or a word) whose notifications are hidden.
     RuleHide,
     /// An app (or a word) whose notifications lose their sound.
@@ -490,6 +496,8 @@ pub struct Island {
     last_copy: String,
     pub(crate) activity_tab: usize,
     pub(crate) map_zoom_delta: i8,
+    /// The place picked from a search on the map.
+    pub(crate) map_dest: Option<island_core::travel::Place>,
     /// Where the map was dragged to (and the zoom it was at): None follows the position.
     map_center: Option<(f64, f64)>,
     map_fixed_zoom: Option<u8>,
@@ -629,6 +637,7 @@ impl Island {
             last_copy: String::new(),
             activity_tab: 0,
             map_zoom_delta: 0,
+            map_dest: None,
             map_center: None,
             map_fixed_zoom: None,
             map_drag_last: (0.0, 0.0),
@@ -1058,6 +1067,11 @@ impl Island {
         self.options_tab = tab.min(crate::options::TABS.len() - 1);
     }
 
+    /// Picks a place on the map page (for the preview tool).
+    pub fn set_preview_map_dest(&mut self, p: island_core::travel::Place) {
+        self.map_dest = Some(p);
+    }
+
     /// The centre and zoom of the map page (for the preview tool).
     pub fn map_view_for_preview(&self) -> (f64, f64, u8) {
         self.map_view().map_or((0.0, 0.0, 3), |v| (v.center.0, v.center.1, v.zoom))
@@ -1115,7 +1129,7 @@ impl Island {
             Field::TimerPresets => c.timer_presets.clone(),
             Field::Screen => if c.screen == "focused" { String::new() } else { c.screen.clone() },
             Field::MapTiles => c.map_tile_url.clone(),
-            Field::MapKey => String::new(),
+            Field::MapKey | Field::MapSearch => String::new(),
         };
         let cursor = text.chars().count();
         self.edit = Some(Edit { field, text, cursor, until: self.now + EDIT_IDLE_MS });
@@ -1185,6 +1199,15 @@ impl Island {
                             self.data.config.map_tile_url = t.clone();
                             self.forget_tiles();
                             self.pending.push(Command::SetOption { key: "map_tile_url".into(), value: OptionValue::Text(t) });
+                        }
+                    }
+                    Field::MapSearch => {
+                        let q = t.trim().to_string();
+                        if !q.is_empty() {
+                            self.data.places = Some(vec![]);
+                            self.data.places_searching = true;
+                            let near = self.data.position.as_ref().map(|p| (p.lat, p.lon));
+                            self.pending.push(Command::SearchPlaces { query: q, near });
                         }
                     }
                     Field::MapKey => {
@@ -1782,7 +1805,13 @@ impl Island {
             Action::TravelMode(m) => {
                 self.cfg.travel_mode = m;
                 self.trip_asked.retain(|(_, mode), _| *mode == m);
-                return vec![Command::SetOption { key: "travel_mode".into(), value: OptionValue::Text(m.name().into()) }];
+                let mut out = vec![Command::SetOption { key: "travel_mode".into(), value: OptionValue::Text(m.name().into()) }];
+                // a place picked on the map gets its route again for the new way
+                if let (Some(dest), Some(p)) = (self.map_dest.clone(), self.data.position.as_ref()) {
+                    self.data.route_pending = true;
+                    out.push(Command::PlanRoute { dest, mode: m, from: (p.lat, p.lon) });
+                }
+                return out;
             }
             Action::ActivityTab(t) => self.activity_tab = t.min(1),
             Action::RewindCopy(i) => {
@@ -1793,6 +1822,26 @@ impl Island {
             Action::MapZoom(d) => self.map_zoom(d),
             Action::MapRecenter => self.map_recenter(),
             Action::MapPan => {}
+            Action::MapPick(n) => {
+                let Some(place) = self.data.places.as_ref().and_then(|p| p.get(n)).cloned() else { return vec![] };
+                let Some(from) = self.data.position.as_ref().map(|p| (p.lat, p.lon)) else { return vec![] };
+                self.data.places = None;
+                self.data.places_searching = false;
+                self.data.route = None;
+                self.data.route_pending = true;
+                self.map_dest = Some(place.clone());
+                self.map_both = true;
+                self.map_recenter();
+                return vec![Command::PlanRoute { dest: place, mode: self.cfg.travel_mode, from }];
+            }
+            Action::MapClearDest => {
+                self.map_dest = None;
+                self.data.route = None;
+                self.data.route_pending = false;
+                self.data.places = None;
+                self.data.places_searching = false;
+                self.map_recenter();
+            }
             Action::MapView => {
                 self.map_both = !self.map_both;
                 self.map_recenter();
@@ -2171,10 +2220,13 @@ impl Island {
         use island_core::map;
         let pos = self.data.position.as_ref()?;
         let me = (pos.lat, pos.lon);
-        let dest = self.trip_event().and_then(|e| {
-            let at = self.data.trips.iter().filter(|t| t.event_id == e.id).find_map(|t| t.dest)?;
-            Some((at, e.title.clone(), e.id.clone()))
-        });
+        let dest = match &self.map_dest {
+            Some(p) => Some(((p.lat, p.lon), p.name.clone(), String::new())),
+            None => self.trip_event().and_then(|e| {
+                let at = self.data.trips.iter().filter(|t| t.event_id == e.id).find_map(|t| t.dest)?;
+                Some((at, e.title.clone(), e.id.clone()))
+            }),
+        };
         let (center, base) = match (&dest, self.map_both) {
             (Some((d, _, _)), true) => (map::midpoint(me, *d), map::zoom_to_fit(me, *d, MAP_W, MAP_H, 40.0)),
             _ => (me, map::zoom_for_accuracy(pos.accuracy_m)),
@@ -2244,7 +2296,7 @@ impl Island {
         }
     }
 
-    /// The next event that has a place to go to, today or tomorrow.
+    /// The next event that has a place to go to, today.
     pub(crate) fn trip_event(&self) -> Option<&calendar::Event> {
         if !self.cfg.travel_times {
             return None;
@@ -2252,7 +2304,7 @@ impl Island {
         self.data
             .events
             .iter()
-            .filter(|e| !e.all_day && e.start_ms > self.now && e.start_ms - self.now < 24 * 3_600_000 && island_core::travel::is_physical(&e.location))
+            .filter(|e| !e.all_day && e.start_ms > self.now && e.start_ms < self.day_start(self.now) + 24 * 3_600_000 && island_core::travel::is_physical(&e.location))
             .min_by_key(|e| e.start_ms)
     }
 
@@ -2499,7 +2551,7 @@ impl Island {
         self.slow_checks();
         self.sync_lyrics();
         // notifications: expiry and the next waiting one
-        if self.edit.as_ref().is_some_and(|e| now > e.until) || (self.edit.is_some() && !matches!(self.page, Some(Page::Settings | Page::Options))) {
+        if self.edit.as_ref().is_some_and(|e| now > e.until) || (self.edit.is_some() && !matches!(self.page, Some(Page::Settings | Page::Options | Page::Map))) {
             self.edit = None;
             self.icloud_user = None;
         }
@@ -4846,6 +4898,64 @@ mod tests {
         draw_frames(&mut i, 100);
         assert!(press(&mut i, Action::MapRecenter), "a button appears once the map is away");
         assert!(!i.map_is_panned() && i.map_view().unwrap().center == before.center && i.map_view().unwrap().zoom == before.zoom);
+    }
+
+    #[test]
+    fn a_place_is_searched_on_the_map_picked_and_routed() {
+        use island_core::travel::{Mode, Place, Segment, Trip};
+        let mut i = Island::new(Config::default());
+        i.data.position = Some(Position { lat: 43.7255, lon: 10.3908, accuracy_m: 60.0, at_ms: T0, source: PosSource::Geoclue });
+        i.push(T0, Input::OpenPage(Page::Map));
+        run(&mut i, 300);
+        i.take_commands();
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::EditField(Field::MapSearch)), "a search button on the map");
+        run(&mut i, 600);
+        assert!(i.edit.is_some(), "the field stays open on the map page");
+        type_text(&mut i, "stazione");
+        i.push(i.now, Input::Key(KeyInput::Enter));
+        let cmds = i.take_commands();
+        assert!(cmds.iter().any(|c| matches!(c, Command::SearchPlaces { query, near: Some((la, _)) } if query == "stazione" && (*la - 43.7255).abs() < 1e-9)), "searched near here");
+        assert!(i.data.places_searching && i.data.places.as_ref().is_some_and(|p| p.is_empty()));
+        // the answer arrives
+        let station = Place { name: "Pisa Centrale".into(), detail: "Piazza della Stazione".into(), lat: 43.7079, lon: 10.3984 };
+        i.data.places = Some(vec![station.clone(), Place { name: "Stazione San Rossore".into(), detail: "Pisa".into(), lat: 43.7311, lon: 10.3697 }]);
+        i.data.places_searching = false;
+        i.push(i.now, Input::OpenPage(Page::Map));
+        draw_frames(&mut i, 200);
+        assert!(press(&mut i, Action::MapPick(0)));
+        let cmds = i.take_commands();
+        assert!(cmds.iter().any(|c| matches!(c, Command::PlanRoute { dest, mode: Mode::Car, from } if dest == &station && (from.0 - 43.7255).abs() < 1e-9)), "the route is asked for from here");
+        assert!(i.data.places.is_none() && i.data.route_pending && i.map_dest.as_ref() == Some(&station));
+        let v = i.map_view().unwrap();
+        assert_eq!(v.dest.as_ref().map(|d| d.1.as_str()), Some("Pisa Centrale"), "the pin is the picked place");
+        // the route comes back
+        i.data.route = Some(RouteInfo { dest: station.clone(), mode: Mode::Car, trip: Some(Trip { secs: 420, meters: Some(2600), leave_ms: Some(i.now), transfers: None }), error: None, segments: vec![Segment { points: vec![(43.7255, 10.3908), (43.7079, 10.3984)], walk: false }] });
+        i.data.route_pending = false;
+        i.push(i.now, Input::OpenPage(Page::Map));
+        draw_frames(&mut i, 200);
+        // another way: the route is asked for again
+        assert!(press(&mut i, Action::TravelMode(Mode::Walk)));
+        assert!(i.take_commands().iter().any(|c| matches!(c, Command::PlanRoute { mode: Mode::Walk, .. })));
+        draw_frames(&mut i, 50);
+        assert!(press(&mut i, Action::MapClearDest));
+        assert!(i.map_dest.is_none() && i.data.route.is_none());
+    }
+
+    #[test]
+    fn only_todays_events_get_a_trip() {
+        let mut i = Island::new(Config::default());
+        let t = crate::clock::civil(T0, 0);
+        let day = crate::clock::midnight_ms(t.year, t.month, t.day, 0);
+        let ev = |id: &str, start: i64| Event { id: id.into(), title: id.into(), start_ms: start, end_ms: start + 3_600_000, location: "Via Roma 1, Pisa".into(), ..Default::default() };
+        i.data.events = vec![ev("tomorrow", day + 26 * 3_600_000), ev("today", day + 22 * 3_600_000)];
+        i.now = day + 9 * 3_600_000;
+        assert_eq!(i.trip_event().map(|e| e.id.as_str()), Some("today"));
+        i.data.events = vec![ev("tomorrow", day + 26 * 3_600_000)];
+        assert!(i.trip_event().is_none(), "tomorrow is not today, even when it is within 24 hours");
+        i.now = day + 20 * 3_600_000;
+        i.data.events = vec![ev("tomorrow-early", day + 30 * 3_600_000)];
+        assert!(i.trip_event().is_none());
     }
 
     #[test]

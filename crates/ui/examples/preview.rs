@@ -292,6 +292,27 @@ fn main() {
                 i.push(NOW, Input::Tile { z: t.z, x: t.x, y: t.y, image: tile((n % 3) as u8 * 3) });
             }
         })),
+        ("page-map-route", Box::new(|i, d| {
+            use island_core::travel::{Mode, Place, Segment, Trip};
+            d.utc_offset_secs = 3600;
+            i.data.utc_offset_secs = 3600;
+            d.position = Some(island_ui::model::Position { lat: 43.7255, lon: 10.3908, accuracy_m: 60.0, at_ms: NOW, source: island_ui::model::PosSource::Geoclue });
+            let dest = Place { name: "Pisa Centrale".into(), detail: "Piazza della Stazione".into(), lat: 43.7079, lon: 10.3984 };
+            d.route = Some(island_ui::model::RouteInfo { dest: dest.clone(), mode: Mode::Transit, trip: Some(Trip { secs: 600, meters: None, leave_ms: Some(NOW), transfers: Some(0) }), error: None, segments: vec![
+                Segment { points: vec![(43.7255, 10.3908), (43.7230, 10.3925)], walk: true },
+                Segment { points: vec![(43.7230, 10.3925), (43.7160, 10.3890), (43.7110, 10.3950), (43.7085, 10.3975)], walk: false },
+                Segment { points: vec![(43.7085, 10.3975), (43.7079, 10.3984)], walk: true }] });
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Map));
+            i.data = d.clone();
+            i.set_preview_map_dest(dest);
+            i.cfg.travel_mode = Mode::Transit;
+        })),
+        ("page-map-search", Box::new(|i, d| {
+            use island_core::travel::Place;
+            d.position = Some(island_ui::model::Position { lat: 43.7255, lon: 10.3908, accuracy_m: 60.0, at_ms: NOW, source: island_ui::model::PosSource::Geoclue });
+            d.places = Some(vec![Place { name: "Pisa Centrale".into(), detail: "Piazza della Stazione, San Giusto".into(), lat: 43.7079, lon: 10.3984 }, Place { name: "Stazione San Rossore".into(), detail: "Via Pietrasantina, Pisa".into(), lat: 43.7311, lon: 10.3697 }, Place { name: "Stazione Pisa Aeroporto".into(), detail: "Pisa".into(), lat: 43.6844, lon: 10.3949 }]);
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Map));
+        })),
         ("page-audio", Box::new(|i, d| {
             let sink = |n: &str, l: &str| island_ui::model::Sink { name: n.into(), label: l.into() };
             d.sinks = vec![sink("speaker", "Built-in Speakers"), sink("bluez_output.x", "WH-1000XM5")];

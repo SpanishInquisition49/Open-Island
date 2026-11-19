@@ -1574,9 +1574,20 @@ impl Island {
             (area.x0 + px, area.y0 + py)
         };
         let me = at(v.me.0, v.me.1);
+        let route = self.data.route.as_ref().filter(|r| self.map_dest.as_ref().is_some_and(|d| d.lat == r.dest.lat && d.lon == r.dest.lon));
         if let Some((d, title)) = &v.dest {
             let dp = at(d.0, d.1);
-            p.line(me, dp, 2.0, &[6.0, 6.0], with_alpha(theme::RAIN, 0.95));
+            match route.filter(|r| !r.segments.is_empty()) {
+                // the way itself: a line along the roads, dashed where it is on foot
+                Some(r) => {
+                    for seg in &r.segments {
+                        let pts: Vec<(f64, f64)> = seg.points.iter().map(|(la, lo)| at(*la, *lo)).collect();
+                        p.polyline(&pts, 6.0, &[], with_alpha(theme::BG, 0.8));
+                        p.polyline(&pts, 3.5, if seg.walk { &[5.0, 6.0] } else { &[] }, with_alpha(theme::RAIN, 0.98));
+                    }
+                }
+                None => p.line(me, dp, 2.0, &[6.0, 6.0], with_alpha(theme::RAIN, 0.95)),
+            }
             p.circle(dp.0, dp.1, 7.0, theme::ORANGE);
             p.circle(dp.0, dp.1, 2.5, theme::BG);
             // the name next to the pin, on a dark plate so it reads over any map
@@ -1593,19 +1604,81 @@ impl Island {
         }
         p.circle(me.0, me.1, 7.5, theme::FG);
         p.circle(me.0, me.1, 5.5, theme::RAIN);
-        // distance and time to the event, top left
+        // bottom left: the three ways, and the distance and time of the chosen one
         if let Some((d, _)) = &v.dest {
             let dist = map::fmt_distance(map::distance_m(v.me, *d));
-            let trip = self.trip_event().and_then(|e| self.trip_info(&e.id, self.cfg.travel_mode)).and_then(|t| t.trip.as_ref());
-            let text = match trip {
-                Some(t) => format!("{dist} · {} {}", island_core::travel::fmt_secs(t.secs), self.cfg.travel_mode.name()),
-                None => dist,
+            let (trip, pending, error) = match route {
+                Some(r) => (r.trip.as_ref(), false, r.error.clone()),
+                None if self.map_dest.is_some() => (None, true, None),
+                None => (self.trip_event().and_then(|e| self.trip_info(&e.id, self.cfg.travel_mode)).and_then(|t| t.trip.as_ref()), false, None),
             };
-            let cw = p.fonts.measure(&text, 11.0, SEMI) as f64 + 16.0;
-            let chip = rect(area.x0 + 8.0, area.y0 + 8.0, cw, 22.0);
+            let text = match (trip, pending, error) {
+                (Some(t), _, _) => format!("{dist} · {}", island_core::travel::fmt_secs(t.secs)),
+                (None, true, _) => format!("{dist} · …"),
+                (None, _, Some(e)) => format!("{dist} · {e}"),
+                _ => dist,
+            };
+            let mut x = area.x0 + 8.0;
+            let by = area.y1 - 34.0;
+            for mode in [island_core::travel::Mode::Car, island_core::travel::Mode::Walk, island_core::travel::Mode::Transit] {
+                let b = rect(x, by, 28.0, 28.0);
+                let on = mode == self.cfg.travel_mode;
+                p.rrect(b, 14.0, if on { theme::RAIN } else { with_alpha(theme::BG, 0.85) });
+                p.icon(mode.icon(), b.center().x, b.center().y, 14.0, if on { theme::BG } else if p.hovered(b) { theme::ACCENT } else { theme::FG });
+                p.hit(b, Action::TravelMode(mode));
+                x += 32.0;
+            }
+            let cw = (p.fonts.measure(&text, 11.0, SEMI) as f64 + 16.0).min(area.x1 - x - 150.0);
+            let chip = rect(x + 2.0, by + 3.0, cw.max(40.0), 22.0);
             p.rrect(chip, 11.0, with_alpha(theme::BG, 0.85));
-            p.text(&text, chip.center().x, chip.center().y, 11.0, SEMI, theme::FG, Align::Center, 260.0);
+            p.text(&text, chip.center().x, chip.center().y, 11.0, SEMI, theme::FG, Align::Center, chip.width() as f32 - 10.0);
             p.hit(chip, Action::MapRoute);
+        }
+        // top left: search a place, or the place picked (with a cross to forget it)
+        let bar = rect(area.x0 + 8.0, area.y0 + 8.0, area.width() - 16.0 - 46.0, 30.0);
+        match self.edit.as_ref().filter(|e| e.field == Field::MapSearch) {
+            Some(e) => self.edit_row(p, bar, e, "Search a place, an address..."),
+            None => match &self.map_dest {
+                Some(d) => {
+                    let tw = (p.fonts.measure(&d.name, 11.5, SEMI) as f64).min(bar.width() - 80.0) + 56.0;
+                    let chip = rect(bar.x0, bar.y0, tw, 30.0);
+                    p.rrect(chip, 15.0, with_alpha(theme::BG, 0.88));
+                    p.icon("map-pin", chip.x0 + 16.0, chip.center().y, 13.0, theme::ORANGE);
+                    p.text(&d.name, chip.x0 + 30.0, chip.center().y, 11.5, SEMI, theme::FG, Align::Left, (tw - 62.0) as f32);
+                    p.hit(chip, Action::EditField(Field::MapSearch));
+                    let x = rect(chip.x1 - 28.0, chip.y0, 28.0, 30.0);
+                    p.icon("x", x.center().x, x.center().y, 12.0, if p.hovered(x) { theme::FG } else { theme::DIM });
+                    p.hit(x, Action::MapClearDest);
+                }
+                None => {
+                    let tw = p.button_width("Search") + 18.0;
+                    let chip = rect(bar.x0, bar.y0, tw, 30.0);
+                    p.rrect(chip, 15.0, if p.hovered(chip) { with_alpha(theme::BG, 0.98) } else { with_alpha(theme::BG, 0.88) });
+                    p.icon("search", chip.x0 + 17.0, chip.center().y, 13.0, theme::FG);
+                    p.text("Search", chip.x0 + 31.0, chip.center().y, 11.5, SEMI, theme::FG, Align::Left, tw as f32 - 30.0);
+                    p.hit(chip, Action::EditField(Field::MapSearch));
+                }
+            },
+        }
+        // what the search found, over the map
+        if self.data.places_searching || self.data.places.is_some() {
+            let places = self.data.places.clone().unwrap_or_default();
+            let rows = if places.is_empty() { 1 } else { places.len().min(5) };
+            let plate = rect(bar.x0, bar.y1 + 4.0, bar.width(), rows as f64 * 32.0 + 8.0);
+            p.rrect(plate, 14.0, with_alpha(theme::BG, 0.94));
+            if places.is_empty() {
+                p.text(if self.data.places_searching { "Searching…" } else { "No place found" }, plate.center().x, plate.center().y, 11.5, REG, theme::DIM, Align::Center, 260.0);
+            }
+            for (n, pl) in places.iter().take(5).enumerate() {
+                let row = rect(plate.x0 + 4.0, plate.y0 + 4.0 + n as f64 * 32.0, plate.width() - 8.0, 30.0);
+                if p.hovered(row) {
+                    p.rrect(row, 10.0, theme::HOT_CHIP);
+                }
+                let nw = (p.fonts.measure(&pl.name, 11.5, SEMI) as f64).min(row.width() * 0.5);
+                p.text(&pl.name, row.x0 + 10.0, row.center().y, 11.5, SEMI, theme::FG, Align::Left, nw as f32);
+                p.text(&pl.detail, row.x0 + 16.0 + nw, row.center().y, 10.0, REG, theme::DIM, Align::Left, (row.width() - nw - 26.0) as f32);
+                p.hit(row, Action::MapPick(n));
+            }
         }
         // the zoom, on the right
         for (n, (icon, d)) in [("plus", 1i8), ("minus", -1)].into_iter().enumerate() {

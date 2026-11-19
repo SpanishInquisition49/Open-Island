@@ -56,7 +56,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                 // the app itself writes the configuration for these
                 Command::AddFilter { .. } | Command::RemoveFilter(_) | Command::SetOption { .. } | Command::AddCalendar(_) | Command::AddICloud { .. } | Command::RenameCalendar { .. } | Command::SetCalendarColor { .. } | Command::RemoveCalendar(_) | Command::SetFont(_) | Command::SetLatitude(_) | Command::SetLongitude(_) | Command::SetNotificationSound(_) => {}
                 Command::RestoreClipboard(t) => clipboard::restore(&t),
-                Command::PlanTrip { .. } => super::travel::command(&rep, c),
+                Command::PlanTrip { .. } | Command::SearchPlaces { .. } | Command::PlanRoute { .. } => super::travel::command(&rep, c),
                 Command::RefreshPosition => super::location::refresh(&rep),
                 Command::LoadTile { z, x, y, template, dark } => super::tiles::request(&rep, z, x, y, template, dark),
                 Command::MuteMicStream { stream, mute } => {
@@ -419,6 +419,7 @@ fn privacy(rep: Reporter) {
             let now = Privacy { mic: if mic_changed { mic_in_use() } else { last.mic }, camera, screen };
             if now != last {
                 last = now;
+                log::debug!("privacy: mic {} camera {} screen {}", now.mic, now.camera, now.screen);
                 rep.patch(move |d| d.privacy = now);
             }
         }
@@ -642,6 +643,15 @@ mod tests {
     const SOURCES: &str = r#"[
       {"index": 53, "name": "alsa_output.pci.Speaker__sink.monitor", "monitor_of_sink": 1},
       {"index": 54, "name": "alsa_input.pci.Mic2__source", "monitor_of_sink": null}]"#;
+
+    #[test]
+    #[ignore = "reads the real pactl"]
+    fn live_mic() {
+        let outs = run("pactl", &["-f", "json", "list", "source-outputs"]).unwrap_or_default();
+        let srcs = run("pactl", &["-f", "json", "list", "sources"]).unwrap_or_default();
+        eprintln!("outs {} srcs {}", outs.len(), srcs.len());
+        eprintln!("users {:?}", mic_users(&outs, &srcs));
+    }
 
     #[test]
     fn the_microphone_users_have_names_and_streams() {

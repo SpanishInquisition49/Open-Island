@@ -328,7 +328,7 @@ An event with a place (not a link or a video call) gets a row on the Today page:
 transport (the choice is `travel_mode`, also `open-island msg set travel_mode transit`), and next to them how long it takes and
 when to leave ("14 min · leave 17:41"). A card says "Leave in 5 min for ..." once, five minutes before the time to leave, and
 it gets through the quiet mode like a reminder. The island asks for the way when the page is open or the event is within three
-hours, and again every ten minutes.
+hours, and again every ten minutes. Only today's events get a way: one tomorrow morning is not asked about tonight.
 
 Where the data comes from, all public services without a key: the place is found by Nominatim (OpenStreetMap), the road trip is
 timed by the OSRM demo server (no traffic), and the walk and the public transport (buses, trains, trams, with the departure that
@@ -388,3 +388,11 @@ server in that URL). Presets, all fetched and looked at: `osm` (default), `esri-
 A URL with "dark" in it is not darkened again, and the credit on the map follows the provider. Providers that want a key may answer
 a key-less request with a picture that says so (CARTO's did), so look at the map after changing it. Esri's tiles answer without a
 key today, but I found no published terms for it: fine for a personal island, check before sharing a build. OSM's server is meant for light use: heavy use should go to a provider of your own.
+### Searching a place and getting the way
+
+The search button on the map takes a name or an address ("pisa centrale", "via roma 12 pisa"): the answers (Nominatim, nearest to
+you first) come as a list over the map, and picking one gives the way from where you are, leaving now: by car along the roads
+(OSRM), on foot, or by public transport with its legs (Transitous: dashed on foot, solid on the vehicle). The three buttons at the
+bottom left switch the way and the distance and time follow; the cross next to the picked place forgets it. A click on the
+distance chip opens the same trip in OpenStreetMap's directions. What leaves the machine: the words searched and, for the route,
+the two points.

@@ -147,6 +147,113 @@ pub fn parse_transit(json: &str, arrive_by_ms: i64) -> Option<Trip> {
         .max_by_key(|t| t.leave_ms)
 }
 
+/// A place found by name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Place {
+    pub name: String,
+    /// Where it is, in a few words (the street and the town).
+    pub detail: String,
+    pub lat: f64,
+    pub lon: f64,
+}
+
+/// The places of a Nominatim answer (`format=jsonv2`).
+pub fn parse_places(json: &str) -> Vec<Place> {
+    let Ok(Value::Array(a)) = serde_json::from_str::<Value>(json) else { return vec![] };
+    a.iter()
+        .filter_map(|p| {
+            let num = |k: &str| p.get(k).and_then(|x| x.as_str().map(str::to_string).or_else(|| x.as_f64().map(|f| f.to_string()))).and_then(|s| s.parse::<f64>().ok());
+            let (lat, lon) = (num("lat")?, num("lon")?);
+            let display = p.get("display_name")?.as_str()?;
+            let name = p.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| display.split(',').next().unwrap_or(display).trim().to_string());
+            // after the name: the next two parts are enough to tell places apart
+            let detail: Vec<&str> = display.split(',').map(str::trim).skip(1).filter(|s| *s != name).take(2).collect();
+            Some(Place { name: name.chars().take(60).collect(), detail: detail.join(", ").chars().take(70).collect(), lat, lon })
+        })
+        .collect()
+}
+
+/// An encoded polyline (Google's format) at the given precision (5 or 6 digits; 7 for MOTIS): latitude and longitude.
+pub fn decode_polyline(s: &str, precision: u32) -> Vec<(f64, f64)> {
+    let factor = 10f64.powi(precision as i32);
+    let (bytes, mut i, mut lat, mut lon) = (s.as_bytes(), 0usize, 0i64, 0i64);
+    let mut out = vec![];
+    let next = |i: &mut usize| -> Option<i64> {
+        let (mut shift, mut result) = (0u32, 0i64);
+        loop {
+            let b = (*bytes.get(*i)? as i64) - 63;
+            *i += 1;
+            result |= (b & 0x1f) << shift;
+            shift += 5;
+            if b < 0x20 {
+                break;
+            }
+            if shift > 60 {
+                return None;
+            }
+        }
+        Some(if result & 1 != 0 { !(result >> 1) } else { result >> 1 })
+    };
+    while i < bytes.len() {
+        let (Some(dlat), Some(dlon)) = (next(&mut i), next(&mut i)) else { break };
+        lat += dlat;
+        lon += dlon;
+        out.push((lat as f64 / factor, lon as f64 / factor));
+    }
+    out
+}
+
+/// A stretch of a route: on foot (drawn dashed) or on a vehicle.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Segment {
+    pub points: Vec<(f64, f64)>,
+    pub walk: bool,
+}
+
+/// The line of the first road route (OSRM with `geometries=geojson`).
+pub fn parse_osrm_path(json: &str) -> Vec<(f64, f64)> {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return vec![] };
+    v.pointer("/routes/0/geometry/coordinates").and_then(Value::as_array).map(|c| c.iter().filter_map(|p| Some((p.get(1)?.as_f64()?, p.get(0)?.as_f64()?))).collect()).unwrap_or_default()
+}
+
+fn legs_of(it: &Value) -> Vec<Segment> {
+    it.get("legs")
+        .and_then(Value::as_array)
+        .map(|legs| {
+            legs.iter()
+                .filter_map(|l| {
+                    let g = l.get("legGeometry")?;
+                    let points = decode_polyline(g.get("points")?.as_str()?, g.get("precision").and_then(Value::as_u64).unwrap_or(7) as u32);
+                    (points.len() >= 2).then(|| Segment { points, walk: l.get("mode").and_then(Value::as_str) == Some("WALK") })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The way by public transport that gets there first, leaving from now on, with its line on the map.
+pub fn parse_transit_now(json: &str) -> Option<(Trip, Vec<Segment>)> {
+    let v: Value = serde_json::from_str(json).ok()?;
+    let best = v
+        .get("itineraries")?
+        .as_array()?
+        .iter()
+        .filter_map(|it| {
+            let (start, end) = (parse_iso(it.get("startTime")?.as_str()?)?, parse_iso(it.get("endTime")?.as_str()?)?);
+            Some((end, start, it))
+        })
+        .min_by_key(|(end, start, _)| (*end, std::cmp::Reverse(*start)))?;
+    let (end, start, it) = best;
+    Some((Trip { secs: it.get("duration").and_then(Value::as_i64).unwrap_or((end - start) / 1000), meters: None, leave_ms: Some(start), transfers: it.get("transfers").and_then(Value::as_u64).map(|t| t as u32) }, legs_of(it)))
+}
+
+/// The walk the planner offers on its own, with its line.
+pub fn parse_walk_path(json: &str) -> Option<(i64, Vec<Segment>)> {
+    let v: Value = serde_json::from_str(json).ok()?;
+    let d = v.get("direct")?.as_array()?.iter().filter(|d| d.get("legs").and_then(Value::as_array).is_some_and(|l| !l.is_empty() && l.iter().all(|x| x.get("mode").and_then(Value::as_str) == Some("WALK")))).min_by_key(|d| d.get("duration").and_then(Value::as_i64).unwrap_or(i64::MAX))?;
+    Some((d.get("duration")?.as_i64()?, legs_of(d).into_iter().map(|s| Segment { walk: true, ..s }).collect()))
+}
+
 /// The walk the planner offers on its own (`direct`), in seconds.
 pub fn parse_walk(json: &str) -> Option<i64> {
     let v: Value = serde_json::from_str(json).ok()?;
@@ -236,6 +343,37 @@ mod tests {
         assert_eq!((t.secs, t.leave_ms, t.transfers), (900, parse_iso("2026-11-20T07:44:00Z"), Some(2)));
         assert!(parse_transit(j, parse_iso("2026-11-20T07:00:00Z").unwrap()).is_none(), "nothing arrives by seven");
         assert!(parse_transit(r#"{"itineraries":[]}"#, by).is_none());
+    }
+
+    #[test]
+    fn places_are_read_with_a_name_and_a_few_words_of_where() {
+        let j = r#"[{"lat":"43.7078625","lon":"10.3983886","name":"Pisa Centrale","display_name":"Pisa Centrale, 9, Piazza della Stazione, San Giusto, Pisa, Toscana, 56126, Italia"},
+                    {"lat":"43.7","lon":"10.4","name":"","display_name":"Via Roma, Pisa, Toscana"},{"lat":"x","lon":"1","display_name":"bad"}]"#;
+        let p = parse_places(j);
+        assert_eq!(p.len(), 2);
+        assert_eq!((p[0].name.as_str(), p[0].detail.as_str()), ("Pisa Centrale", "9, Piazza della Stazione"));
+        assert_eq!((p[1].name.as_str(), p[1].detail.as_str()), ("Via Roma", "Pisa, Toscana"), "no name: the first part of the address");
+        assert!(parse_places("nope").is_empty());
+    }
+
+    #[test]
+    fn a_polyline_decodes_and_the_routes_give_their_lines() {
+        // the Google documentation's example, at precision 5
+        let pts = decode_polyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@", 5);
+        assert_eq!(pts, vec![(38.5, -120.2), (40.7, -120.95), (43.252, -126.453)]);
+        assert!(decode_polyline("", 5).is_empty() && decode_polyline("~", 5).is_empty(), "garbage does not loop");
+        let line = parse_osrm_path(r#"{"routes":[{"geometry":{"coordinates":[[10.4017,43.7167],[10.4,43.72]]}}]}"#);
+        assert_eq!(line, vec![(43.7167, 10.4017), (43.72, 10.4)]);
+        let j = r#"{"itineraries":[
+            {"duration":1200,"startTime":"2026-11-20T07:50:00Z","endTime":"2026-11-20T08:10:00Z","transfers":1,"legs":[{"mode":"WALK","legGeometry":{"points":"_p~iF~ps|U_ulLnnqC","precision":5}},{"mode":"BUS","legGeometry":{"points":"_p~iF~ps|U_ulLnnqC_mqNvxq`@","precision":5}}]},
+            {"duration":600,"startTime":"2026-11-20T07:54:00Z","endTime":"2026-11-20T08:04:00Z","transfers":0,"legs":[{"mode":"BUS","legGeometry":{"points":"_p~iF~ps|U_ulLnnqC","precision":5}}]}]}"#;
+        let (trip, segs) = parse_transit_now(j).unwrap();
+        assert_eq!((trip.secs, trip.transfers), (600, Some(0)), "the one that arrives first");
+        assert_eq!(segs.len(), 1);
+        let two = parse_transit_now(&j.replace("07:54:00Z", "07:30:00Z").replace("08:04:00Z", "08:20:00Z")).unwrap().1;
+        assert!(two[0].walk && !two[1].walk, "walking stretches are marked");
+        let (secs, w) = parse_walk_path(r#"{"direct":[{"duration":331,"legs":[{"mode":"WALK","legGeometry":{"points":"_p~iF~ps|U_ulLnnqC","precision":5}}]}]}"#).unwrap();
+        assert_eq!((secs, w[0].walk), (331, true));
     }
 
     #[test]
