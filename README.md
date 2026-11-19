@@ -205,3 +205,10 @@ with a glyph and temperature each (hours already gone are dimmed, the current bl
 hour, and one line saying when it rains next ("Rain in 40 min", "Rain around 18:00 · in 3 h", "Raining · clears in 25
 min", or that none is expected in the next 24 hours). When rain is due within six hours, or it is raining, the home page
 shows that line in place of today's high and low. Needs the latitude and longitude (settings page). Data: Open-Meteo.
+
+## Building with `just`
+
+`just build` asks for the target (Linux, Windows MSVC, Windows GNU, macOS check) and leaves the result in `dist/<target>/`;
+`just build windows` skips the menu, `just windows-zip` makes `dist/open-island-windows-x64.zip` to send to someone.
+Cross-building for Windows from Linux needs `cargo install cargo-xwin` (MSVC, recommended) or mingw-w64 (GNU).
+`just check-all` runs the tests, clippy and the Windows and macOS type-checks.
