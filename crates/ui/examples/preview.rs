@@ -214,6 +214,13 @@ fn main() {
         ("rain", Box::new(|_, d| { d.weather.as_mut().unwrap().rain_slots[1].mm = 0.6; })),
         ("home", Box::new(|i, _| { i.push(NOW, Input::Peek); })),
         ("page-cal", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Cal)))),
+        ("page-today", Box::new(|i, d| {
+            let day = 1_700_000_000_000i64 / 86_400_000 * 86_400_000;
+            let _ = day;
+            let ev = |t: &str, h: i64, m: i64, dur: i64, url: bool| island_core::calendar::Event { id: t.into(), title: t.into(), start_ms: NOW / 86_400_000 * 86_400_000 + (h * 60 + m) * 60_000, end_ms: NOW / 86_400_000 * 86_400_000 + (h * 60 + m + dur) * 60_000, all_day: false, url: url.then(|| "https://meet.example/x".to_string()), color: Some((90, 160, 255)), calendar: "Uni".into() };
+            d.events = vec![ev("Reti di calcolatori", 8, 30, 120, false), ev("Pranzo", 12, 30, 60, false), ev("Ricevimento", 15, 0, 45, true), ev("Studio di gruppo", 17, 0, 90, false)];
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
+        })),
         ("page-audio", Box::new(|i, d| {
             let sink = |n: &str, l: &str| island_ui::model::Sink { name: n.into(), label: l.into() };
             d.sinks = vec![sink("speaker", "Built-in Speakers"), sink("bluez_output.x", "WH-1000XM5")];

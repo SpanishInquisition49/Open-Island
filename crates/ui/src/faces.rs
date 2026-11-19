@@ -11,6 +11,7 @@ use island_core::calendar;
 use island_core::color;
 use island_core::duration;
 use island_core::face::{Face, Page, Side};
+use island_core::timeline;
 use island_core::progress::State as OpState;
 use island_core::weather;
 
@@ -155,6 +156,7 @@ impl Island {
             Face::Weather => self.face_weather(p, w, h),
             Face::Options => self.face_options(p, w, h),
             Face::Audio => self.face_audio(p, w, h),
+            Face::Today => self.face_today(p, w, h),
             Face::Bar => self.face_bar(p, w, h),
             Face::Osd => self.face_osd(p, w, h),
             Face::Power => self.face_power(p, w, h),
@@ -1434,6 +1436,87 @@ impl Island {
         }
     }
 
+    /// Rows the today page lists at most (the now line is one more).
+    const TODAY_ROWS: usize = 7;
+
+    /// Today's items that fit the page, the place of the now line among them, and how many finished ones were left out.
+    pub(crate) fn today_view(&self) -> (Vec<timeline::Item>, usize, usize) {
+        let off = self.data.utc_offset_secs;
+        let t = clock::civil(self.now, off);
+        let (start, end) = (clock::midnight_ms(t.year, t.month, t.day, off), clock::midnight_ms(t.year, t.month, t.day + 1, off));
+        let reminders: Vec<(i64, String)> = self.reminders.iter().map(|r| (r.due_ms, r.text.clone())).collect();
+        let items = timeline::build(&self.data.events, &reminders, start, end);
+        let at = timeline::now_index(&items, self.now);
+        // what is over goes first when there is no room, but the last finished one stays as context
+        let skip = items.len().saturating_sub(Self::TODAY_ROWS).min(at.saturating_sub(1));
+        let skip = if items.iter().take(skip).any(|i| i.all_day) { 0 } else { skip };
+        let shown: Vec<_> = items.into_iter().skip(skip).take(Self::TODAY_ROWS).collect();
+        (shown, at - skip, skip)
+    }
+
+    pub(crate) fn today_height(&self) -> f64 {
+        let (items, _, _) = self.today_view();
+        14.0 + 34.0 + 6.0 + if items.is_empty() { 40.0 } else { items.len() as f64 * 28.0 + 18.0 } + 10.0
+    }
+
+    fn face_today(&self, p: P, w: f64, _h: f64) {
+        let hy = self.page_header(p, w, "Today");
+        let (items, now_at, skipped) = self.today_view();
+        let off = self.data.utc_offset_secs;
+        let all = {
+            let t = clock::civil(self.now, off);
+            let reminders: Vec<(i64, String)> = self.reminders.iter().map(|r| (r.due_ms, r.text.clone())).collect();
+            timeline::build(&self.data.events, &reminders, clock::midnight_ms(t.year, t.month, t.day, off), clock::midnight_ms(t.year, t.month, t.day + 1, off))
+        };
+        let summary = match timeline::next_up(&all, self.now) {
+            Some((i, m)) => format!("{} · {}", i.title, if m < 60 { format!("in {m} min") } else { format!("in {} h {} min", m / 60, m % 60) }),
+            None if all.is_empty() => String::new(),
+            None => "Nothing more today".to_string(),
+        };
+        p.text(&summary, w - 14.0, hy, 11.0, REG, theme::DIM, Align::Right, (w - 150.0) as f32);
+        let mut y = 14.0 + 34.0 + 6.0;
+        if items.is_empty() {
+            p.text("Nothing planned today", w / 2.0, y + 20.0, 12.0, REG, theme::DIM, Align::Center, 260.0);
+            return;
+        }
+        let line = |p: P, y: f64| {
+            p.rrect(rect(14.0, y + 8.0, w - 28.0 - 34.0, 1.5), 0.75, with_alpha(theme::ACCENT, 0.55));
+            p.circle(18.0, y + 8.75, 3.5, theme::ACCENT);
+            p.text("now", w - 14.0, y + 8.75, 9.0, SEMI, theme::ACCENT, Align::Right, 40.0);
+        };
+        for (n, it) in items.iter().enumerate() {
+            if n == now_at {
+                line(p, y);
+                y += 18.0;
+            }
+            p.stagger(1 + n);
+            let past = !it.all_day && it.end_ms.max(it.at_ms) <= self.now;
+            let (fg, dim) = if past { (theme::DIM, with_alpha(theme::DIM, 0.7)) } else { (theme::FG, theme::DIM) };
+            let row = rect(8.0, y, w - 16.0, 26.0);
+            if it.url.is_some() && p.hovered(row) {
+                p.rrect(row, 8.0, theme::CHIP);
+            }
+            let cy = y + 13.0;
+            let when = if it.all_day { "All day".to_string() } else { clock::civil(it.at_ms, off).hhmm() };
+            p.text(&when, 20.0, cy, 11.0, REG, dim, Align::Left, 48.0);
+            match it.kind {
+                timeline::Kind::Event => p.rrect(rect(72.0, cy - 8.0, 3.0, 16.0), 1.5, if past { dim } else { it.color.map(|c| theme::rgb(color::readable_tint(c, true))).unwrap_or(theme::ACCENT) }),
+                timeline::Kind::Reminder => p.icon("bell", 74.0, cy, 12.0, dim),
+            }
+            let ongoing = !it.all_day && it.at_ms <= self.now && it.end_ms > self.now;
+            p.text(&it.title, 86.0, cy, 12.0, if ongoing { SEMI } else { REG }, fg, Align::Left, (w - 86.0 - 40.0) as f32);
+            if let Some(u) = &it.url {
+                p.icon("external-link", w - 26.0, cy, 13.0, dim);
+                p.hit(row, Action::Join(u.clone()));
+            }
+            y += 28.0;
+        }
+        if now_at >= items.len() {
+            line(p, y);
+        }
+        let _ = skipped;
+    }
+
     /// Rows of each section of the audio page.
     fn audio_sections(&self) -> (usize, usize, usize) {
         (self.data.sinks.len().min(4), self.data.sources.len().min(3), self.data.streams.len().min(4))
@@ -1602,6 +1685,7 @@ fn page_icon(p: Page) -> &'static str {
         Page::Weather => "cloud-sun",
         Page::Options => "toggle-right",
         Page::Audio => "volume",
+        Page::Today => "clock",
     }
 }
 

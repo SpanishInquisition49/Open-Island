@@ -10,6 +10,7 @@ pub mod face;
 pub mod ics;
 pub mod lyrics;
 pub mod notify;
+pub mod timeline;
 pub mod pomodoro;
 pub mod progress;
 pub mod spectrum;

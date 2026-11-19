@@ -271,3 +271,9 @@ something pins a default output (the sink button of the quick settings, or a mix
 The output row of the quick settings opens it (`open-island msg page audio`): every output and input to pick from, and each
 app that is playing with its own volume (minus / plus by ten, the speaker icon mutes just that app). It reads `pactl` when
 PipeWire reports a change, so it follows headphones coming and going.
+
+## Today
+
+The clock icon in the dock (right after home, `open-island msg page today`) lists the day in one column: calendar events and
+reminders in time order, what is over dimmed, and a line for "now" between it and what is still to come. The header says what
+is next and in how long; an event with a link has a join button on its row.

@@ -25,6 +25,7 @@ fn page(name: &str) -> Option<island_core::face::Page> {
         "media" => Page::Media,
         "clip" | "clipboard" => Page::Clip,
         "audio" | "sound" => Page::Audio,
+        "today" | "day" => Page::Today,
         "focus" => Page::Focus,
         "settings" | "config" => Page::Settings,
         "timer" => Page::Timer,

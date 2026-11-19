@@ -1267,6 +1267,9 @@ impl Island {
             !self.history.is_empty(),
             self.data.weather.is_some(),
         );
+        if let Some(at) = v.iter().position(|p| *p == Page::Home) {
+            v.insert(at + 1, Page::Today);
+        }
         if self.cfg.clipboard_history {
             v.push(Page::Clip);
         }
@@ -1530,6 +1533,7 @@ impl Island {
             Face::Options => h = 14.0 + 34.0 + 40.0 + crate::options::content_height(self.options_tab, self.data.config.filters.len()) + 14.0,
             Face::Qs => h = self.qs_layout().height,
             Face::Audio => h = self.audio_height(),
+            Face::Today => h = self.today_height(),
             Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
             Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
             Face::MediaMini | Face::TimerMini | Face::MeetMini => w += self.icon_count(true) as f64 * ICON_W,
@@ -2114,7 +2118,7 @@ fn side_page(s: Side) -> Page {
 
 /// Faces that are pages: they carry the dock at the bottom.
 pub(crate) fn has_dock(f: Face) -> bool {
-    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options | Face::Audio)
+    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options | Face::Audio | Face::Today)
 }
 
 pub(crate) fn page_of(f: Face) -> Option<Page> {
@@ -2133,6 +2137,7 @@ pub(crate) fn page_of(f: Face) -> Option<Page> {
         Face::Weather => Page::Weather,
         Face::Options => Page::Options,
         Face::Audio => Page::Audio,
+        Face::Today => Page::Today,
         Face::FocusFull => Page::Focus,
         _ => return None,
     })
@@ -3300,7 +3305,7 @@ mod tests {
         i.push(T0, Input::OpenPage(Page::Qs));
         draw_frames(&mut i, 200);
         let gotos: Vec<Page> = i.hits.iter().filter_map(|h| if let Action::Goto(p) = h.action { Some(p) } else { None }).collect();
-        assert_eq!(gotos, vec![Page::Home, Page::Cal, Page::Qs, Page::Sys, Page::Clip, Page::Options, Page::Settings], "no media, timer, notifications or forecast yet");
+        assert_eq!(gotos, vec![Page::Home, Page::Today, Page::Cal, Page::Qs, Page::Sys, Page::Clip, Page::Options, Page::Settings], "no media, timer, notifications or forecast yet");
         let home = i.hits.iter().find(|h| h.action == Action::Goto(Page::Sys)).unwrap().rect;
         i.pointer_down(i.now, home.center().x + i.pill_origin.0, home.center().y + i.pill_origin.1);
         assert_eq!(i.page, Some(Page::Sys));
@@ -3346,7 +3351,7 @@ mod tests {
         i.push(T0, Input::OpenPage(Page::Home));
         draw_frames(&mut i, 150);
         i.push(i.now, Input::CyclePage(1));
-        assert_eq!(i.page, Some(Page::Cal));
+        assert_eq!(i.page, Some(Page::Today));
         i.tick(i.now + 8, 8.0);
         assert_eq!(i.slide, 1.0, "forward slides in from the right");
         draw_frames(&mut i, 150);
@@ -3354,7 +3359,7 @@ mod tests {
         i.push(i.now, Input::CyclePage(-1));
         assert_eq!(i.page, Some(Page::Settings), "wraps around to the last page");
         i.tick(i.now + 8, 8.0);
-        assert_eq!(i.slide, 1.0, "Cal -> Settings is still forward in the dock's order");
+        assert_eq!(i.slide, 1.0, "Home -> Settings is still forward in the dock's order");
         draw_frames(&mut i, 150);
         i.push(i.now, Input::CyclePage(-1));
         i.tick(i.now + 8, 8.0);
@@ -3367,7 +3372,7 @@ mod tests {
         i.push(T0, Input::OpenKeyboard(Some(Page::Home)));
         draw_frames(&mut i, 150);
         i.push(i.now, Input::Key(KeyInput::NextPage));
-        assert_eq!(i.page, Some(Page::Cal));
+        assert_eq!(i.page, Some(Page::Today));
         i.push(i.now, Input::Key(KeyInput::PrevPage));
         i.push(i.now, Input::Key(KeyInput::PrevPage));
         assert_eq!(i.page, Some(Page::Settings));
@@ -3756,6 +3761,25 @@ mod tests {
         assert!(press(&mut i, Action::Open(Page::Audio)));
         draw_frames(&mut i, 200);
         assert_eq!(i.current_face(), Face::Audio);
+    }
+
+    #[test]
+    fn the_today_page_lists_events_and_reminders_with_a_now_line() {
+        let mut i = Island::new(Config::default());
+        let t = crate::clock::civil(T0, 0);
+        let at = |h: i64| crate::clock::midnight_ms(t.year, t.month, t.day, 0) + h * 3_600_000;
+        let now = at(10);
+        let ev = |title: &str, s: i64, e: i64| Event { id: title.into(), title: title.into(), start_ms: at(s), end_ms: at(e), all_day: false, url: None, color: None, calendar: "c".into() };
+        i.data.events = vec![ev("early", 1, 2), ev("later", 16, 17)];
+        i.reminders = vec![Reminder { due_ms: at(14), text: "call".into() }];
+        i.push(now, Input::OpenPage(Page::Today));
+        i.now = now;
+        let (items, now_at, _) = i.today_view();
+        assert_eq!(items.iter().map(|x| x.title.as_str()).collect::<Vec<_>>(), ["early", "call", "later"]);
+        assert_eq!(now_at, 1, "the now line is after the finished event");
+        assert!(i.pages().windows(2).any(|w| w == [Page::Home, Page::Today]), "the dock shows it after the home page");
+        draw_frames(&mut i, 200);
+        assert_eq!(i.current_face(), Face::Today);
     }
 
     #[test]
