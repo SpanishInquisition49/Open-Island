@@ -74,6 +74,8 @@ pub fn run() {
         None => println!("  missing no configuration directory"),
     }
 
+    your_day();
+
     let tools = tools();
     if !tools.is_empty() {
         println!("\nTools (each one only enables its own feature)");
@@ -92,6 +94,35 @@ pub fn run() {
             Some(p) => println!("  ok      other applications' notifications are read from {}", p.display()),
             None => println!("  missing the Windows notification database was not found: only `open-island notify` will show"),
         }
+    }
+}
+
+/// What the day features have to work with: where home is, the commute, the cards, the pinned train, what is kept for offline.
+fn your_day() {
+    let s = crate::config::load();
+    let on = |b: bool| if b { "ok     " } else { "off    " };
+    let age = |ms: i64| {
+        let mins = (chrono::Utc::now().timestamp_millis() - ms).max(0) / 60_000;
+        if mins < 90 { format!("{mins} min ago") } else if mins < 2 * 24 * 60 { format!("{} h ago", mins / 60) } else { format!("{} days ago", mins / 1440) }
+    };
+    let clock = |m: i64| if m <= 0 { "off".to_string() } else { format!("{:02}:{:02}", m / 60, m % 60) };
+    println!("\nYour day");
+    println!("  {} home: {}", on(s.home.is_some()), if s.home.is_some() { crate::config::home_label(&s.home) } else { "not set (the station near home and the pin on the map need it: `home <coordinates or address>`)".to_string() });
+    println!("  {} commute: {} min   cards: morning {}, evening {}", on(s.ui.commute_minutes > 0), s.ui.commute_minutes, clock(s.ui.morning_recap_min), clock(s.ui.evening_recap_min));
+    match crate::services::state_file("pinned-train.json").and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).and_then(|v| island_core::train::TrainPin::from_json(&v)) {
+        Some(t) => println!("  ok      train: {} {} {} -> {}", t.label(), t.time, t.from_name, t.to_name),
+        None => println!("  off     train: none pinned (`train <station> <HH:MM>` in the command bar)"),
+    }
+    match crate::services::state_file("calendar-cache.json").and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
+        Some(v) => {
+            let n: usize = v.get("sources").and_then(|x| x.as_object()).map_or(0, |o| o.values().filter_map(|l| l.as_array()).map(Vec::len).sum());
+            println!("  ok      the schedule kept for offline: {n} events, fetched {}", age(v.get("saved_at").and_then(|x| x.as_i64()).unwrap_or(0)));
+        }
+        None => println!("  off     no schedule kept for offline yet (it is saved after the first fetch)"),
+    }
+    match crate::services::state_file("rates.json").and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
+        Some(v) => println!("  ok      currency rates: {} currencies, fetched {}", v.get("rates").and_then(|x| x.as_object()).map_or(0, |o| o.len()), age(v.get("at").and_then(|x| x.as_i64()).unwrap_or(0) * 1000)),
+        None => println!("  {} currency rates: none yet{}", on(s.ui.currency_rates), if s.ui.currency_rates { " (fetched at the next start)" } else { " (switched off)" }),
     }
 }
 

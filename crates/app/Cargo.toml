@@ -52,12 +52,14 @@ arboard = { version = "3", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
+# the `interface` macro expands to paths in this crate
+windows-core = "0.62"
 # reads the database where Windows keeps the notifications
 rusqlite = { version = "0.37", features = ["bundled"] }
 windows = { version = "0.62", features = [
-  "Foundation", "Foundation_Collections", "Media_Control", "Storage_Streams",
-  "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints",
-  "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_Power", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi",
+  "Foundation", "Foundation_Collections", "Media_Control", "Storage_Streams", "Devices_Radios", "Devices_Geolocation",
+  "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_Devices_FunctionDiscovery", "Win32_UI_Shell_PropertiesSystem",
+  "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_Power", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi", "Win32_System_Threading",
 ] }
 
 [dev-dependencies]

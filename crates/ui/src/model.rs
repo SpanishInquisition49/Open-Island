@@ -116,6 +116,8 @@ pub struct Position {
 pub enum PosSource {
     /// GeoClue (Wi-Fi or GeoIP, as the system sees it).
     Geoclue,
+    /// Placed from the nearby Wi-Fi networks.
+    Wifi,
     /// The location set for the weather.
     Settings,
 }
@@ -232,6 +234,10 @@ pub struct ConfigView {
     /// The map tile URL as set (empty: the default), and whether an API key is stored (the key itself never leaves the app).
     pub map_tile_url: String,
     pub map_key_set: bool,
+    /// Where home is, as shown (a name, or the coordinates); empty when it is not set.
+    pub home: String,
+    /// Its coordinates, for the pin on the map.
+    pub home_pos: Option<(f64, f64)>,
 }
 
 /// The study mode (`~/.local/bin/focus`): sites blocked and notifications silenced until `end_epoch`.
@@ -291,6 +297,11 @@ pub struct Data {
     pub route: Option<RouteInfo>,
     pub route_pending: bool,
     /// Who is using the microphone and the camera right now (read while the system page is open).
+    /// Units of each currency per euro (the ECB's daily rates), for the command bar.
+    pub rates: Vec<(String, f64)>,
+    /// The usual train, pinned, and what the departure board says about it today.
+    pub train: Option<island_core::train::TrainPin>,
+    pub train_status: Option<island_core::train::TrainStatus>,
     pub mic_users: Vec<MicUser>,
     pub camera_users: Vec<(String, Vec<u32>)>,
     pub system: Option<SystemStats>,
@@ -417,6 +428,14 @@ pub enum Input {
     /// The shell that started a command is gone: forget the command without a word.
     CommandGone(String),
     StartTimer(u64),
+    /// Something for the to-do list on the Today page.
+    TodoAdd(String),
+    /// A countdown with a name (`timer 10m tea`).
+    StartNamedTimer(u64, String),
+    /// Ends the countdowns with this name (case does not matter).
+    CancelTimerNamed(String),
+    /// Forgets one activity by id (an empty id forgets all of them).
+    ActivityClear(String),
     StartPomodoro,
     StartStopwatch,
     CancelTimer,
@@ -468,6 +487,11 @@ pub enum Command {
     ToggleBluetooth,
     ToggleKeepAwake,
     ToggleNightLight,
+    /// Pin the usual train: "pisa centrale 17:12 verso lucca".
+    PinTrain(String),
+    UnpinTrain,
+    /// Where home is: "43.7085, 10.4036" (no network) or an address (looked up once).
+    SetHome(String),
     NextProfile,
     NextSink,
     /// Make this output (a sink name) the default.
@@ -505,6 +529,8 @@ pub enum Command {
     /// A calendar feed address (https://, http:// or webcal://).
     AddCalendar(String),
     /// Add an iCloud account: the Apple ID and an app-specific password.
+    /// A CalDAV account of any server (Nextcloud, Fastmail, Radicale...).
+    AddCalDav { server: String, user: String, password: String },
     AddICloud { user: String, password: String },
     RenameCalendar { index: usize, name: String },
     SetCalendarColor { index: usize, color: (u8, u8, u8) },

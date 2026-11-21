@@ -31,7 +31,15 @@ pub fn parse_stat(line: &str) -> Option<Proc> {
 /// Programs the island never offers to stop: the ones the session lives on.
 pub fn is_protected(name: &str) -> bool {
     const KEEP: &[&str] = &["systemd", "niri", "noctalia", "Xwayland", "Xorg", "sway", "Hyprland", "kwin_wayland", "gnome-shell", "pipewire", "wireplumber", "dbus-daemon", "open-island", "login", "sddm", "gdm", "greetd", "init"];
-    KEEP.iter().any(|k| name == *k || name.starts_with(&format!("{k}-")))
+    // Windows and macOS: the shell, the session and the security stack (names compared without ".exe", any case)
+    const KEEP_OS: &[&str] = &[
+        "system", "system idle process", "registry", "memory compression", "smss", "csrss", "wininit", "winlogon", "services", "lsass", "svchost", "dwm", "explorer", "fontdrvhost", "sihost", "ctfmon",
+        "taskhostw", "runtimebroker", "searchhost", "startmenuexperiencehost", "shellexperiencehost", "msmpeng", "securityhealthservice", "audiodg", "spoolsv", "wudfhost",
+        "launchd", "windowserver", "loginwindow", "kernel_task", "finder", "dock", "systemuiserver",
+    ];
+    let lower = name.to_lowercase();
+    let bare = lower.strip_suffix(".exe").unwrap_or(&lower);
+    KEEP_OS.contains(&bare) || KEEP.iter().any(|k| name == *k || name.starts_with(&format!("{k}-")))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -109,5 +117,7 @@ mod tests {
     fn the_session_is_protected() {
         assert!(is_protected("niri") && is_protected("systemd-logind") && is_protected("open-island"));
         assert!(!is_protected("firefox") && !is_protected("nirimaster"));
+        assert!(is_protected("explorer.exe") && is_protected("DWM") && is_protected("svchost.exe") && is_protected("WindowServer"));
+        assert!(!is_protected("chrome.exe") && !is_protected("explorer2"));
     }
 }

@@ -37,6 +37,8 @@ pub fn config_view_of(fonts: &Fonts) -> island_ui::model::ConfigView {
         screen: s.screen,
         map_tile_url: if s.ui.map_tile_url == island_core::map::DEFAULT_TILES { String::new() } else { s.ui.map_tile_url.clone() },
         map_key_set: !s.map_api_key.is_empty(),
+        home: crate::config::home_label(&s.home),
+        home_pos: s.home.as_ref().map(|h| (h.0, h.1)),
     }
 }
 
@@ -103,6 +105,15 @@ impl App {
         let mut island = Island::new(Config::default());
         island.restore_announced(services::load_announced());
         island.restore_reminders(services::load_reminders());
+        island.restore_todos(services::load_todos());
+        island.restore_deadlines(services::load_deadlines());
+        island.restore_bar_history(services::load_bar_history());
+        if let Some(d) = services::load_recap_day("evening-recap") {
+            island.restore_evening_day(d);
+        }
+        if let Some(d) = services::load_recap_day("morning-recap") {
+            island.restore_morning_day(d);
+        }
         if let Some((day, apps)) = services::load_attention() {
             island.restore_attention(day, apps);
         }
@@ -182,6 +193,11 @@ impl App {
             }
         }
         services::save_reminders_if_changed(self.island.reminders());
+        services::save_todos_if_changed(self.island.todos());
+        services::save_deadlines_if_changed(self.island.deadlines());
+        services::save_bar_history_if_changed(self.island.bar_history());
+        services::save_recap_day_if_changed("evening-recap", self.island.evening_day());
+        services::save_recap_day_if_changed("morning-recap", self.island.morning_day());
         // today's attention: written at most once a minute
         let now_s = self.now() / 1000;
         if now_s - self.attention_saved_at >= 60 {
@@ -234,7 +250,12 @@ impl App {
         }
         use serde_json::json;
         let result = match c {
-            Command::AddCalendar(url) => self.edit_calendars(|list| crate::config::add_feed(list, url)),
+            Command::AddCalendar(input) => match crate::config::calendar_from_input(input) {
+                Some(crate::config::CalendarKind::File { path }) if !std::path::Path::new(&crate::config::expand_home(&path)).exists() => Err(format!("No such file or folder: {path}")),
+                Some(kind) => self.edit_calendars(|list| crate::config::add_source(list, kind)),
+                None => Err("Not a calendar: a feed address, an .ics file, or \"holidays\"".to_string()),
+            },
+            Command::AddCalDav { server, user, password } => self.edit_calendars(|list| crate::config::add_caldav(list, server, user, password)),
             Command::AddICloud { user, password } => self.edit_calendars(|list| crate::config::add_icloud(list, user, password)),
             Command::RemoveCalendar(i) => self.edit_calendars(|list| {
                 if *i < list.len() {

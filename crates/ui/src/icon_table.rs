@@ -100,6 +100,7 @@ pub const ICONS: &[(&str, u32)] = &[
     ("target", 0xEB35),
     ("terminal-2", 0xEBEF),
     ("toggle-right", 0xEB3F),
+    ("train", 0xED96),
     ("trash", 0xEB41),
     ("umbrella", 0xEBF1),
     ("upload", 0xEB47),

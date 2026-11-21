@@ -1,0 +1,876 @@
+//! Part of `Island` (see `mod.rs`).
+
+use super::*;
+
+impl Island {
+    // ---- the frame ----------------------------------------------------------------------------
+
+    /// Size of a face, which can depend on the data it shows.
+    pub fn face_size(&self, face: Face) -> (f64, f64) {
+        let (mut w, mut h) = face.size();
+        match face {
+            Face::IdleHover => {
+                h = 28.0 + 44.0 + 10.0 + 34.0 + 10.0;
+                if self.next_event().is_some() {
+                    h += 10.0 + 18.0 + 4.0;
+                }
+            }
+            Face::Cal => {
+                let weeks = calendar::month_grid(self.cal.year, self.cal.month).len() as f64;
+                let n = self.day_events().len().clamp(1, 4) as f64;
+                h = 14.0 + 34.0 + 4.0 + 16.0 + weeks * 30.0 + 10.0 + n * 24.0 + 20.0;
+            }
+            Face::Notif if self.notif.as_ref().is_some_and(|n| n.progress.is_some()) => h += 14.0,
+            Face::Notifs => h = 14.0 + 34.0 + 6.0 + self.history_groups().len().clamp(1, 5) as f64 * 46.0 + if self.history.is_empty() { 20.0 } else { 8.0 },
+            Face::Clip => h = 14.0 + 34.0 + 4.0 + self.data.clipboard.len().clamp(1, CLIP_ROWS) as f64 * 32.0 + 10.0,
+            Face::FocusMini => w += self.icon_count(true) as f64 * ICON_W,
+            Face::Settings => h = 14.0 + 34.0 + self.settings_content_height() + 14.0,
+            Face::Options => h = 14.0 + 34.0 + 40.0 + crate::options::content_height(self.options_tab, self.data.config.filters.len()) + 14.0,
+            Face::Qs => h = self.qs_layout().height,
+            Face::Audio => h = self.audio_height(),
+            Face::Today => h = self.today_height(),
+            Face::TimerFull => h += self.extra_timers.len().min(3) as f64 * 28.0 + if self.extra_timers.is_empty() { 0.0 } else { 8.0 },
+            Face::Send => h = self.send_height(),
+            Face::Map => h = 14.0 + 34.0 + MAP_H + 8.0 + 34.0 + 10.0,
+            Face::Activity => h = 14.0 + 34.0 + 8.0 + 6.0 * 30.0 + 10.0,
+            Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
+            Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
+            Face::MediaMini | Face::TimerMini | Face::MeetMini => w += self.icon_count(true) as f64 * ICON_W,
+            _ => {}
+        }
+        if has_dock(face) {
+            h += DOCK_H;
+            w = w.max(self.pages().len() as f64 * 30.0 + 28.0);
+        }
+        (w, h)
+    }
+
+    /// Rows of the system page that have data.
+    pub(crate) fn sys_rows(&self) -> usize {
+        let Some(st) = &self.data.system else { return 1 };
+        let mut n = 2; // cpu, cores
+        n += st.memory.is_some() as usize + st.gpu.is_some() as usize + self.data.battery.is_some() as usize + st.disk.is_some() as usize;
+        n + self.data.devices.len().min(4) + 1 + self.data.culprit.is_some() as usize + self.data.paused.len().min(3) + self.data.mic_users.len().min(2) + self.data.camera_users.len().min(2) // devices, network, the program to blame, the paused ones
+    }
+
+    /// Height of the settings page below its header: four sections and their rows.
+    pub(crate) fn settings_content_height(&self) -> f64 {
+        let cals = self.data.config.calendars.len().min(4) as f64;
+        // section titles (6 x 22), calendar rows, the two add rows, latitude, longitude, home, train, font, sound, map key, the note line
+        6.0 * 22.0 + (cals + 3.0 + 2.0 + 2.0 + 1.0 + 1.0 + 1.0) * 34.0 + 20.0
+    }
+
+    pub(crate) fn day_events(&self) -> Vec<&calendar::Event> {
+        let c = &self.cal;
+        let off = self.data.utc_offset_secs;
+        let start = crate::clock::midnight_ms(c.year, c.month, c.day, off);
+        let end = crate::clock::midnight_ms(c.year, c.month, c.day + 1, off);
+        calendar::events_between(&self.data.events, start, end)
+    }
+
+    pub(crate) fn icon_count(&self, compact_busy: bool) -> usize {
+        if !self.cfg.status_icons {
+            return 0;
+        }
+        let p = self.data.privacy;
+        let _ = compact_busy;
+        p.mic as usize + p.camera as usize + p.screen as usize + self.quiet() as usize + (!self.data.net.is_ok()) as usize
+    }
+
+    pub(super) fn sync_lyrics(&mut self) {
+        if !self.cfg.lyrics {
+            self.lyric_lines = None;
+            return;
+        }
+        if self.lyric_src != self.data.lyrics_lrc {
+            self.lyric_src = self.data.lyrics_lrc.clone();
+            self.lyric_lines = self.lyric_src.as_deref().and_then(lyrics::parse_lrc);
+            self.lyric_idx = self.lyric_lines.as_ref().map_or(0, |l| lyrics::index_at(l, self.media_position(), LYRIC_LEAD_MS));
+            self.lyric_at = -100_000;
+        }
+        if let Some(lines) = &self.lyric_lines {
+            let idx = lyrics::index_at(lines, self.media_position(), LYRIC_LEAD_MS);
+            if idx != self.lyric_idx {
+                // one line on is a scroll; a jump (a seek, the island waking from a long pause) is just there
+                let jump = idx.abs_diff(self.lyric_idx) > 1;
+                self.lyric_dir = if idx > self.lyric_idx { 1.0 } else { -1.0 };
+                self.lyric_idx = idx;
+                self.lyric_at = if jump { -100_000 } else { self.now };
+            }
+        }
+    }
+
+    pub(crate) fn media_position(&self) -> f64 {
+        match &self.data.media {
+            Some(m) if m.playing => (m.position_ms + (self.now - m.sampled_at_ms).max(0) as f64).min(m.length_ms.max(m.position_ms)),
+            Some(m) => m.position_ms,
+            None => 0.0,
+        }
+    }
+
+    /// The lyric lines to draw with their slot (rows from the current one, fractional while scrolling), when
+    /// the track has synced lyrics.
+    pub(crate) fn lyric_strip(&self) -> Option<Vec<(String, f32)>> {
+        let lines = self.lyric_lines.as_ref()?;
+        let progress = (self.now - self.lyric_at) as f64 / lyrics::SCROLL_MS;
+        let text = |n: i64| if n >= 1 && (n as usize) <= lines.len() { lines[n as usize - 1].text.clone() } else { String::new() };
+        Some(lyrics::strip(self.lyric_idx, progress, self.lyric_dir).into_iter().map(|(n, slot)| (text(n), slot)).collect())
+    }
+
+    /// The line being sung and how far its entrance has come (0..=1), when the track has synced lyrics and one is due.
+    pub(crate) fn lyric_now(&self) -> Option<(String, f64)> {
+        let lines = self.lyric_lines.as_ref()?;
+        let line = lines.get(self.lyric_idx.checked_sub(1)?)?;
+        (!line.text.is_empty()).then(|| (line.text.clone(), lyrics::ease_out((self.now - self.lyric_at) as f64 / 300.0)))
+    }
+
+    /// The strip is still scrolling: frames are needed.
+    pub(super) fn lyrics_scrolling(&self) -> bool {
+        self.lyric_lines.is_some() && ((self.now - self.lyric_at) as f64) < lyrics::SCROLL_MS && matches!(self.shown, Face::MediaLyric | Face::MediaMini)
+    }
+
+    pub(super) fn snapshot(&mut self) -> (Snapshot, bool) {
+        let now = self.now;
+        let hover_open = (self.hovering && now - self.hover_since >= HOVER_INTENT_MS) || now < self.hover_left + HOVER_GRACE_MS;
+        let big = hover_open || now < self.expand_until;
+        if !big {
+            self.page = None;
+            if !self.hovering {
+                self.hover_page = None;
+            }
+        }
+        if big && self.page.is_none() {
+            self.page = self.hover_page;
+        }
+        let media = self.data.media.as_ref().is_some_and(|m| !m.title.is_empty());
+        let notif = self.notif.as_ref().map(|n| if n.actions.is_empty() { NotifFace::Plain } else { NotifFace::Actions });
+        let snap = Snapshot {
+            barring: self.bar.is_some(),
+            replying: self.reply.is_some(),
+            osd: self.osd.is_some() && now < self.osd_until,
+            notif,
+            timer_done: now < self.timer_done_until,
+            power: self.power.is_some() && now < self.power_until,
+            device: self.device_ev.is_some() && now < self.device_until,
+            op: self.ops.op.is_some(),
+            op_flash: self.ops.flashing(now),
+            meeting: self.meeting.is_some() && now < self.meeting_until,
+            rain: self.rain_in.is_some() && now < self.rain_until,
+            update: false,
+            big,
+            page: self.page,
+            clipboard: self.cfg.clipboard_history,
+            media,
+            lyrics: media && self.lyric_lines.is_some(),
+            timer: self.timer.is_some(),
+            focus: self.focus_active(),
+            soon: self.soon().is_some(),
+        };
+        (snap, big)
+    }
+
+    /// Notifications are held: asked for, or one of the automatic reasons holds.
+    pub fn quiet(&self) -> bool {
+        self.data.dnd || self.auto_quiet.is_some()
+    }
+
+    /// Why the island holds notifications by itself right now.
+    pub fn auto_quiet_reason(&self) -> Option<&'static str> {
+        self.auto_quiet
+    }
+
+    /// One card for what was held while the island was quiet.
+    pub(super) fn recap(&mut self, since: i64, what: &str) {
+        let mut apps: Vec<(String, usize)> = vec![];
+        for (n, at) in self.history.iter().filter(|(n, at)| *at >= since && !is_own(n)) {
+            let _ = at;
+            match apps.iter_mut().find(|(a, _)| *a == n.app) {
+                Some((_, c)) => *c += 1,
+                None => apps.push((n.app.clone(), 1)),
+            }
+        }
+        let total: usize = apps.iter().map(|(_, c)| c).sum();
+        if total == 0 {
+            return;
+        }
+        apps.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+        let body = apps.iter().take(4).map(|(a, c)| if *c > 1 { format!("{a} {c}") } else { a.clone() }).collect::<Vec<_>>().join(" · ");
+        self.next_own_id += 1;
+        self.recap_id = self.next_own_id;
+        let n = Incoming { id: self.recap_id, app: "open-island".into(), summary: format!("{total} {what}"), body, expire_ms: Some(8000), ..Default::default() };
+        self.push(self.now, Input::Notification(n));
+    }
+
+    pub(super) fn update_quiet(&mut self, now: i64) {
+        let p = self.data.privacy;
+        let in_meeting = self.cfg.quiet_in_meetings
+            && self.data.events.iter().any(|e| !e.all_day && e.start_ms <= now && now < e.end_ms && e.end_ms - e.start_ms <= 3 * 3_600_000);
+        self.auto_quiet = if in_meeting {
+            Some("meeting")
+        } else if self.cfg.quiet_on_screen_share && p.screen {
+            Some("screen share")
+        } else if self.cfg.quiet_on_mic && p.mic {
+            Some("microphone")
+        } else if self.data.focus.as_ref().is_some_and(|f| f.active) {
+            Some("focus")
+        } else if self.deep_work(now) {
+            Some("deep work")
+        } else {
+            None
+        };
+        match (self.quiet(), self.quiet_since) {
+            (true, None) => self.quiet_since = Some(now),
+            (false, Some(since)) => {
+                self.quiet_since = None;
+                self.recap(since, "held back");
+            }
+            _ => {}
+        }
+        // the daemon holds the sounds back too: tell it whenever the state it should keep changes
+        if self.quiet() != self.dnd_sent {
+            self.dnd_sent = self.quiet();
+            self.pending.push(Command::SetDnd(self.dnd_sent));
+        }
+    }
+
+    pub(super) fn day_start(&self, now: i64) -> i64 {
+        let off = self.data.utc_offset_secs;
+        let t = crate::clock::civil(now, off);
+        crate::clock::midnight_ms(t.year, t.month, t.day, off)
+    }
+
+    pub(super) fn log_event(&mut self, kind: LogKind, text: String) {
+        self.log.push_front(LogEntry { at_ms: self.now, kind, text });
+        self.log.truncate(120);
+    }
+
+    /// Today's attention per app, to be kept between runs.
+    pub fn attention_export(&self) -> (i64, Vec<(String, i64)>) {
+        let ds = self.day_start(self.now);
+        self.ledger.export(self.now, ds)
+    }
+
+    pub fn restore_attention(&mut self, day_start: i64, totals: Vec<(String, i64)>) {
+        self.ledger.restore(day_start, totals);
+    }
+
+    /// The last half hour in one list, newest first: where the attention was, what came in, what played, what was copied.
+    pub(crate) fn rewind_rows(&self) -> Vec<RewindRow> {
+        const WINDOW: i64 = 30 * 60_000;
+        let now = self.now;
+        let mut rows: Vec<RewindRow> = vec![];
+        // a window that had the focus for less than ten seconds is a pass-through, not a place
+        for s in self.ledger.recent(now, WINDOW).into_iter().filter(|s| s.end_ms - s.start_ms >= 10_000) {
+            let text = if s.title.is_empty() { s.app.clone() } else { format!("{}: {}", s.app, s.title) };
+            rows.push(RewindRow { at_ms: s.start_ms, icon: "device-desktop", text, copy: None });
+        }
+        for e in self.log.iter().filter(|e| now - e.at_ms <= WINDOW) {
+            let (icon, copy) = match e.kind {
+                LogKind::Notification => ("bell", None),
+                LogKind::Track => ("music", None),
+                LogKind::Copy => ("clipboard-text", Some(e.text.clone())),
+            };
+            rows.push(RewindRow { at_ms: e.at_ms, icon, text: e.text.clone(), copy });
+        }
+        rows.sort_by_key(|r| std::cmp::Reverse(r.at_ms));
+        rows.truncate(6);
+        rows
+    }
+
+    /// Whether the person has been on work apps long enough for the notifications to wait.
+    pub(super) fn deep_work(&self, now: i64) -> bool {
+        let mins = self.cfg.deep_work_minutes;
+        if mins <= 0 || self.cfg.deep_work_apps.is_empty() {
+            return false;
+        }
+        let apps: Vec<String> = self.cfg.deep_work_apps.iter().map(|a| a.to_lowercase()).collect();
+        self.ledger.streak(now, 60_000, |app| {
+            let a = app.to_lowercase();
+            apps.iter().any(|w| a.contains(w.as_str()))
+        }) >= mins * 60_000
+    }
+
+    /// A card when the person has been on one app for a long stretch: a break may be due.
+    pub(super) fn break_card(&mut self, now: i64) {
+        let mins = self.cfg.break_minutes;
+        let Some((app, _, _)) = self.ledger.current().map(|(a, t, s)| (a.to_string(), t.to_string(), s)) else { return };
+        if mins <= 0 {
+            return;
+        }
+        let streak = self.ledger.streak(now, 60_000, |a| a == app);
+        if streak < mins * 60_000 {
+            return;
+        }
+        // told again only after another full period
+        if self.break_told.is_some_and(|t| now - t < mins * 60_000) {
+            return;
+        }
+        self.break_told = Some(now);
+        self.next_own_id += 1;
+        let n = Incoming { id: self.next_own_id, app: "open-island".into(), summary: format!("{} minutes on {app}", streak / 60_000), body: "A short break?".into(), expire_ms: Some(8000), ..Default::default() };
+        self.push(now, Input::Notification(n));
+    }
+
+    pub(crate) fn map_is_panned(&self) -> bool {
+        self.map_center.is_some()
+    }
+
+    /// Back to following the position, at the zoom that fits.
+    pub(super) fn map_recenter(&mut self) {
+        self.map_center = None;
+        self.map_fixed_zoom = None;
+        self.map_zoom_delta = 0;
+    }
+
+    pub(super) fn map_zoom(&mut self, d: i8) {
+        match self.map_fixed_zoom {
+            Some(z) => self.map_fixed_zoom = Some((z as i16 + d as i16).clamp(island_core::map::MIN_ZOOM as i16, island_core::map::MAX_ZOOM as i16) as u8),
+            None => self.map_zoom_delta = (self.map_zoom_delta + d).clamp(-10, 10),
+        }
+    }
+
+    /// What the map page shows: the centre and zoom, where the machine is, and the next event's place when it is known.
+    pub(crate) fn map_view(&self) -> Option<MapView> {
+        use island_core::map;
+        let pos = self.data.position.as_ref()?;
+        let me = (pos.lat, pos.lon);
+        let dest = match &self.map_dest {
+            Some(p) => Some(((p.lat, p.lon), p.name.clone(), String::new())),
+            None => self.trip_event().and_then(|e| {
+                let at = self.data.trips.iter().filter(|t| t.event_id == e.id).find_map(|t| t.dest)?;
+                Some((at, e.title.clone(), e.id.clone()))
+            }),
+        };
+        let (center, base) = match (&dest, self.map_both) {
+            (Some((d, _, _)), true) => (map::midpoint(me, *d), map::zoom_to_fit(me, *d, MAP_W, MAP_H, 40.0)),
+            _ => (me, map::zoom_for_accuracy(pos.accuracy_m)),
+        };
+        let zoom = self.map_fixed_zoom.unwrap_or((base as i16 + self.map_zoom_delta as i16).clamp(map::MIN_ZOOM as i16, map::MAX_ZOOM as i16) as u8);
+        let center = self.map_center.unwrap_or(center);
+        Some(MapView { center, zoom, me, accuracy_m: pos.accuracy_m, from_settings: pos.source == PosSource::Settings, dest: dest.map(|(d, t, _)| (d, t)) })
+    }
+
+    /// Asks for the map tiles in view, and for a position when there is none or it is old.
+    pub(super) fn map_needs(&mut self, now: i64) {
+        if self.page != Some(Page::Map) {
+            return;
+        }
+        if self.cfg.follow_position && now - self.map_asked_at > 120_000 && self.data.position.as_ref().is_none_or(|p| p.source == PosSource::Settings || now - p.at_ms > 120_000) {
+            self.map_asked_at = now;
+            self.pending.push(Command::RefreshPosition);
+        }
+        if island_core::map::needs_key(&self.cfg.map_tile_url) && !self.data.config.map_key_set {
+            return;
+        }
+        let Some(v) = self.map_view() else { return };
+        // a ring of tiles beyond the view, so a drag finds them there
+        for t in island_core::map::tiles(v.center.0, v.center.1, v.zoom, MAP_W + 256.0, MAP_H + 256.0) {
+            let key = (t.z, t.x, t.y);
+            if !self.tiles.contains_key(&key) && self.tiles_asked.insert(key) {
+                self.pending.push(Command::LoadTile { z: t.z, x: t.x, y: t.y, template: self.cfg.map_tile_url.clone(), dark: self.cfg.map_dark && !island_core::map::is_dark_style(&self.cfg.map_tile_url) });
+            }
+        }
+    }
+
+    /// One card when a program starts to hog the machine (and again only after ten minutes, or for another program).
+    pub(super) fn culprit_card(&mut self, now: i64) {
+        let Some(c) = self.data.culprit.clone() else { return };
+        if !self.cfg.culprit_alerts || self.quiet() || self.culprit_told.as_ref().is_some_and(|(n, at)| *n == c.name && now - at < 600_000) {
+            return;
+        }
+        self.culprit_told = Some((c.name.clone(), now));
+        let summary = if c.memory { format!("{} holds {} of memory", c.name, island_core::system::fmt_mb(c.mem_mb as f64)) } else { format!("{} is using {:.1} cores", c.name, c.cores) };
+        self.next_own_id += 1;
+        self.culprit_id = self.next_own_id;
+        let n = Incoming { id: self.culprit_id, app: "open-island".into(), summary, body: if c.protected { "Tap for details".into() } else { "Tap to pause or quit it".into() }, expire_ms: Some(9000), ..Default::default() };
+        self.push(now, Input::Notification(n));
+    }
+
+    /// A card when the network breaks (with where) and when it is back.
+    pub(super) fn network_card(&mut self, now: i64) {
+        let h = self.data.net;
+        if h == self.net_seen {
+            return;
+        }
+        let was_ok = self.net_seen.is_ok();
+        self.net_seen = h;
+        let (summary, body) = h.message();
+        self.next_own_id += 1;
+        let id = self.next_own_id;
+        if h.is_ok() {
+            self.net_id = 0;
+            self.push(now, Input::Notification(Incoming { id, app: "open-island".into(), summary: summary.into(), expire_ms: Some(2500), ..Default::default() }));
+        } else if h == island_core::netstate::Health::Portal {
+            self.net_id = 0;
+            self.push(now, Input::Notification(Incoming { id, app: "open-island".into(), summary: summary.into(), body: body.into(), expire_ms: Some(6000), ..Default::default() }));
+        } else {
+            self.net_id = id;
+            let tail = if was_ok { "· tap to reconnect" } else { "" };
+            self.push(now, Input::Notification(Incoming { id, app: "open-island".into(), summary: summary.into(), body: format!("{body} {tail}").trim().into(), expire_ms: Some(8000), ..Default::default() }));
+        }
+    }
+
+    /// The next event that has a place to go to, today.
+    pub(crate) fn trip_event(&self) -> Option<&calendar::Event> {
+        if !self.cfg.travel_times {
+            return None;
+        }
+        self.data
+            .events
+            .iter()
+            .filter(|e| !e.all_day && e.start_ms > self.now && e.start_ms < self.day_start(self.now) + 24 * 3_600_000 && island_core::travel::is_physical(&e.location))
+            .min_by_key(|e| e.start_ms)
+    }
+
+    pub(crate) fn trip_info(&self, event_id: &str, mode: island_core::travel::Mode) -> Option<&TripInfo> {
+        self.data.trips.iter().find(|t| t.event_id == event_id && t.mode == mode)
+    }
+
+    /// What is worth knowing before leaving for an event: rain, a low battery.
+    pub(super) fn before_you_go(&self, leave_in_min: i32, trip_min: i32) -> String {
+        let rain = self.rain_outlook().and_then(|o| island_core::headsup::rain_note(o, leave_in_min, trip_min));
+        let battery = self.data.battery.and_then(|b| island_core::headsup::battery_note(b.percent, b.on_ac));
+        island_core::headsup::line([rain, battery])
+    }
+
+    /// Asks for the trip to the next event with a place when it matters (the page is open, or it is a few hours away),
+    /// and again every ten minutes (public transport changes with the hour); tells when it is time to leave.
+    pub(super) fn trips(&mut self, now: i64) {
+        let Some(e) = self.trip_event().cloned() else { return };
+        let mode = self.cfg.travel_mode;
+        let wanted = self.page == Some(Page::Today) || e.start_ms - now <= 3 * 3_600_000;
+        let key = (e.id.clone(), mode);
+        if wanted && self.trip_asked.get(&key).is_none_or(|at| now - at > 600_000) {
+            self.trip_asked.insert(key, now);
+            self.pending.push(Command::PlanTrip { event_id: e.id.clone(), location: e.location.clone(), start_ms: e.start_ms, mode, margin_secs: self.cfg.travel_margin_ms / 1000 });
+        }
+        let leave = self.trip_info(&e.id, mode).and_then(|t| t.trip.as_ref()).and_then(|t| t.leave_ms.map(|l| (l, t.secs)));
+        if let Some((leave_ms, secs)) = leave {
+            if now >= leave_ms - 5 * 60_000 && !self.leave_told.contains(&e.id) {
+                self.leave_told.insert(e.id.clone());
+                let off = self.data.utc_offset_secs;
+                let late = now >= leave_ms;
+                let summary = if late { format!("Time to leave for {}", e.title) } else { format!("Leave in {} min for {}", ((leave_ms - now) as f64 / 60_000.0).ceil() as i64, e.title) };
+                let mut body = format!("{} · {} · starts {}", mode.name(), island_core::travel::fmt_secs(secs), crate::clock::civil(e.start_ms, off).hhmm());
+                let notes = self.before_you_go(((leave_ms - now) as f64 / 60_000.0).ceil() as i32, (secs / 60) as i32);
+                if !notes.is_empty() {
+                    body = format!("{body} · {notes}");
+                }
+                self.next_own_id += 1;
+                let n = Incoming { id: self.next_own_id, app: "Reminder".into(), summary, body, expire_ms: Some(12_000), ..Default::default() };
+                self.push(now, Input::Notification(n));
+            }
+        }
+    }
+
+    /// An event within the hour with something to know about it (rain, a low battery) and no way to tell it with the
+    /// time to leave: one card.
+    pub(super) fn heads_up(&mut self, now: i64) {
+        let next = self.data.events.iter().filter(|e| !e.all_day && e.start_ms > now && e.start_ms - now <= 40 * 60_000).min_by_key(|e| e.start_ms).cloned();
+        let Some(e) = next else { return };
+        if self.headsup_told.contains(&e.id) || self.leave_told.contains(&e.id) || self.quiet_blocks_headsup() {
+            return;
+        }
+        let min = ((e.start_ms - now) as f64 / 60_000.0).ceil() as i32;
+        let notes = self.before_you_go(min, 15);
+        if notes.is_empty() {
+            return;
+        }
+        self.headsup_told.insert(e.id.clone());
+        self.next_own_id += 1;
+        let n = Incoming { id: self.next_own_id, app: "Reminder".into(), summary: format!("{} in {min} min", e.title), body: notes, expire_ms: Some(10_000), ..Default::default() };
+        self.push(now, Input::Notification(n));
+    }
+
+    /// A call or a recording is not interrupted by a heads-up.
+    pub(super) fn quiet_blocks_headsup(&self) -> bool {
+        self.auto_quiet.is_some_and(|r| r != "meeting")
+    }
+
+    /// What played and what was copied, for the rewind page.
+    pub(super) fn note_changes(&mut self) {
+        let track = self.data.media.as_ref().map(|m| if m.artist.is_empty() { m.title.clone() } else { format!("{} · {}", m.title, m.artist) }).unwrap_or_default();
+        if track != self.log_track {
+            if !track.is_empty() && !self.log_track.is_empty() {
+                self.log_event(LogKind::Track, track.clone());
+            }
+            self.log_track = track;
+        }
+        let copy = self.data.clipboard.first().cloned().unwrap_or_default();
+        if copy != self.last_copy {
+            if !copy.is_empty() && !self.last_copy.is_empty() {
+                let one_line: String = copy.split_whitespace().collect::<Vec<_>>().join(" ");
+                let _ = one_line;
+                self.log_event(LogKind::Copy, copy.clone());
+            }
+            self.last_copy = copy;
+        }
+    }
+
+    pub(super) fn slow_checks(&mut self) {
+        let now = self.now;
+        self.note_changes();
+        self.break_card(now);
+        self.update_quiet(now);
+        self.trips(now);
+        self.map_needs(now);
+        self.heads_up(now);
+        self.culprit_card(now);
+        self.network_card(now);
+        // a device whose battery went back up may warn again next time
+        let devs = &self.data.devices;
+        self.device_low_told.retain(|id| devs.iter().any(|d| d.id == *id && d.battery.is_some_and(|b| b <= 20)));
+        // meeting heads-up: once per event
+        if self.cfg.meeting_alerts {
+            if let Some(e) = self.announcer.new_heads_up(&self.data.events, now, self.cfg.meeting_lead_ms).cloned() {
+                self.meeting = Some(e);
+                self.meeting_until = now + 10_000;
+            }
+        }
+        // rain
+        if self.cfg.rain_alerts {
+            let soon = self.data.weather.as_ref().and_then(|w| weather::rain_soon(&w.rain_slots, 60));
+            match soon {
+                Some(m) if !self.rain_announced => {
+                    self.rain_in = Some(m);
+                    self.rain_until = now + 8000;
+                    self.rain_announced = true;
+                }
+                None => self.rain_announced = false,
+                _ => {}
+            }
+        }
+        // power
+        if let Some(b) = self.data.battery {
+            if let Some(prev) = self.last_plugged {
+                if prev != b.on_ac && self.cfg.battery_alerts {
+                    self.push(now, Input::Power(if b.on_ac { PowerEvent::Plugged } else { PowerEvent::Unplugged }));
+                }
+            }
+            self.last_plugged = Some(b.on_ac);
+            if !b.on_ac && b.percent <= self.cfg.low_battery {
+                if !self.low_battery_sent && self.cfg.battery_alerts {
+                    self.low_battery_sent = true;
+                    self.push(now, Input::Power(PowerEvent::Low));
+                }
+            } else if b.percent > self.cfg.low_battery + 3.0 || b.on_ac {
+                self.low_battery_sent = false;
+            }
+        }
+    }
+
+    /// A command that outlasts its threshold becomes the operation on show (when none other is); the one on show
+    /// is refreshed so it is not dropped as stale.
+    pub(super) fn shell_commands(&mut self, now: i64) {
+        if self.cmds.is_empty() {
+            return;
+        }
+        let running = matches!(&self.ops.op, Some(o) if o.state == progress::State::Run);
+        let on_show = self.cmds.iter().find(|c| c.shown).map(|c| c.label.clone());
+        match (running, on_show) {
+            (true, Some(label)) => {
+                if matches!(&self.ops.op, Some(o) if o.label == label && now - o.updated_ms >= 30_000) {
+                    self.ops.report(now, &format!("? {label}"));
+                }
+            }
+            (false, _) => {
+                if let Some(c) = self.cmds.iter_mut().find(|c| !c.shown && now - c.start_ms >= c.after_ms) {
+                    c.shown = true;
+                    let label = c.label.clone();
+                    self.ops.report(now, &format!("? {label}"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether the music is shown as playing: what the player says, except just after a press of the button.
+    pub(crate) fn playing_shown(&self) -> bool {
+        let base = self.data.media.as_ref().is_some_and(|m| m.playing);
+        match self.play_override {
+            Some((v, until)) if self.now < until => v,
+            _ => base,
+        }
+    }
+
+    /// Moves the play/pause button: the icons cross-fade, the disc grows under the pointer and gives under a press.
+    /// Returns true while something is still on its way.
+    pub(super) fn ease_media_button(&mut self, dt_ms: f64) -> bool {
+        let dt = if dt_ms.is_finite() { dt_ms.clamp(0.0, 100.0) } else { 0.0 };
+        let base = self.data.media.as_ref().is_some_and(|m| m.playing);
+        if matches!(self.play_override, Some((v, until)) if v == base || self.now >= until) {
+            self.play_override = None; // the player agrees (or never did): back to what it says
+        }
+        let on_screen = matches!(self.shown, Face::MediaFull | Face::MediaLyric);
+        let over = self.pointer.is_some_and(|(x, y)| {
+            let (lx, ly) = self.local(x, y);
+            self.hits.iter().any(|h| h.action == Action::Cmd(Command::MediaPlayPause) && h.rect.contains(vello::kurbo::Point::new(lx, ly)))
+        });
+        let mut moving = false;
+        let mut ease = |v: &mut f64, target: f64, tau: f64| {
+            if !on_screen || (target - *v).abs() < 0.004 {
+                *v = target;
+            } else {
+                *v += (target - *v) * (1.0 - (-dt / tau).exp());
+                moving = true;
+            }
+        };
+        let target = if self.playing_shown() { 1.0 } else { 0.0 };
+        ease(&mut self.play_anim, target, 70.0);
+        ease(&mut self.disc_hover, if over { 1.0 } else { 0.0 }, 60.0);
+        ease(&mut self.disc_press, 0.0, 90.0);
+        ease(&mut self.skip_press, 0.0, 110.0);
+        moving
+    }
+
+    /// Moves the levels the bars show towards the real ones: about a twentieth of a second to cover most of the
+    /// distance, so the 10 or 30 changes a second that arrive look like a continuous slide at any refresh rate.
+    /// A slider being dragged follows the pointer exactly. Returns true while something is still on its way.
+    pub(super) fn ease_levels(&mut self, dt_ms: f64) -> bool {
+        let k = 1.0 - (-(if dt_ms.is_finite() { dt_ms.clamp(0.0, 100.0) } else { 0.0 }) / 55.0).exp();
+        let dragging = matches!(self.dragging, Some(Action::VolumeBar | Action::BrightnessBar));
+        let mut moving = false;
+        let mut ease = |shown: &mut f64, target: f64, snap: bool| {
+            if snap || (target - *shown).abs() < 0.002 {
+                *shown = target;
+            } else {
+                *shown += (target - *shown) * k;
+                moving = true;
+            }
+        };
+        let vol = self.data.volume.unwrap_or(0.0) as f64;
+        let bri = self.data.brightness.unwrap_or(0.0) as f64;
+        if !self.levels_init && (self.data.volume.is_some() || self.data.brightness.is_some()) {
+            // the first reading is where the bars are, not something to slide to
+            self.levels_init = true;
+            (self.volume_shown, self.brightness_shown) = (vol, bri);
+        }
+        ease(&mut self.volume_shown, vol, dragging && self.dragging == Some(Action::VolumeBar));
+        ease(&mut self.brightness_shown, bri, dragging && self.dragging == Some(Action::BrightnessBar));
+        if let Some(o) = self.osd {
+            ease(&mut self.osd_shown, if o.muted { 0.0 } else { o.level as f64 }, false);
+        }
+        moving
+    }
+
+    /// Advances the island to `now` (epoch ms) and says how big the surface has to be.
+    pub fn tick(&mut self, now: i64, dt_ms: f64) -> Frame {
+        self.now = now;
+        self.ops.expire(now);
+        self.shell_commands(now);
+        self.fire_reminders(now);
+        self.expire_deadlines(now);
+        self.check_evening(now);
+        self.check_morning(now);
+        self.check_departure(now);
+        self.check_train(now);
+        if self.bar.as_ref().is_some_and(|b| now > b.until) {
+            self.bar = None;
+        }
+        self.slow_checks();
+        self.sync_lyrics();
+        // notifications: expiry and the next waiting one
+        if self.edit.as_ref().is_some_and(|e| now > e.until) || (self.edit.is_some() && !matches!(self.page, Some(Page::Settings | Page::Options | Page::Map))) {
+            self.edit = None;
+            self.icloud_user = None;
+        }
+        if self.page != Some(Page::Settings) {
+            self.picking = None;
+        }
+        if self.note.as_ref().is_some_and(|(_, until)| now > *until) {
+            self.note = None;
+        }
+        if self.kb.is_some_and(|k| now - k.last_key > KB_IDLE_MS) {
+            self.kb = None;
+        }
+        if self.reply.as_ref().is_some_and(|r| now > r.until) {
+            self.end_reply(false);
+        }
+        if self.notif.is_some() && self.reply.is_none() && now >= self.notif_until {
+            self.close_notif(CloseReason::Expired);
+        }
+        // whatever took the card off the screen (expiry, the x, a click), the next waiting one comes up
+        if self.notif.is_none() && self.reply.is_none() {
+            if let Some(n) = self.waiting.pop_front() {
+                self.queue.retain(|q| q.id != n.id);
+                self.show_notif(n);
+            }
+        }
+        if self.notif.is_none() && self.waiting.is_empty() {
+            self.queue.clear();
+        }
+        if self.timer.as_ref().and_then(|t| t.end_ms).is_some_and(|e| now >= e) {
+            self.on_timer_end();
+        }
+        if self.extra_timers.iter().any(|t| t.end_ms.is_some_and(|e| now >= e)) {
+            self.ring_extra_timers();
+        }
+        // track change: peek the player
+        let track = self.data.media.as_ref().map(|m| m.track_id.clone());
+        if track != self.last_track {
+            if self.last_track.is_some() && track.is_some() && self.cfg.media_auto_expand {
+                self.expand_until = now + 3500;
+            }
+            if self.last_track.is_some() {
+                self.track_changed_at = now;
+            }
+            self.last_track = track;
+        }
+
+        let (snap, _big) = self.snapshot();
+        let (mut want, mut side) = face::choose(&snap);
+        if side.is_none() {
+            self.swapped = false;
+        } else if self.swapped {
+            let kind = match want {
+                Face::MediaMini => Some(Side::Media),
+                Face::TimerMini => Some(Side::Timer),
+                _ => None,
+            };
+            match side {
+                Some(Side::Timer) => want = Face::TimerMini,
+                Some(Side::Meeting) => want = Face::MeetMini,
+                _ => {}
+            }
+            side = kind;
+        }
+        // the calendar opens on today however it was reached (a swipe, the back button, a shortcut)
+        if want == Face::Cal && (want != self.want || self.cal.year == 1970) {
+            let c = crate::clock::civil(now, self.data.utc_offset_secs);
+            self.cal = Cal { year: c.year, month: c.month, day: c.day };
+        }
+        // opening the calendar or the home page with stale events asks for a fresh read
+        if want != self.want && matches!(want, Face::Cal | Face::IdleHover) && !self.data.config.calendars.is_empty() && now - self.data.events_synced_at > STALE_EVENTS_MS && now - self.last_refresh_req > 30_000 {
+            self.last_refresh_req = now;
+            self.pending.push(Command::RefreshCalendars);
+        }
+        if want != self.want {
+            // between two pages the content slides the way the page order goes
+            let pages = self.pages();
+            let idx = |f: Face| page_of(f).and_then(|p| pages.iter().position(|x| *x == p));
+            self.slide = match (idx(self.shown), idx(want)) {
+                (Some(a), Some(b)) if a != b => if b > a { 1.0 } else { -1.0 },
+                _ => 0.0,
+            };
+        }
+        if want != self.want {
+            log::debug!("face {:?} -> {:?} (shown {:?}, notif {})", self.want, want, self.shown, self.notif.is_some());
+        }
+        self.want = want;
+        self.want_side = side;
+
+        // content crossfade: out fast, in once the shape is about halfway to its target
+        let dt = if dt_ms.is_finite() { dt_ms.clamp(0.0, 1000.0) } else { 0.0 };
+        let (mut tw, mut th) = self.face_size(self.want);
+        if self.want != self.shown {
+            self.alpha = (self.alpha - dt / FADE_OUT_MS).max(0.0);
+            if self.alpha <= 0.0 {
+                self.shown = self.want;
+                self.shown_side = self.want_side;
+                self.from_size = (self.spring.w.pos, self.spring.h.pos);
+            }
+        } else {
+            if let Some(s) = self.want_side {
+                self.shown_side = Some(s);
+            }
+            let span = (tw - self.from_size.0).abs().max((th - self.from_size.1).abs());
+            let done = if span < 1.0 {
+                1.0
+            } else {
+                1.0 - (tw - self.spring.w.pos).abs().max((th - self.spring.h.pos).abs()) / span
+            };
+            if done >= FADE_IN_AT {
+                if self.alpha <= 0.0 && dt > 0.0 {
+                    self.enter_at = now;
+                }
+                self.alpha = (self.alpha + dt / FADE_IN_MS).min(1.0);
+            }
+        }
+        // while the old content fades out the shape holds still
+        if self.want != self.shown && self.alpha > 0.3 {
+            (tw, th) = self.face_size(self.shown);
+        }
+        let at_rest = self.spring.step(tw, th, dt);
+        // bubble split follows the width spring
+        if self.shown_side.is_some() && self.want == self.shown {
+            let base = self.face_size(self.shown).0;
+            self.bubble_k = ((self.spring.w.pos - base) / (BUBBLE_W + BUBBLE_GAP)).clamp(0.0, 1.0);
+            // the bubble keeps its slot while an activity is shown; the width spring is not what drives it here
+            self.bubble_k = if self.want_side.is_some() { 1.0 } else { 0.0 };
+            if self.want_side.is_none() {
+                self.shown_side = None;
+            }
+        } else if self.shown_side.is_none() {
+            self.bubble_k = 0.0;
+        }
+        self.settled = at_rest && self.alpha >= 1.0 && self.want == self.shown && self.want_side == self.shown_side;
+        // what needs frames: motion at every vsync, an equalizer at 30 fps, things that expire a few times a second,
+        // a timer twice a second, otherwise the clock once a second
+        let levels_moving = self.ease_levels(dt_ms) | self.ease_media_button(dt_ms);
+        let waiting_for_hover = (self.hovering && now - self.hover_since < HOVER_INTENT_MS + 60) || now < self.hover_left + HOVER_GRACE_MS + 60;
+        let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving;
+        let equalizer = self.data.media.as_ref().is_some_and(|m| m.playing) && matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric);
+        let expiring = snap.osd || snap.notif.is_some() || snap.timer_done || snap.power || snap.meeting || snap.rain || snap.op_flash || self.edit.is_some() || self.reply.is_some() || self.kb.is_some() || self.bar.is_some();
+        let next_ms: u32 = if moving {
+            0
+        } else if equalizer {
+            16 // sixty bars a second: the bars follow the music, and a slower step shows on a fast display
+        } else if expiring {
+            120
+        } else if self.timer.is_some() || self.ops.op.is_some_and_running() {
+            500
+        } else {
+            1000
+        };
+        let animating = next_ms == 0;
+        // the surface: holds both shapes plus room for the overshoot while animating
+        let group_w = self.spring.w.pos + if self.shown_side.is_some() { BUBBLE_W + BUBBLE_GAP } else { 0.0 };
+        let (sw, sh) = if self.settled {
+            self.anim_box = None;
+            (group_w.ceil(), self.spring.h.pos.ceil())
+        } else {
+            let target_w = tw + if self.want_side.is_some() { BUBBLE_W + BUBBLE_GAP } else { 0.0 };
+            let bx = match self.anim_box {
+                Some((aw, ah, bw, bh)) if aw == target_w && ah == th => (bw, bh),
+                _ => (group_w.max(target_w).ceil() + 24.0, self.spring.h.pos.max(th).ceil() + 16.0),
+            };
+            let bx = (bx.0.max(group_w.ceil() + 2.0), bx.1.max(self.spring.h.pos.ceil() + 2.0));
+            self.anim_box = Some((target_w, th, bx.0, bx.1));
+            bx
+        };
+        Frame { surface: (sw.max(40.0) + 8.0, sh.max(20.0) + TOP_MARGIN + 4.0), animating, next_ms }
+    }
+
+    /// Content opacity for the crossfade (eased).
+    pub(crate) fn content_opacity(&self) -> f32 {
+        let a = self.alpha.clamp(0.0, 1.0);
+        let op = if self.want != self.shown { a } else { 1.0 - (1.0 - a).powi(3) };
+        op as f32
+    }
+
+    pub(crate) fn pointer_pos(&self) -> Option<(f64, f64)> {
+        self.pointer
+    }
+
+    /// The part of the surface that should take pointer input (the pill and its bubble), in surface
+    /// coordinates: (x, y, width, height). The rest of the surface is transparent and must click through.
+    pub fn input_rect(&self) -> (f64, f64, f64, f64) {
+        self.pill_rect()
+    }
+
+    /// The island's outline as rounded rectangles (x, y, width, height, radius) in surface coordinates: what is
+    /// visible, for a platform that has to cut its window to that shape because it cannot be transparent.
+    pub fn shape_rects(&self) -> Vec<(f64, f64, f64, f64, f64)> {
+        let (w, h) = (self.spring.w.pos, self.spring.h.pos);
+        let r = (h / 2.0).min(30.0);
+        let mut v = vec![(self.pill_origin.0, self.pill_origin.1, w, h, r)];
+        if self.shown_side.is_some() && self.bubble_k > 0.5 {
+            v.push((self.pill_origin.0 + w + BUBBLE_GAP, self.pill_origin.1, BUBBLE_W, h, r));
+        }
+        v
+    }
+
+    pub fn current_face(&self) -> Face {
+        self.shown
+    }
+}

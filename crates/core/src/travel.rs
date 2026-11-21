@@ -8,7 +8,10 @@ pub enum Mode {
     #[default]
     Car,
     Walk,
+    /// Public transport (buses, trams, trains: whatever is quickest).
     Transit,
+    /// Trenitalia and the other railways only (with the walk to and from the stations).
+    Train,
 }
 
 impl Mode {
@@ -17,6 +20,7 @@ impl Mode {
             Mode::Car => "car",
             Mode::Walk => "walk",
             Mode::Transit => "transit",
+            Mode::Train => "train",
         }
     }
 
@@ -24,7 +28,8 @@ impl Mode {
         match s.trim().to_lowercase().as_str() {
             "car" | "drive" | "driving" | "auto" => Some(Mode::Car),
             "walk" | "foot" | "walking" | "piedi" => Some(Mode::Walk),
-            "transit" | "bus" | "train" | "public" | "mezzi" => Some(Mode::Transit),
+            "transit" | "bus" | "public" | "mezzi" => Some(Mode::Transit),
+            "train" | "rail" | "treno" | "treni" | "ferrovia" => Some(Mode::Train),
             _ => None,
         }
     }
@@ -34,6 +39,7 @@ impl Mode {
             Mode::Car => "car",
             Mode::Walk => "walk",
             Mode::Transit => "bus",
+            Mode::Train => "train",
         }
     }
 }
@@ -260,6 +266,51 @@ pub fn parse_walk(json: &str) -> Option<i64> {
     v.get("direct")?.as_array()?.iter().filter(|d| d.get("legs").and_then(Value::as_array).is_some_and(|l| !l.is_empty() && l.iter().all(|x| x.get("mode").and_then(Value::as_str) == Some("WALK")))).filter_map(|d| d.get("duration")?.as_i64()).min()
 }
 
+/// A railway stop, as the planner names it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RailStop {
+    pub id: String,
+    pub name: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub metres: f64,
+}
+
+/// The railway stops in a stop list (`/map/stops`), nearest first. The same station often comes from several feeds: Trenitalia's own
+/// stops are the ones kept when there are any.
+pub fn rail_stops_near(stops: &str, at: (f64, f64)) -> Vec<RailStop> {
+    let Ok(v) = serde_json::from_str::<Value>(stops) else { return vec![] };
+    let mut all: Vec<RailStop> = v
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|s| s.get("modes").and_then(Value::as_array).is_some_and(|m| m.iter().filter_map(Value::as_str).any(|m| m.contains("RAIL"))))
+                .filter_map(|s| {
+                    let (lat, lon) = (s.get("lat")?.as_f64()?, s.get("lon")?.as_f64()?);
+                    Some(RailStop { id: s.get("stopId")?.as_str()?.to_string(), name: s.get("name").and_then(Value::as_str).unwrap_or("").to_string(), lat, lon, metres: crate::map::distance_m(at, (lat, lon)) })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if all.iter().any(|s| s.id.starts_with("it-trenitalia_")) {
+        all.retain(|s| s.id.starts_with("it-trenitalia_"));
+    }
+    all.sort_by(|a, b| a.metres.total_cmp(&b.metres));
+    all
+}
+
+/// The whole way by train: the walk to the nearest station, the ride, the walk from the last one. `now_ms` is when the walk starts;
+/// the time spent waiting for the train is counted. Segments: the walk dashed, the train solid.
+pub fn compose_rail(now_ms: i64, walk_in: (i64, Vec<Segment>), ride: (Trip, Vec<Segment>), walk_out: (i64, Vec<Segment>)) -> (Trip, Vec<Segment>) {
+    let at_station = now_ms + walk_in.0 * 1000;
+    let departs = ride.0.leave_ms.unwrap_or(at_station);
+    let wait = ((departs - at_station) / 1000).max(0);
+    let mut segs = walk_in.1;
+    segs.extend(ride.1.into_iter().filter(|s| !s.walk));
+    segs.extend(walk_out.1);
+    (Trip { secs: walk_in.0 + wait + ride.0.secs + walk_out.0, meters: None, leave_ms: Some(now_ms), transfers: ride.0.transfers }, segs)
+}
+
 /// A straight-line walk (with the detour streets make) at 1.25 m/s, for when no planner answers.
 pub fn walk_estimate(from: (f64, f64), to: (f64, f64)) -> i64 {
     let (r, to_rad) = (6_371_000.0f64, std::f64::consts::PI / 180.0);
@@ -397,4 +448,48 @@ mod tests {
         assert_eq!(Mode::parse("rocket"), None);
         assert_eq!((Mode::Car.icon(), Mode::Walk.name()), ("car", "walk"));
     }
+
+    #[test]
+    fn the_train_is_a_way_of_its_own() {
+        assert_eq!(Mode::parse("train"), Some(Mode::Train));
+        assert_eq!(Mode::parse("Treno"), Some(Mode::Train));
+        assert_eq!(Mode::parse("rail"), Some(Mode::Train));
+        assert_eq!(Mode::parse("bus"), Some(Mode::Transit), "public transport keeps its names");
+        assert_eq!((Mode::Train.name(), Mode::Train.icon()), ("train", "train"));
+        for m in [Mode::Car, Mode::Walk, Mode::Transit, Mode::Train] {
+            assert_eq!(Mode::parse(m.name()), Some(m), "a name that is written can be read back");
+        }
+    }
+
+    #[test]
+    fn the_nearest_railway_stops_are_found_and_the_same_station_is_not_listed_twice() {
+        let stops = r#"[
+          {"stopId": "it-Toscana-AT_1", "name": "bus", "modes": ["BUS"], "lat": 43.72, "lon": 10.40},
+          {"stopId": "it-Lombardia-Trenord_S06500", "name": "Pisa Centrale", "modes": ["REGIONAL_RAIL"], "lat": 43.7079, "lon": 10.3982},
+          {"stopId": "it-trenitalia_06501", "name": "PISA SAN ROSSORE", "modes": ["REGIONAL_RAIL"], "lat": 43.7237, "lon": 10.3874},
+          {"stopId": "it-trenitalia_06500", "name": "PISA CENTRALE", "modes": ["HIGHSPEED_RAIL", "BUS"], "lat": 43.7079, "lon": 10.3982}
+        ]"#;
+        let near = rail_stops_near(stops, (43.7085, 10.4036));
+        assert_eq!(near.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["it-trenitalia_06500", "it-trenitalia_06501"], "Trenitalia's stops, nearest first; no bus stop, no other feed's copy");
+        assert!(near[0].metres < 600.0);
+        // with none of Trenitalia's own, any railway stop will do
+        let other = rail_stops_near(r#"[{"stopId": "it-Trenord_X", "name": "x", "modes": ["SUBURBAN_RAIL"], "lat": 45.0, "lon": 9.0}]"#, (45.0, 9.0));
+        assert_eq!(other.len(), 1);
+        assert!(rail_stops_near("nope", (0.0, 0.0)).is_empty());
+    }
+
+    #[test]
+    fn the_whole_way_by_train_adds_the_walks_and_the_wait() {
+        let seg = |walk: bool, a: (f64, f64), b: (f64, f64)| Segment { points: vec![a, b], walk };
+        let now = 1_000_000_000_000;
+        let walk_in = (20 * 60, vec![seg(true, (0.0, 0.0), (0.1, 0.0))]);
+        // the train leaves 25 minutes from now: the walk takes 20, so 5 minutes of waiting
+        let ride = (Trip { secs: 26 * 60, meters: None, leave_ms: Some(now + 25 * 60_000), transfers: Some(0) }, vec![seg(false, (0.1, 0.0), (0.5, 0.0))]);
+        let walk_out = (18 * 60, vec![seg(true, (0.5, 0.0), (0.6, 0.0))]);
+        let (trip, segs) = compose_rail(now, walk_in, ride, walk_out);
+        assert_eq!(trip.secs, (20 + 5 + 26 + 18) * 60);
+        assert_eq!((trip.leave_ms, trip.transfers), (Some(now), Some(0)));
+        assert_eq!(segs.iter().map(|s| s.walk).collect::<Vec<_>>(), [true, false, true], "walk, train, walk");
+    }
 }
+

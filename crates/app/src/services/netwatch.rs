@@ -3,23 +3,29 @@
 
 use super::Reporter;
 use island_core::netstate::{self as ns, Health};
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+use std::process::{Command, Stdio};
+
+#[cfg(target_os = "linux")]
 fn run(cmd: &str, args: &[&str]) -> Option<String> {
     let o = Command::new(cmd).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
+#[cfg(target_os = "linux")]
 fn link_up(iface: &str) -> bool {
     std::fs::read_to_string(format!("/sys/class/net/{iface}/operstate")).is_ok_and(|s| matches!(s.trim(), "up" | "unknown"))
 }
 
+#[cfg(target_os = "linux")]
 fn vpn_up() -> bool {
     std::fs::read_dir("/sys/class/net").is_ok_and(|rd| rd.flatten().any(|e| ns::is_vpn_iface(&e.file_name().to_string_lossy()) && link_up(&e.file_name().to_string_lossy())))
 }
 
 /// One reading: the verdict, and whether a VPN is up.
+#[cfg(target_os = "linux")]
 fn measure(check_internet: bool) -> (Health, bool) {
     let route = std::fs::read_to_string("/proc/net/route").unwrap_or_default();
     let gateway = ns::default_gateway(&route).filter(|(i, _)| link_up(i));
@@ -32,6 +38,7 @@ fn measure(check_internet: bool) -> (Health, bool) {
 }
 
 /// Switches the connection off and on again: the Wi-Fi radio, or the device of the default route.
+#[cfg(target_os = "linux")]
 pub fn reconnect() {
     let route = std::fs::read_to_string("/proc/net/route").unwrap_or_default();
     let iface = ns::default_gateway(&route).map(|(i, _)| i);
@@ -48,6 +55,7 @@ pub fn reconnect() {
 }
 
 pub fn start(rep: Reporter) {
+    #[cfg(target_os = "linux")]
     if which("nmcli").is_none() {
         return;
     }
@@ -56,7 +64,10 @@ pub fn start(rep: Reporter) {
         loop {
             // healthy: look every 10 s and ask NetworkManager for a fresh verdict every minute; trouble: every 5 s, fresh
             let healthy = shown.is_ok();
+            #[cfg(target_os = "linux")]
             let (h, vpn) = measure(!healthy || tick % 6 == 0);
+            #[cfg(windows)]
+            let (h, vpn) = measure(!healthy || tick % 6 == 0, tick % 3 == 0, vpn_shown);
             log::debug!("network: {h:?}, vpn {vpn}");
             tick = tick.wrapping_add(1);
             // a change has to hold for two readings: one lost ping is not an outage
@@ -74,6 +85,64 @@ pub fn start(rep: Reporter) {
     });
 }
 
+#[cfg(target_os = "linux")]
 fn which(cmd: &str) -> Option<std::path::PathBuf> {
     std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join(cmd)).find(|f| f.is_file()))
+}
+
+// ---- Windows --------------------------------------------------------------------------------------------
+
+#[cfg(windows)]
+fn command_output(cmd: &str, args: &[&str]) -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    let o = std::process::Command::new(cmd).args(args).creation_flags(0x0800_0000).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+    o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+/// The router answers a ping (a "Destination host unreachable" reply still exits 0 on Windows, so the TTL is looked for).
+#[cfg(windows)]
+fn router_answers(ip: &str) -> bool {
+    command_output("ping", &["-n", "1", "-w", "1000", ip]).is_some_and(|t| t.contains("TTL=") || t.contains("ttl="))
+}
+
+/// Windows' own internet probe, the one its network icon uses: a fixed page with a fixed answer. Another answer
+/// means a sign-in page sits in between; none at all means no internet.
+#[cfg(windows)]
+fn connectivity() -> &'static str {
+    let agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(6))).http_status_as_error(false).build().new_agent();
+    match agent.get("http://www.msftconnecttest.com/connecttest.txt").call() {
+        Ok(mut r) => {
+            let body = r.body_mut().read_to_string().unwrap_or_default();
+            if body.trim() == "Microsoft Connect Test" {
+                "full"
+            } else {
+                "portal"
+            }
+        }
+        Err(_) => "limited",
+    }
+}
+
+#[cfg(windows)]
+fn vpn_up() -> bool {
+    command_output("powershell", &["-NoProfile", "-NonInteractive", "-Command", "Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object InterfaceDescription"]).is_some_and(|t| ns::any_vpn_adapter(&t))
+}
+
+#[cfg(windows)]
+fn measure(check_internet: bool, check_vpn: bool, last_vpn: bool) -> (Health, bool) {
+    let vpn = if check_vpn { vpn_up() } else { last_vpn };
+    let Some(gw) = command_output("route", &["print", "-4", "0.0.0.0"]).and_then(|t| ns::windows_gateway(&t)) else { return (ns::diagnose(false, None, ""), vpn) };
+    let ip = format!("{}.{}.{}.{}", gw[0], gw[1], gw[2], gw[3]);
+    let router = router_answers(&ip);
+    // the HTTP probe costs a request: only now and then while all is well, as the Linux side asks NetworkManager
+    let verdict = if check_internet || !router { connectivity() } else { "full" };
+    (ns::diagnose(true, Some(router), verdict), vpn)
+}
+
+/// Windows: the Wi-Fi radio is switched off and on again through the radio switch the quick settings use.
+#[cfg(windows)]
+pub fn reconnect() {
+    super::win_more::command(island_ui::model::Command::ToggleWifi);
+    std::thread::sleep(Duration::from_secs(2));
+    super::win_more::command(island_ui::model::Command::ToggleWifi);
 }

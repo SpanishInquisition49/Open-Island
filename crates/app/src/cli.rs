@@ -235,6 +235,7 @@ fn activity_line(state: &str, args: &[String]) -> Result<String, String> {
             "--color" | "--colour" => Some("color"),
             "--progress" => Some("progress"),
             "--label" => Some("label"),
+            "--id" => Some("id"),
             f if f.starts_with("--") => return Err(format!("unknown option {f}")),
             _ => None,
         };
@@ -291,38 +292,69 @@ fn run(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let mut builder = CommandBuilder::new(prog);
-    builder.args(&cmd[1..]);
-    if let Ok(dir) = std::env::current_dir() {
-        builder.cwd(dir);
-    }
-    let mut child = match pair.slave.spawn_command(builder) {
+    let spawn = |program: &str, args: &[String]| {
+        let mut builder = CommandBuilder::new(program);
+        builder.args(args);
+        if let Ok(dir) = std::env::current_dir() {
+            builder.cwd(dir);
+        }
+        pair.slave.spawn_command(builder)
+    };
+    let mut child = match spawn(prog, &cmd[1..]) {
         Ok(c) => c,
-        Err(e) => {
-            eprintln!("open-island progress run: cannot start {prog}: {e}");
-            return 127;
+        Err(first) => {
+            // Windows: batch files (npm, yarn...) and shell built-ins (dir, echo) are not programs: cmd runs them
+            let fallback = cfg!(windows).then(|| spawn("cmd.exe", &[["/C".to_string()].as_slice(), cmd].concat()).ok()).flatten();
+            match fallback {
+                Some(c) => c,
+                None => {
+                    eprintln!("open-island progress run: cannot start {prog}: {first}");
+                    return 127;
+                }
+            }
         }
     };
     drop(pair.slave);
     let Ok(mut reader) = pair.master.try_clone_reader() else { return 1 };
     send("progress", &format!("? {label}"));
+    // The output is read on a thread: on Windows the pseudo-console keeps the pipe open after the command has ended,
+    // so a blocking read would never see the end.
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
     let (mut pct, mut sent_pct, mut sent_at) = (None::<f64>, None::<f64>, Instant::now());
-    let (mut out, mut buf) = (std::io::stdout(), [0u8; 4096]);
-    while let Ok(n) = reader.read(&mut buf) {
-        if n == 0 {
-            break;
-        }
-        let _ = out.write_all(&buf[..n]);
-        let _ = out.flush();
-        if let Some(p) = last_percent(&buf[..n]) {
-            pct = Some(p);
-        }
-        if pct != sent_pct && sent_at.elapsed() >= Duration::from_millis(800) {
-            sent_pct = pct;
-            sent_at = Instant::now();
-            send("progress", &format!("{} {label}", pct.map_or("?".to_string(), |p| format!("{p:.0}"))));
+    let mut out = std::io::stdout();
+    let mut ended: Option<Instant> = None;
+    loop {
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(chunk) => {
+                let _ = out.write_all(&chunk);
+                let _ = out.flush();
+                if let Some(p) = last_percent(&chunk) {
+                    pct = Some(p);
+                }
+                if pct != sent_pct && sent_at.elapsed() >= Duration::from_millis(800) {
+                    sent_pct = pct;
+                    sent_at = Instant::now();
+                    send("progress", &format!("{} {label}", pct.map_or("?".to_string(), |p| format!("{p:.0}"))));
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // the command is over and nothing more came for a moment: what is left is the pipe being held open
+                if matches!(child.try_wait(), Ok(Some(_))) && ended.get_or_insert_with(Instant::now).elapsed() > Duration::from_millis(300) {
+                    break;
+                }
+            }
         }
     }
+    drop(pair.master);
     let code = child.wait().map(|s| s.exit_code() as i32).unwrap_or(1);
     if code == 0 {
         send("progress-done", &label);

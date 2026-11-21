@@ -21,14 +21,35 @@ MSVC build tools needed) or take the `open-island.exe` someone built for you.
 13. Settings page: the font field, add a calendar address (an iCloud account needs an app-specific password).
 14. Leave it running for an hour: memory stays flat, CPU near zero when idle.
 
-Known gaps on Windows: Wi-Fi and Bluetooth switches, night light, going to the app behind a notification (there are
-no desktop notifications from other apps to click anyway), the audio equalizer (it shows a plain animation).
+Added later, also never run: the Wi-Fi and Bluetooth switches on the quick-settings page (they hide when the machine
+has no such radio; the first press may show Windows' permission question), the Map page and the weather following the
+position (Settings > Privacy > Location must be on, else the coordinates of the settings are used), the Activity page
+(the program in front, checked once a second), and a click on another app's notification bringing its window to the front.
+
+Added on 2026-11-21, also never run: the heavy-program card (a program using most of the CPU for 15 s, or memory under 8 %:
+try a busy loop in PowerShell, `while ($true) {}`, in a few windows; Pause / Resume / Quit on the System page; system
+programs such as explorer and svchost are never offered), the network card (unplug the cable or turn Wi-Fi off and on: "no link"
+or "no internet"; a click on it switches the Wi-Fi radio off and on), the power plan on the quick-settings page (cycles
+performance, balanced, power saver; a custom plan hides it), the Sound page (outputs, inputs, volume and mute of each app that
+is playing; choosing another output uses an undocumented Windows interface, so say if it does nothing or crashes), and the
+equalizer following the music (WASAPI loopback of the default output).
+
+`progress run` was reworked for Windows (the output is read on a thread because the pseudo-console keeps its pipe open after the
+command ends; batch files such as `npm` and built-ins such as `dir` are retried through `cmd /C`): try
+`open-island progress run -- cmd /C dir`, `... -- npm --version` and a long download. The PowerShell hook is new too:
+`open-island hook powershell | Out-String | Invoke-Expression` in `$PROFILE`, then run `Start-Sleep 12`: a pill appears after
+10 s and turns green. If it clashes with another PSReadLine Enter binding or a prompt framework (starship, oh-my-posh), say so.
+
+Also: the System page now names the program using the microphone or the camera (from the privacy registry) with a Quit button; packaged apps show only their name.
+
+Known gaps on Windows: night light, muting one microphone user, audio following the headphones.
 
 If nothing appears: run it from a terminal (PowerShell) as `$env:RUST_LOG="debug"; .\open-island.exe` and send the output;
 the lines "window created", "showing the island" and "hiding the island (fullscreen window: ...)" say how far it got. Windows
 surfaces are opaque, so the line "the window surface is opaque" is normal: the window is cut to the island's shape.
 
-Smoothness and the edge: on Windows the island draws through DirectX 12 into a transparent DirectComposition surface
+Smoothness and the edge (the window is one fixed size and does not change while the island animates; if it still
+stutters, run with `$env:OPEN_ISLAND_PERF=1` and send the log lines): on Windows the island draws through DirectX 12 into a transparent DirectComposition surface
 (log line "transparent surface"). If that misbehaves (black rectangle, nothing shown), start it with
 `$env:OPEN_ISLAND_OPAQUE=1` to use the old cut-to-shape way and tell me which of the two worked. With a maximized
 window in front the island hides; moving the pointer to the top edge, around the middle of the screen, brings it

@@ -100,6 +100,33 @@ impl<A: Clone> Painter<'_, A> {
         self.scene.stroke(&Stroke::new(width), self.transform, color, None, &vello::kurbo::Circle::new((cx, cy), r));
     }
 
+    /// A filled polygon.
+    pub fn polygon(&mut self, pts: &[(f64, f64)], color: Color) {
+        if pts.len() < 3 {
+            return;
+        }
+        let mut path = vello::kurbo::BezPath::new();
+        path.move_to(pts[0]);
+        for p in &pts[1..] {
+            path.line_to(*p);
+        }
+        path.close_path();
+        let color = self.c(color);
+        self.scene.fill(Fill::NonZero, self.transform, color, None, &path);
+    }
+
+    /// A map pin whose tip is at (`x`, `y`): a round head on a point, with `r` the head's radius.
+    pub fn map_pin(&mut self, x: f64, y: f64, r: f64, fill: Color, ring: Color) {
+        let hy = y - r * 1.9;
+        // the point: a triangle from the head's sides down to the tip, under the head
+        let tail = [(x - r * 0.86, hy + r * 0.5), (x + r * 0.86, hy + r * 0.5), (x, y)];
+        self.circle(x, y, 3.0, with_alpha(Color::from_rgba8(0, 0, 0, 255), 0.35));
+        self.polygon(&tail, ring);
+        self.circle(x, hy, r + 1.8, ring);
+        self.polygon(&[(x - r * 0.8, hy + r * 0.55), (x + r * 0.8, hy + r * 0.55), (x, y - 1.2)], fill);
+        self.circle(x, hy, r, fill);
+    }
+
     pub fn circle(&mut self, cx: f64, cy: f64, r: f64, color: Color) {
         let shape = vello::kurbo::Circle::new((cx, cy), r);
         let color = self.c(color);

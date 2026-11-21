@@ -36,10 +36,7 @@ pub fn start(rep: Reporter) {
     std::thread::spawn(move || loop {
         let s = crate::config::load();
         // where the machine is, when it follows its position; else the coordinates of the settings
-        #[cfg(target_os = "linux")]
         let at = super::location::point(&s);
-        #[cfg(not(target_os = "linux"))]
-        let at = s.latitude.zip(s.longitude);
         log::debug!("weather for {at:?}");
         match at {
             _ if !s.ui.weather => weather_rep.patch(|d| d.weather = None),
@@ -53,6 +50,17 @@ pub fn start(rep: Reporter) {
     });
     std::thread::spawn(move || {
         let mut cache: HashMap<String, Vec<Event>> = HashMap::new();
+        // the last schedule that was fetched: without a network (a train, a lecture hall) the island still knows the day
+        let (saved, saved_at) = load_calendar_cache(&crate::config::load().calendars);
+        if !saved.is_empty() {
+            let mut all: Vec<Event> = saved.values().flatten().cloned().collect();
+            all.sort_by_key(|e| e.start_ms);
+            cache = saved;
+            rep.patch(move |d| {
+                d.events = all;
+                d.events_synced_at = saved_at;
+            });
+        }
         loop {
             let s = crate::config::load();
             let mut retry = false;
@@ -65,6 +73,9 @@ pub fn start(rep: Reporter) {
             } else {
                 let (events, problems, any_ok) = fetch_calendars(&s, &mut cache);
                 let now = chrono::Utc::now().timestamp_millis();
+                if any_ok {
+                    save_calendar_cache(&cache, now);
+                }
                 rep.patch(move |d| {
                     d.events = events;
                     if any_ok {
@@ -151,6 +162,43 @@ fn fetch_calendars(s: &Settings, cache: &mut HashMap<String, Vec<Event>>) -> (Ve
     merge_results(results, cache)
 }
 
+/// The sources are named on disk by a hash of their settings (which can hold a password), not by the settings.
+fn key_hash(key: &str) -> String {
+    let h = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3));
+    format!("{h:016x}")
+}
+
+/// What was fetched last time for the sources that are still configured, and when.
+fn load_calendar_cache(sources: &[crate::config::CalendarSource]) -> (HashMap<String, Vec<Event>>, i64) {
+    let Some(v) = super::state_file("calendar-cache.json").and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return (HashMap::new(), 0) };
+    let at = v.get("saved_at").and_then(|x| x.as_i64()).unwrap_or(0);
+    let mut out = HashMap::new();
+    for src in sources {
+        let key = source_key(src);
+        if let Some(list) = v.get("sources").and_then(|s| s.get(key_hash(&key))).and_then(|l| l.as_array()) {
+            out.insert(key, list.iter().filter_map(island_core::calendar::event_from_json).collect());
+        }
+    }
+    (out, at)
+}
+
+fn save_calendar_cache(cache: &HashMap<String, Vec<Event>>, at: i64) {
+    let Some(p) = super::state_file("calendar-cache.json") else { return };
+    let sources: serde_json::Map<String, serde_json::Value> = cache.iter().map(|(k, evs)| (key_hash(k), serde_json::Value::Array(evs.iter().map(island_core::calendar::event_to_json).collect()))).collect();
+    let text = serde_json::json!({"saved_at": at, "sources": sources}).to_string();
+    // event titles are private: owner-only
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&p) {
+            let _ = f.write_all(text.as_bytes());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = std::fs::write(&p, text);
+}
+
 fn source_key(src: &crate::config::CalendarSource) -> String {
     src.to_json().to_string()
 }
@@ -191,7 +239,45 @@ fn fetch_source(src: &crate::config::CalendarSource, i: usize, from: i64, to: i6
             Ok(island_core::ics::parse_in(&text, &super::tz::offset, from, to).into_iter().map(|e| Event { color: Some(color), calendar: name.clone(), ..e }).collect())
         }
         CalendarKind::CalDav { .. } => fetch_caldav(src, from, to, default_color),
+        CalendarKind::File { path } => fetch_files(&crate::config::expand_home(path), &src.name, src.color.unwrap_or(default_color), from, to),
+        CalendarKind::Holidays { country } => Ok(holiday_events(country, &if src.name.is_empty() { "Holidays".to_string() } else { src.name.clone() }, src.color.unwrap_or(default_color), from, to)),
     }
+}
+
+/// An .ics file, or every .ics file of a folder (one level), read now. A file that cannot be read is an error the person can act on.
+fn fetch_files(path: &str, name: &str, color: (u8, u8, u8), from: i64, to: i64) -> Result<Vec<Event>, String> {
+    let p = std::path::Path::new(path);
+    let files: Vec<std::path::PathBuf> = if p.is_dir() {
+        let mut v: Vec<_> = std::fs::read_dir(p).map_err(|e| short(&e.to_string()))?.flatten().map(|e| e.path()).filter(|f| f.extension().is_some_and(|x| x.eq_ignore_ascii_case("ics") || x.eq_ignore_ascii_case("ical"))).collect();
+        v.sort();
+        v
+    } else {
+        vec![p.to_path_buf()]
+    };
+    let mut out = vec![];
+    for f in &files {
+        let text = std::fs::read_to_string(f).map_err(|e| format!("{}: {}", f.display(), short(&e.to_string())))?;
+        let label = if !name.is_empty() { name.to_string() } else { island_core::ics::calendar_name(&text).unwrap_or_else(|| f.file_stem().map_or(String::new(), |s| s.to_string_lossy().into_owned())) };
+        out.extend(island_core::ics::parse_in(&text, &super::tz::offset, from, to).into_iter().map(|e| Event { color: Some(color), calendar: label.clone(), ..e }));
+    }
+    Ok(out)
+}
+
+/// The holidays that fall in [from, to), as all-day events at local midnight.
+fn holiday_events(country: &str, name: &str, color: (u8, u8, u8), from: i64, to: i64) -> Vec<Event> {
+    use chrono::TimeZone;
+    let year_of = |ms: i64| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_default().format("%Y").to_string().parse::<i64>().unwrap_or(2000);
+    let mut out = vec![];
+    for year in year_of(from)..=year_of(to) {
+        for (m, d, title) in island_core::holidays::holidays(country, year) {
+            let Some(start) = chrono::Local.with_ymd_and_hms(year as i32, m as u32, d as u32, 0, 0, 0).single().map(|t| t.timestamp_millis()) else { continue };
+            let end = chrono::Local.with_ymd_and_hms(year as i32, m as u32, d as u32, 0, 0, 0).single().and_then(|t| (t + chrono::Duration::days(1)).timestamp_millis().into()).unwrap_or(start + 86_400_000);
+            if end > from && start < to {
+                out.push(Event { id: format!("holiday-{country}-{year}-{m}-{d}"), title, start_ms: start, end_ms: end, all_day: true, url: None, color: Some(color), calendar: name.to_string(), location: String::new() });
+            }
+        }
+    }
+    out
 }
 
 fn short(s: &str) -> String {
@@ -285,6 +371,53 @@ fn urlenc(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_local_ics_file_or_folder_and_the_holidays_become_events() {
+        let dir = std::env::temp_dir().join(format!("oi-ics-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ics = |uid: &str, title: &str| format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nX-WR-CALNAME:Orario\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nDTSTART:20270120T080000Z\r\nDTEND:20270120T093000Z\r\nSUMMARY:{title}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
+        std::fs::write(dir.join("a.ics"), ics("a", "Reti")).unwrap();
+        std::fs::write(dir.join("b.ICS"), ics("b", "Algoritmi")).unwrap();
+        std::fs::write(dir.join("notes.txt"), "not a calendar").unwrap();
+        let (from, to) = (1_800_000_000_000, 1_800_000_000_000 + 30 * 86_400_000); // 15 Jan - 14 Feb 2027
+        let all = fetch_files(dir.to_str().unwrap(), "", (1, 2, 3), from, to).unwrap();
+        assert_eq!(all.iter().map(|e| e.title.as_str()).collect::<Vec<_>>(), ["Reti", "Algoritmi"], "every .ics of the folder, the other files left alone");
+        assert!(all.iter().all(|e| e.calendar == "Orario" && e.color == Some((1, 2, 3))), "named by the file's own name");
+        let one = fetch_files(dir.join("a.ics").to_str().unwrap(), "Uni", (0, 0, 0), from, to).unwrap();
+        assert_eq!((one.len(), one[0].calendar.as_str()), (1, "Uni"), "one file, the name given");
+        assert!(fetch_files(dir.join("missing.ics").to_str().unwrap(), "", (0, 0, 0), from, to).is_err(), "a missing file is an error to show");
+        let _ = std::fs::remove_dir_all(&dir);
+        // holidays: January 2027 has Capodanno (before the window) and Epifania (in it); the window crosses no Easter
+        let h = holiday_events("IT", "Holidays", (9, 9, 9), from, to);
+        assert!(h.iter().all(|e| e.all_day && e.calendar == "Holidays"));
+        assert!(!h.iter().any(|e| e.title == "Epifania"), "6 January is before 15 January");
+        let year = holiday_events("IT", "H", (0, 0, 0), 1_798_761_600_000, 1_830_211_200_000); // 1 January to 31 December 2027
+        assert_eq!(year.len(), 12, "every holiday of the year, once");
+        assert!(year.iter().any(|e| e.title == "Pasqua") && year.iter().all(|e| e.end_ms - e.start_ms >= 23 * 3_600_000 && e.end_ms - e.start_ms <= 25 * 3_600_000));
+        assert!(holiday_events("XX", "H", (0, 0, 0), from, to).is_empty());
+    }
+
+    #[test]
+    fn the_schedule_is_kept_on_disk_without_the_password_and_comes_back_for_the_same_sources() {
+        let dir = std::env::temp_dir().join(format!("oi-cal-cache-{}", std::process::id()));
+        std::env::set_var("XDG_STATE_HOME", &dir);
+        let feed = crate::config::CalendarSource { name: "Uni".into(), kind: crate::config::CalendarKind::Ics { url: "https://x/y.ics".into() }, color: None };
+        let dav = crate::config::CalendarSource { name: "Cloud".into(), kind: crate::config::CalendarKind::CalDav { server: "https://s/".into(), user: "me".into(), password: "hunter2-secret".into(), password_cmd: String::new() }, color: None };
+        let ev = |id: &str| Event { id: id.into(), title: format!("lesson {id}"), start_ms: 1000, end_ms: 2000, ..Default::default() };
+        let mut cache = HashMap::new();
+        cache.insert(source_key(&feed), vec![ev("a"), ev("b")]);
+        cache.insert(source_key(&dav), vec![ev("c")]);
+        save_calendar_cache(&cache, 777);
+        let text = std::fs::read_to_string(dir.join("open-island").join("calendar-cache.json")).unwrap();
+        assert!(!text.contains("hunter2-secret") && !text.contains("https://x/y.ics"), "the sources are only named by a hash");
+        let (back, at) = load_calendar_cache(std::slice::from_ref(&feed));
+        assert_eq!(at, 777);
+        assert_eq!(back.len(), 1, "a source that is gone from the settings is not brought back");
+        assert_eq!(back[&source_key(&feed)].iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        assert!(load_calendar_cache(&[]).0.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn encodes_urls() {

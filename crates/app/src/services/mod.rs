@@ -16,12 +16,11 @@ pub mod parse;
 pub mod devices;
 #[cfg(target_os = "linux")]
 pub mod audio_mixer;
-#[cfg(target_os = "linux")]
 pub mod culprit;
-#[cfg(target_os = "linux")]
 pub mod location;
 pub mod tiles;
-#[cfg(target_os = "linux")]
+// nothing reads the network's health on macOS yet
+#[cfg(any(target_os = "linux", windows))]
 pub mod netwatch;
 pub mod travel;
 #[cfg(target_os = "linux")]
@@ -31,6 +30,8 @@ pub mod sound;
 pub mod tz;
 pub mod ipc;
 pub mod net;
+pub mod rates;
+pub mod trains;
 pub mod send;
 #[cfg(target_os = "linux")]
 pub mod linux;
@@ -56,6 +57,10 @@ pub mod other;
 pub mod macos;
 #[cfg(target_os = "windows")]
 pub mod windows;
+#[cfg(target_os = "windows")]
+pub mod win_more;
+#[cfg(target_os = "windows")]
+pub mod win_audio;
 
 /// Set by the app while the system page / the quick settings page is open: the sampling threads idle otherwise.
 pub static SYSTEM_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -151,15 +156,18 @@ pub fn start(tx: Sender<Msg>, waker: Arc<dyn Fn() + Send + Sync>) -> Sender<Comm
     clock::start(rep.clone());
     ipc::start(rep.clone());
     net::start(rep.clone());
+    rates::start(rep.clone());
+    trains::start(rep.clone());
+    culprit::start(rep.clone());
+    #[cfg(any(target_os = "linux", windows))]
+    netwatch::start(rep.clone());
     #[cfg(target_os = "linux")]
     {
         niri::start(rep.clone());
         devices::start(rep.clone());
         audio_route::start(rep.clone());
         audio_mixer::start(rep.clone());
-        culprit::start(rep.clone());
         location::start(rep.clone());
-        netwatch::start(rep.clone());
         linux::start(rep.clone(), cmd_rx, settings, dnd);
     }
     #[cfg(not(target_os = "linux"))]
@@ -167,7 +175,7 @@ pub fn start(tx: Sender<Msg>, waker: Arc<dyn Fn() + Send + Sync>) -> Sender<Comm
     cmd_tx
 }
 
-fn state_file(name: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn state_file(name: &str) -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from))
@@ -235,6 +243,95 @@ pub fn save_reminders_if_changed(reminders: &[island_ui::island::Reminder]) {
     *last = Some(reminders.to_vec());
     let Some(p) = state_file("reminders.json") else { return };
     let items: Vec<serde_json::Value> = reminders.iter().map(|r| serde_json::json!({"due": r.due_ms, "text": r.text})).collect();
+    if let Ok(text) = serde_json::to_string(&items) {
+        let _ = std::fs::write(p, text);
+    }
+}
+
+/// The last day a recap card ("evening-recap", "morning-recap") came, so that a restart does not show it again.
+pub fn load_recap_day(name: &str) -> Option<i64> {
+    state_file(name).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| s.trim().parse().ok())
+}
+
+pub fn save_recap_day_if_changed(name: &'static str, day: i64) {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<HashMap<&'static str, i64>>> = Mutex::new(None);
+    if day == i64::MIN {
+        return;
+    }
+    let Ok(mut g) = LAST.lock() else { return };
+    if g.get_or_insert_with(HashMap::new).insert(name, day) == Some(day) {
+        return;
+    }
+    if let Some(p) = state_file(name) {
+        let _ = std::fs::write(p, day.to_string());
+    }
+}
+
+/// The lines run from the command bar, kept between runs (Up recalls them).
+pub fn load_bar_history() -> Vec<String> {
+    let Some(text) = state_file("bar-history.json").and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };
+    serde_json::from_str::<Vec<String>>(&text).unwrap_or_default()
+}
+
+pub fn save_bar_history_if_changed(history: &[String]) {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<Vec<String>>> = Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return };
+    if last.as_deref() == Some(history) || (last.is_none() && history.is_empty()) {
+        return;
+    }
+    *last = Some(history.to_vec());
+    if let (Some(p), Ok(text)) = (state_file("bar-history.json"), serde_json::to_string(history)) {
+        let _ = std::fs::write(p, text);
+    }
+}
+
+/// Exams and hand-ins, kept between runs.
+pub fn load_deadlines() -> Vec<island_ui::island::Deadline> {
+    let Some(text) = state_file("deadlines.json").and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(&text) else { return vec![] };
+    items.iter().filter_map(|v| Some(island_ui::island::Deadline { day: v.get("day")?.as_i64()?, text: v.get("text")?.as_str()?.to_string() })).collect()
+}
+
+pub fn save_deadlines_if_changed(d: &[island_ui::island::Deadline]) {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<Vec<island_ui::island::Deadline>>> = Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return };
+    if last.as_deref() == Some(d) || (last.is_none() && d.is_empty()) {
+        return;
+    }
+    *last = Some(d.to_vec());
+    let items: Vec<serde_json::Value> = d.iter().map(|x| serde_json::json!({"day": x.day, "text": x.text})).collect();
+    if let (Some(p), Ok(text)) = (state_file("deadlines.json"), serde_json::to_string(&items)) {
+        let _ = std::fs::write(p, text);
+    }
+}
+
+/// The to-do list, kept between runs.
+pub fn load_todos() -> Vec<island_ui::island::Todo> {
+    let Some(text) = state_file("todos.json").and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(&text) else { return vec![] };
+    items
+        .iter()
+        .filter_map(|v| match v {
+            serde_json::Value::String(t) => Some(island_ui::island::Todo { text: t.clone(), ..Default::default() }),
+            o => Some(island_ui::island::Todo { text: o.get("text")?.as_str()?.to_string(), daily: o.get("daily").and_then(|d| d.as_bool()).unwrap_or(false), done_day: o.get("done_day").and_then(|d| d.as_i64()).unwrap_or(i64::MIN) }),
+        })
+        .collect()
+}
+
+pub fn save_todos_if_changed(todos: &[island_ui::island::Todo]) {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<Vec<island_ui::island::Todo>>> = Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return };
+    if last.as_deref() == Some(todos) || (last.is_none() && todos.is_empty()) {
+        return;
+    }
+    *last = Some(todos.to_vec());
+    let Some(p) = state_file("todos.json") else { return };
+    let items: Vec<serde_json::Value> = todos.iter().map(|t| if t.daily { serde_json::json!({"text": t.text, "daily": true, "done_day": t.done_day}) } else { serde_json::json!(t.text) }).collect();
     if let Ok(text) = serde_json::to_string(&items) {
         let _ = std::fs::write(p, text);
     }

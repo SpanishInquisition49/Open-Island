@@ -27,7 +27,9 @@ pub fn start(rep: Reporter) {
     fullscreen(rep.clone());
     toasts(rep.clone());
     brightness(rep.clone());
-    keep_awake(rep, krx);
+    keep_awake(rep.clone(), krx);
+    super::win_more::start(rep.clone());
+    super::win_audio::start(rep);
 }
 
 /// Routes the commands this platform handles itself.
@@ -49,8 +51,9 @@ pub fn command(c: Command) {
             let pct = (v.clamp(0.0, 1.0) * 100.0).round() as i32;
             std::thread::spawn(move || drop(powershell(&format!("(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods) | Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{Timeout=0;Brightness={pct}}}"))));
         }
+        Command::SetSink(_) | Command::SetSource(_) | Command::SetStreamVolume { .. } | Command::ToggleStreamMute(_) | Command::NextSink => super::win_audio::command(c),
         Command::PlaySound => play_default_sound(),
-        _ => {}
+        other => super::win_more::command(other),
     }
 }
 
@@ -279,22 +282,28 @@ fn toasts(rep: Reporter) {
 
 // ---- privacy ------------------------------------------------------------------------------------------
 
-/// True when the capability store says an application is using it right now: an app's `LastUsedTimeStop` is 0
-/// (or older than `LastUsedTimeStart`) while it runs.
-pub fn capability_in_use(capability: &str) -> bool {
+/// The apps the capability store says are using it right now: an app's `LastUsedTimeStop` is 0 (or older than
+/// `LastUsedTimeStart`) while it runs. Names come from the key (`parse::consent_app`); true when it has a process.
+pub fn capability_users(capability: &str) -> Vec<(String, bool)> {
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
     let base = format!(r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\{capability}");
-    let Ok(root) = RegKey::predef(HKEY_CURRENT_USER).open_subkey(&base) else { return false };
+    let Ok(root) = RegKey::predef(HKEY_CURRENT_USER).open_subkey(&base) else { return vec![] };
     let in_use = |k: &RegKey| {
         let (start, stop): (u64, u64) = (k.get_value("LastUsedTimeStart").unwrap_or(0), k.get_value("LastUsedTimeStop").unwrap_or(0));
         start > 0 && start > stop
     };
-    let mut keys: Vec<RegKey> = root.enum_keys().flatten().filter_map(|n| root.open_subkey(n).ok()).collect();
+    let mut users: Vec<(String, bool)> = root.enum_keys().flatten().filter(|n| n != "NonPackaged").filter(|n| root.open_subkey(n).is_ok_and(|k| in_use(&k))).map(|n| super::parse::consent_app(&n)).collect();
     if let Ok(np) = root.open_subkey("NonPackaged") {
-        keys.extend(np.enum_keys().flatten().filter_map(|n| np.open_subkey(n).ok()));
+        users.extend(np.enum_keys().flatten().filter(|n| np.open_subkey(n).is_ok_and(|k| in_use(&k))).map(|n| super::parse::consent_app(&n)));
     }
-    keys.iter().any(in_use)
+    users.sort();
+    users.dedup();
+    users
+}
+
+pub fn capability_in_use(capability: &str) -> bool {
+    !capability_users(capability).is_empty()
 }
 
 fn privacy(rep: Reporter) {
@@ -304,7 +313,15 @@ fn privacy(rep: Reporter) {
             let now = Privacy { mic: capability_in_use("microphone"), camera: capability_in_use("webcam"), screen: capability_in_use("graphicsCaptureProgrammatic") };
             if now != last {
                 last = now;
-                rep.patch(move |d| d.privacy = now);
+                // who it is, for the system page: a program with a process can be quit from there
+                let users = |cap: &str| -> Vec<(String, Vec<u32>)> { capability_users(cap).into_iter().map(|(n, has_proc)| { let pids = if has_proc { super::culprit::pids_named(&n) } else { vec![] }; (n, pids) }).collect() };
+                let mic: Vec<island_ui::model::MicUser> = if now.mic { users("microphone").into_iter().map(|(name, pids)| island_ui::model::MicUser { stream: 0, name, pid: pids.first().copied(), muted: false }).collect() } else { vec![] };
+                let cam = if now.camera { users("webcam") } else { vec![] };
+                rep.patch(move |d| {
+                    d.privacy = now;
+                    d.mic_users = mic;
+                    d.camera_users = cam;
+                });
             }
             std::thread::sleep(Duration::from_secs(3));
         }

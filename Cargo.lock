@@ -1507,6 +1507,7 @@ name = "island-ui"
 version = "0.1.0"
 dependencies = [
  "fontdb",
+ "getrandom 0.3.4",
  "island-core",
  "log",
  "png",
@@ -2340,6 +2341,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "windows",
+ "windows-core",
  "winit",
  "winreg 0.56.0",
  "zbus",

@@ -65,6 +65,30 @@ function __open_island_post --on-event fish_postexec
 end
 "#
         }
+        "powershell" | "pwsh" => {
+            // PowerShell has no pre-exec hook: Enter is rebound (PSReadLine) to announce the line before it runs, and
+            // the prompt, which runs after every command, announces the end with its exit code.
+            r#"# open-island: a pill for long commands
+$global:__open_island_on = $false
+Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
+    $line = $null; $cursor = $null
+    [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor)
+    if ($line.Trim()) { $global:__open_island_on = $true; & open-island hook start $PID $line 2>$null }
+    [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+}
+$global:__open_island_prompt = $function:prompt
+function global:prompt {
+    $ok = $?; $last = $global:LASTEXITCODE
+    if ($global:__open_island_on) {
+        $global:__open_island_on = $false
+        $code = if ($ok) { 0 } elseif ($last) { $last } else { 1 }
+        & open-island hook end $PID $code 2>$null
+    }
+    $global:LASTEXITCODE = $last
+    if ($global:__open_island_prompt) { & $global:__open_island_prompt } else { "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) " }
+}
+"#
+        }
         _ => return None,
     })
 }
@@ -89,7 +113,7 @@ pub fn run(args: &[String]) -> i32 {
             0
         }
         _ => {
-            eprintln!("usage: open-island hook <zsh|bash|fish>   (then: eval \"$(open-island hook zsh)\" in the shell's startup file)");
+            eprintln!("usage: open-island hook <zsh|bash|fish|powershell>   (then: eval \"$(open-island hook zsh)\", or open-island hook powershell | Out-String | Invoke-Expression, in the shell's startup file)");
             2
         }
     }
@@ -122,10 +146,10 @@ mod tests {
 
     #[test]
     fn every_shell_has_a_script_that_calls_start_and_end() {
-        for sh in ["zsh", "bash", "fish"] {
+        for sh in ["zsh", "bash", "fish", "powershell", "pwsh"] {
             let s = script(sh).unwrap();
             assert!(s.contains("hook start") && s.contains("hook end"), "{sh}");
         }
-        assert!(script("powershell").is_none() && script("").is_none());
+        assert!(script("cmd").is_none() && script("").is_none());
     }
 }

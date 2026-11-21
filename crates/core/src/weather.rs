@@ -122,6 +122,37 @@ pub fn outlook(slots: &[Slot], hours: &[Hour], now_ms: i64) -> Outlook {
 /// Rain this near (or now) is worth a line on the home page.
 pub const HOME_RAIN_HORIZON_MIN: i32 = 360;
 
+/// What a day is going to be like between 07:00 and 22:00 (local): the range of temperatures and when the rain starts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DayForecast {
+    pub min_c: i32,
+    pub max_c: i32,
+    /// The first of those hours with rain likely (50 % or more, or 0.3 mm), epoch ms.
+    pub rain_from_ms: Option<i64>,
+}
+
+/// The forecast of the day that starts at `day_start_ms` (local midnight). None when the hours are not known for it.
+pub fn day_forecast(hours: &[Hour], day_start_ms: i64) -> Option<DayForecast> {
+    let (from, to) = (day_start_ms + 7 * 3_600_000, day_start_ms + 22 * 3_600_000);
+    let day: Vec<&Hour> = hours.iter().filter(|h| h.time_ms >= from && h.time_ms < to).collect();
+    if day.len() < 6 {
+        return None;
+    }
+    let min = day.iter().map(|h| h.temp_c).fold(f32::MAX, f32::min);
+    let max = day.iter().map(|h| h.temp_c).fold(f32::MIN, f32::max);
+    let rain = day.iter().find(|h| h.rain_prob >= 50 || h.mm >= 0.3).map(|h| h.time_ms);
+    Some(DayForecast { min_c: min.round() as i32, max_c: max.round() as i32, rain_from_ms: rain })
+}
+
+/// "9–14°, rain from 15:00" (`hhmm` writes a time of day) or "9–14°, dry".
+pub fn forecast_line(f: &DayForecast, hhmm: impl Fn(i64) -> String) -> String {
+    let temps = if f.min_c == f.max_c { format!("{}°", f.max_c) } else { format!("{}–{}°", f.min_c, f.max_c) };
+    match f.rain_from_ms {
+        Some(t) => format!("{temps}, rain from {}", hhmm(t)),
+        None => format!("{temps}, dry"),
+    }
+}
+
 pub fn worth_showing_at_home(o: Outlook) -> bool {
     match o {
         Outlook::Raining { .. } => true,
@@ -202,4 +233,24 @@ mod tests {
         assert_eq!(rain_soon(&[s(0, 0.5), s(15, 0.5)], 60), None, "already raining");
         assert_eq!(rain_soon(&[s(0, 0.0), s(75, 1.0)], 60), None, "beyond the horizon");
     }
+
+    #[test]
+    fn a_day_is_a_range_of_temperatures_and_the_hour_the_rain_starts() {
+        let day = 1_000_000_000_000i64;
+        let hour = |h: i64, t: f32, p: u8, mm: f32| Hour { time_ms: day + h * 3_600_000, temp_c: t, code: 0, is_day: true, rain_prob: p, mm };
+        let mut hours: Vec<Hour> = (0..24).map(|h| hour(h, 8.0 + (h as f32 - 6.0).clamp(0.0, 12.0) * 0.5, 10, 0.0)).collect();
+        let f = day_forecast(&hours, day).unwrap();
+        assert_eq!((f.min_c, f.max_c, f.rain_from_ms), (9, 14, None), "07:00 to 22:00 only: the cold of the night does not count");
+        assert_eq!(forecast_line(&f, |_| String::new()), "9–14°, dry");
+        hours[15] = hour(15, 13.0, 70, 0.0);
+        hours[18] = hour(18, 12.0, 20, 1.2);
+        let f = day_forecast(&hours, day).unwrap();
+        assert_eq!(f.rain_from_ms, Some(day + 15 * 3_600_000), "the first wet hour");
+        assert_eq!(forecast_line(&f, |t| format!("{}:00", (t - day) / 3_600_000)), "9–14°, rain from 15:00");
+        hours[3] = hour(3, 5.0, 90, 5.0);
+        assert_eq!(day_forecast(&hours, day).unwrap().min_c, 9, "rain at night is not the day's");
+        assert_eq!(day_forecast(&hours[..10], day), None, "too few hours to say");
+        assert_eq!(forecast_line(&DayForecast { min_c: 9, max_c: 9, rain_from_ms: None }, |_| String::new()), "9°, dry");
+    }
 }
+

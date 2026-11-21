@@ -55,6 +55,8 @@ fn parse_command(line: &str) -> Option<island_ui::model::Command> {
                     "off" | "false" | "no" | "0" => false,
                     _ => return None,
                 })
+            } else if key == "evening_recap_time" || key == "morning_recap_time" {
+                OptionValue::Text(value.to_string())
             } else if crate::config::NUM_OPTIONS.iter().any(|(k, ..)| *k == key) {
                 OptionValue::Num(value.parse().ok()?)
             } else if matches!(key, "timer_presets" | "screen" | "travel_mode" | "map_tile_url" | "map_api_key") {
@@ -65,8 +67,12 @@ fn parse_command(line: &str) -> Option<island_ui::model::Command> {
             Command::SetOption { key: key.to_string(), value }
         }
         "sound" => Command::SetNotificationSound(payload.to_string()),
+        // `home 43.7085, 10.4036` or `home Via Roma 1, Pisa`; `train pisa centrale 17:12 verso lucca`, `train off`
+        "home" if !payload.is_empty() => Command::SetHome(payload.to_string()),
+        "train" if matches!(payload.to_lowercase().as_str(), "off" | "unpin") => Command::UnpinTrain,
+        "train" if island_core::train::parse_pin_query(payload).is_some() => Command::PinTrain(payload.to_string()),
         "calendar" => match payload.split_once(char::is_whitespace) {
-            Some(("add", url)) if island_ui::is_calendar_url(url) => Command::AddCalendar(url.trim().to_string()),
+            Some(("add", url)) if island_ui::is_calendar_source(url) => Command::AddCalendar(url.trim().to_string()),
             Some(("remove", n)) => Command::RemoveCalendar(n.trim().parse::<usize>().ok()?.checked_sub(1)?),
             _ => return None,
         },
@@ -74,7 +80,7 @@ fn parse_command(line: &str) -> Option<island_ui::model::Command> {
     })
 }
 
-fn parse(line: &str) -> Option<Input> {
+pub(crate) fn parse(line: &str) -> Option<Input> {
     let line = line.trim();
     let (event, payload) = line.split_once(char::is_whitespace).map_or((line, ""), |(a, b)| (a, b.trim()));
     Some(match event {
@@ -141,7 +147,10 @@ fn parse(line: &str) -> Option<Input> {
                 "run" => State::Run,
                 "done" => State::Done,
                 "fail" => State::Fail,
-                "clear" => return Some(Input::ProgressClear),
+                "clear" => {
+                    let v: serde_json::Value = if json.is_empty() { serde_json::json!({}) } else { serde_json::from_str(json).ok()? };
+                    return Some(Input::ActivityClear(v.get("id").and_then(|x| x.as_str()).unwrap_or("").trim().chars().take(80).collect()));
+                }
                 _ => return None,
             };
             let v: serde_json::Value = if json.is_empty() { serde_json::json!({}) } else { serde_json::from_str(json).ok()? };
@@ -149,6 +158,7 @@ fn parse(line: &str) -> Option<Input> {
             Input::Activity(
                 state,
                 Activity {
+                    id: s("id"),
                     label: s("label"),
                     detail: s("detail"),
                     icon: Some(s("icon")).filter(|i| island_ui::is_known_icon(i)),
@@ -170,10 +180,24 @@ fn parse(line: &str) -> Option<Input> {
             let mut it = payload.split_whitespace();
             Input::CommandEnd { id: it.next()?.into(), code: it.next()?.parse().ok()? }
         }
-        "timer" => Input::StartTimer(island_core::duration::parse(payload).unwrap_or(300)),
+        // "25m", "25m tea", "tea 25m"? no: the duration first, as in the command bar; the rest names it
+        "timer" => match island_core::bar::parse(&format!("timer {payload}"), 0) {
+            Some(island_core::bar::Cmd::Timer { secs, label }) if label.is_empty() => Input::StartTimer(secs),
+            Some(island_core::bar::Cmd::Timer { secs, label }) => Input::StartNamedTimer(secs, label),
+            _ => Input::StartTimer(island_core::duration::parse(payload).unwrap_or(300)),
+        },
+        // `todo <text>` or `todo add <text>`: something for the list on the Today page
+        "todo" if !payload.is_empty() => Input::TodoAdd(payload.strip_prefix("add ").unwrap_or(payload).into()),
         "pomodoro" => Input::StartPomodoro,
         "stopwatch" => Input::StartStopwatch,
-        "timer-cancel" => Input::CancelTimer,
+        // "timer-cancel" ends the main timer; "timer-cancel tea" the ones named tea
+        "timer-cancel" => {
+            if payload.is_empty() {
+                Input::CancelTimer
+            } else {
+                Input::CancelTimerNamed(payload.into())
+            }
+        }
         "page" => match payload {
             "next" => Input::CyclePage(1),
             "prev" | "previous" => Input::CyclePage(-1),
@@ -272,7 +296,15 @@ mod tests {
         assert!(matches!(parse(r#"activity run {"label":"CI","detail":"building","icon":"git-branch","color":"orange","progress":40}"#),
             Some(Input::Activity(island_core::progress::State::Run, a)) if a.label == "CI" && a.detail == "building" && a.icon.as_deref() == Some("git-branch") && a.tint == Some((0xff, 0x9f, 0x0a)) && a.frac == Some(0.4)));
         assert!(matches!(parse(r#"activity fail {"label":"CI","detail":"2 failed"}"#), Some(Input::Activity(island_core::progress::State::Fail, a)) if a.detail == "2 failed" && a.icon.is_none() && a.tint.is_none()));
-        assert!(matches!(parse("activity clear"), Some(Input::ProgressClear)));
+        assert!(matches!(parse("activity clear"), Some(Input::ActivityClear(id)) if id.is_empty()));
+        assert!(matches!(parse_command("home 43.7, 10.4"), Some(island_ui::model::Command::SetHome(h)) if h == "43.7, 10.4"));
+        assert!(matches!(parse_command("train pisa centrale 17:12"), Some(island_ui::model::Command::PinTrain(_))));
+        assert!(matches!(parse_command("train off"), Some(island_ui::model::Command::UnpinTrain)));
+        assert!(parse_command("train pisa centrale").is_none() && parse_command("home").is_none());
+        assert!(matches!(parse("timer 25m tea time"), Some(Input::StartNamedTimer(1500, l)) if l == "tea time"));
+        assert!(matches!(parse("timer-cancel tea"), Some(Input::CancelTimerNamed(l)) if l == "tea"));
+        assert!(matches!(parse("timer-cancel"), Some(Input::CancelTimer)));
+        assert!(matches!(parse(r#"activity run {"id":"s1","label":"Claude"}"#), Some(Input::Activity(island_core::progress::State::Run, a)) if a.id == "s1"));
         assert!(matches!(parse("key enter"), Some(Input::Key(island_ui::model::KeyInput::Enter))));
         assert!(matches!(parse("key text 10m tea"), Some(Input::Key(island_ui::model::KeyInput::Text(t))) if t == "10m tea"));
         assert!(parse("key wobble").is_none() && parse("key text").is_none());

@@ -6,6 +6,7 @@
 mod app;
 mod cli;
 mod doctor;
+mod agent;
 mod hook;
 mod perf;
 mod backend_winit;
@@ -27,7 +28,10 @@ fn usage() {
   progress run [-l label] -- command...   (shows a command's progress)
   send <file>...   pick a device on the network (LocalSend) and send it the files
   activity run|done|fail|clear [label] [--detail t] [--icon i] [--color c] [--progress n]   a status for a script (CI, build)
-  hook <zsh|bash|fish>                   a pill for every long shell command (eval $(open-island hook zsh))
+  timer <25m> [name]                     start a countdown (several can run at once; `msg timer-cancel [name]` ends them)
+  todo <text>                            add something to the list on the Today page (tick it off there)
+  agent                                  a coding agent reports its turns (Claude Code hook JSON on stdin); agent setup claude | agent start|tool|done|fail|end --id ID ...
+  hook <zsh|bash|fish|powershell>        a pill for every long shell command (eval $(open-island hook zsh))
   progress <percent|?> <label> | progress-done [label] | progress-fail [label] | progress-clear\n\nCONFIG: {}",
         env!("CARGO_PKG_VERSION"),
         config::path().map(|p| p.display().to_string()).unwrap_or_else(|| "(no config directory)".into())
@@ -83,6 +87,9 @@ fn main() {
         Some("send") => std::process::exit(cli::send_files(&args[1..])),
         Some("activity") => std::process::exit(cli::activity(&args[1..])),
         Some("hook") => std::process::exit(hook::run(&args[1..])),
+        Some("todo") if args.len() >= 2 => std::process::exit(if services::ipc::send(&format!("todo {}", args[1..].join(" "))) { 0 } else { eprintln!("open-island is not running"); 1 }),
+        Some("agent") => std::process::exit(agent::run(&args[1..])),
+        Some("timer") if args.len() >= 2 => std::process::exit(if services::ipc::send(&format!("timer {}", args[1..].join(" "))) { 0 } else { eprintln!("open-island is not running"); 1 }),
         Some("-h") | Some("--help") | Some("help") => usage(),
         _ => {
             let backend = args.iter().position(|a| a == "--backend").and_then(|i| args.get(i + 1)).map(String::as_str);

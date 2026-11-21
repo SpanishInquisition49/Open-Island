@@ -45,6 +45,43 @@ pub fn win_brightness(text: &str) -> Option<f32> {
     (0.0..=100.0).contains(&v).then_some(v / 100.0)
 }
 
+/// The power plan a Windows machine runs, from `powercfg /getactivescheme` ("Power Scheme GUID: <guid>  (Balanced)").
+/// The plans Windows ships are known by their GUID, whatever the language of the name; others are not mapped.
+pub fn win_power_profile(text: &str) -> Option<&'static str> {
+    let t = text.to_lowercase();
+    [
+        ("a1841308-3541-4fab-bc81-f71556f20b4a", "powersave"),
+        ("381b4222-f694-41f0-9685-ff5bb260df2e", "balanced"),
+        ("8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c", "performance"),
+        ("e9a42b02-d5df-448d-aa00-03f14749eb61", "performance"),
+    ]
+    .iter()
+    .find(|(g, _)| t.contains(g))
+    .map(|(_, p)| *p)
+}
+
+/// The GUID of the plan Windows ships for a profile name (the Linux names the island uses everywhere).
+pub fn win_power_guid(profile: &str) -> Option<&'static str> {
+    match profile {
+        "powersave" => Some("a1841308-3541-4fab-bc81-f71556f20b4a"),
+        "balanced" => Some("381b4222-f694-41f0-9685-ff5bb260df2e"),
+        "performance" => Some("8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"),
+        _ => None,
+    }
+}
+
+/// The app a Windows consent-store key stands for: a desktop program is its path with `\` written as `#`
+/// (`C:#Users#me#AppData#Local#Discord#Discord.exe` -> `Discord`), a packaged app its package name
+/// (`Microsoft.WindowsCamera_8wekyb3d8bbwe` -> `WindowsCamera`). The second tells whether it has a process to name.
+pub fn consent_app(key: &str) -> (String, bool) {
+    if key.contains('#') {
+        let file = key.rsplit('#').next().unwrap_or(key);
+        return (file.strip_suffix(".exe").or_else(|| file.strip_suffix(".EXE")).unwrap_or(file).to_string(), true);
+    }
+    let package = key.split('_').next().unwrap_or(key);
+    (package.rsplit('.').next().unwrap_or(package).to_string(), false)
+}
+
 /// What a Windows toast says (the XML the notification database keeps).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Toast {
@@ -185,5 +222,21 @@ mod tests {
         assert_eq!(win_brightness("Get-CimInstance : Not supported"), None);
         assert_eq!(win_brightness("250"), None);
         assert_eq!(win_brightness(""), None);
+    }
+
+    #[test]
+    fn the_windows_power_plan_is_told_by_its_guid() {
+        assert_eq!(win_power_profile("Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)"), Some("balanced"));
+        assert_eq!(win_power_profile("GUID combinazione per il risparmio energia: A1841308-3541-4FAB-BC81-F71556F20B4A  (Risparmio di energia)"), Some("powersave"));
+        assert_eq!(win_power_profile("Power Scheme GUID: 11111111-2222-3333-4444-555555555555  (Mine)"), None);
+        assert_eq!(win_power_guid("performance"), Some("8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"));
+        assert_eq!(win_power_guid("turbo"), None);
+    }
+
+    #[test]
+    fn the_app_behind_a_consent_key_is_named() {
+        assert_eq!(consent_app(r"C:#Users#me#AppData#Local#Discord#app-1.0#Discord.exe"), ("Discord".to_string(), true));
+        assert_eq!(consent_app("Microsoft.WindowsCamera_8wekyb3d8bbwe"), ("WindowsCamera".to_string(), false));
+        assert_eq!(consent_app("Zoom"), ("Zoom".to_string(), false));
     }
 }

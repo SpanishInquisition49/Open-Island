@@ -10,6 +10,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, _settings: std::sync::Arc
     super::generic::start_system(rep.clone());
     super::generic::start_battery(rep.clone());
     super::generic::start_clipboard(rep.clone());
+    super::location::start(rep.clone());
     #[cfg(target_os = "windows")]
     super::windows::start(rep.clone());
     #[cfg(target_os = "macos")]
@@ -21,11 +22,17 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, _settings: std::sync::Arc
                 Command::OpenUrl(u) if u.starts_with("http://") || u.starts_with("https://") || u.starts_with("mailto:") => open_url(&u),
                 Command::RestoreClipboard(t) => super::generic::restore_clipboard(&t),
                 Command::PlanTrip { .. } | Command::SearchPlaces { .. } | Command::PlanRoute { .. } => super::travel::command(&rep2, c),
-                Command::RefreshPosition => {}
+                Command::RefreshPosition => super::location::refresh(),
                 Command::LoadTile { z, x, y, template, dark } => super::tiles::request(&rep2, z, x, y, template, dark),
                 Command::MuteMicStream { .. } => {}
+                #[cfg(windows)]
+                Command::ReconnectNetwork => {
+                    std::thread::spawn(super::netwatch::reconnect);
+                }
+                #[cfg(not(windows))]
                 Command::ReconnectNetwork => {}
-                Command::PauseProcs { .. } | Command::ResumeProcs(_) | Command::QuitProcs(_) => {}
+                Command::PauseProcs { .. } | Command::ResumeProcs(_) | Command::QuitProcs(_) => super::culprit::command(&rep2, &c),
+                Command::PinTrain(_) | Command::UnpinTrain | Command::SetHome(_) => super::trains::command(&rep2, &c),
                 Command::ScanPeers => super::send::scan(rep2.clone()),
                 Command::SendFiles { peer, paths } => super::send::send(rep2.clone(), peer, paths),
                 Command::CopyCode(c) => super::generic::copy_code(&c),

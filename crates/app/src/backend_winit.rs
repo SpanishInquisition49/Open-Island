@@ -3,7 +3,7 @@
 
 use crate::app::App;
 use crate::gpu::Gpu;
-use island_ui::island::TOP_MARGIN;
+use island_ui::island::{MAX_SURFACE, TOP_MARGIN};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
@@ -26,8 +26,23 @@ struct Shell {
     hidden: bool,
     mods: ModifiersState,
     shape: Vec<(i32, i32, i32, i32, i32)>,
+    /// What the island asked of the surface last (the exact size at rest, a box around the animation while it moves).
+    wanted: (f64, f64),
     last_redraw: Instant,
     perf: crate::perf::Perf,
+}
+
+/// Windows keeps one window of a fixed size: resizing a window (and its swap chain) while the island animates is what
+/// made it stutter and flash a rectangle, so only the part that takes the pointer changes.
+const FIXED_WINDOW: bool = cfg!(windows);
+
+/// The size the window should have for what the island asked.
+fn window_size(wanted: (f64, f64)) -> (f64, f64) {
+    if FIXED_WINDOW {
+        (wanted.0.max(MAX_SURFACE.0), wanted.1.max(MAX_SURFACE.1))
+    } else {
+        wanted
+    }
 }
 
 /// Under a fullscreen window the island is out of sight. Under a maximized one it is too, while it rests, unless
@@ -44,7 +59,7 @@ fn attributes() -> WindowAttributes {
         .with_transparent(true)
         .with_resizable(false)
         .with_window_level(WindowLevel::AlwaysOnTop)
-        .with_inner_size(LogicalSize::new(200.0, 60.0))
+        .with_inner_size(if FIXED_WINDOW { LogicalSize::new(MAX_SURFACE.0, MAX_SURFACE.1) } else { LogicalSize::new(200.0, 60.0) })
         .with_visible(false);
     #[cfg(target_os = "windows")]
     {
@@ -96,7 +111,8 @@ impl Shell {
             el.exit();
             return;
         }
-        self.resize_to(&window, f.surface);
+        self.wanted = f.surface;
+        self.resize_to(&window, window_size(f.surface));
         self.animating = f.animating;
         self.next_ms = f.next_ms;
         let scale = window.scale_factor();
@@ -127,20 +143,29 @@ impl Shell {
         self.keyboard_on = kb;
     }
 
-    /// Windows (and any platform without a transparent surface): cut the window to the island's outline.
+    /// Windows: the window's region says what takes the pointer (and, without a transparent surface, what shows).
+    ///
+    /// The window is bigger than the island, so while the island moves the region is the box the animation stays in
+    /// (set once, it does not change from frame to frame) and the exact outline is set when it rests. Setting a
+    /// region is slow: it is only done when the rectangles change.
     #[cfg(target_os = "windows")]
     fn cut_to_shape(&mut self, window: &Window) {
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
         let scale = window.scale_factor();
-        // A transparent window only needs the shape for the clicks (what is not the island lets them through):
-        // while it moves the whole window takes them, and the exact shape is set when it rests. An opaque one is
-        // cut to the shape all the time.
         let transparent = self.gpu.transparent;
         let pad = if transparent { 2.0 } else { 0.0 }; // room for the anti-aliased edge
-        let rects: Vec<(i32, i32, i32, i32, i32)> = if transparent && self.animating {
-            vec![]
+        let px = |v: f64| (v * scale).round() as i32;
+        let rects: Vec<(i32, i32, i32, i32, i32)> = if self.animating {
+            if transparent {
+                // the box of the animation, centred like the island is
+                let ww = self.surface_logical.0;
+                let (bw, bh) = self.wanted;
+                vec![(px((ww - bw) / 2.0), 0, px(bw), px(bh), 0)]
+            } else {
+                self.exact_shape(scale, pad)
+            }
         } else {
-            self.app.island.shape_rects().iter().map(|&(x, y, w, h, r)| (((x - pad) * scale).round() as i32, ((y - pad) * scale).round() as i32, ((w + 2.0 * pad) * scale).round() as i32, ((h + 2.0 * pad) * scale).round() as i32, ((r + pad) * scale).round() as i32)).collect()
+            self.exact_shape(scale, pad)
         };
         if rects == self.shape {
             return;
@@ -151,6 +176,11 @@ impl Shell {
                 self.shape = rects;
             }
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn exact_shape(&self, scale: f64, pad: f64) -> Vec<(i32, i32, i32, i32, i32)> {
+        self.app.island.shape_rects().iter().map(|&(x, y, w, h, r)| (((x - pad) * scale).round() as i32, ((y - pad) * scale).round() as i32, ((w + 2.0 * pad) * scale).round() as i32, ((h + 2.0 * pad) * scale).round() as i32, ((r + pad) * scale).round() as i32)).collect()
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -247,6 +277,14 @@ impl ApplicationHandler<Wake> for Shell {
             WindowEvent::Resized(s) => {
                 self.gpu.resize(s.width, s.height);
             }
+            // another screen, another scale: the window is asked for its size again at the next frame
+            WindowEvent::ScaleFactorChanged { .. } => {
+                self.surface_logical = (0.0, 0.0);
+                self.shape.clear();
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.app.pointer_moved(position.x / scale, position.y / scale);
                 if let Some(w) = &self.window {
@@ -340,7 +378,7 @@ pub fn run() {
         let _ = proxy.send_event(Wake);
     });
     let app = App::new(waker);
-    let mut shell = Shell { app, gpu: Gpu::new(), window: None, surface_logical: (0.0, 0.0), animating: true, next_ms: 0, keyboard_on: false, hidden: false, mods: ModifiersState::empty(), shape: vec![], last_redraw: Instant::now(), perf: crate::perf::Perf::from_env() };
+    let mut shell = Shell { app, gpu: Gpu::new(), window: None, surface_logical: (0.0, 0.0), animating: true, next_ms: 0, keyboard_on: false, hidden: false, mods: ModifiersState::empty(), shape: vec![], wanted: (0.0, 0.0), last_redraw: Instant::now(), perf: crate::perf::Perf::from_env() };
     let _ = (TOP_MARGIN, LogicalPosition::new(0.0, 0.0));
     event_loop.set_control_flow(ControlFlow::Wait);
     if let Err(e) = event_loop.run_app(&mut shell) {

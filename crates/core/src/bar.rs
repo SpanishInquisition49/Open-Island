@@ -4,31 +4,89 @@
 //! 10m tea              timer           remind 20m call mom     a reminder (also: tra 20m / ricordami 15:30 ...)
 //! pomodoro | stopwatch focus 45        dnd on | dnd off
 //! 12*7+3 | sqrt(2)     a sum           5 km in mi | 70 f to c  a conversion
+//! 20% of 150           a share         80 + 15% | 80 - 20%     a price with a rate
+//! pw 24 | uuid | roll 2d6 | coin | random 1-100     something generated (Enter copies)
+//! days until 3 feb | today + 45 days | week | 20 usd in eur     dates and money
+//! split 84.5 by 3      a bill          remind at 9pm / tomorrow 8:30 call   a clock time
 //! ```
 
 /// What a line asks for.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
-    Timer { secs: u64 },
+    /// A countdown, with an optional name (`10m tea`).
+    Timer { secs: u64, label: String },
     Pomodoro,
     Stopwatch,
     Dnd(bool),
     Focus { minutes: u32 },
     /// Remind after `secs` seconds (a clock time has already been turned into a delay).
     Remind { secs: i64, text: String },
+    /// A countdown to five minutes before the next event (`until class`): study in the gap, not past it.
+    UntilNext,
+    /// Show tomorrow now (the evening card, on demand).
+    Tomorrow,
+    /// Show what is left of today now (the morning card, on demand).
+    Today,
+    /// A date to count down to (an exam, a project): `deadline 3 feb Reti exam`. `day` counts days since 1970-01-01.
+    Deadline { day: i64, text: String },
+    /// Pin the usual train (`train pisa centrale 17:12 verso lucca`), unpin it (`train off`), set home (`home 43.7, 10.4` or an address).
+    Train(String),
+    TrainOff,
+    Home(String),
+    /// Something to do, for the list on the Today page (`todo buy milk`).
+    Todo(String),
+    /// The same, but it comes back every day (`todo daily bring the charger`).
+    TodoDaily(String),
+    /// Something to generate (a password, dice): made when Enter is pressed, never while typing.
+    Gen(crate::quick::Gen),
     /// A sum or a conversion: the text to show and to copy.
     Value(String),
+}
+
+/// Examples shown, one set after the other, while the bar is empty: what it can do.
+pub const HINTS: [&str; 5] = [
+    "10m tea · remind at 9pm call mom · todo buy milk",
+    "pw 24 · roll 2d6 · uuid · coin · random 1-100",
+    "days until 3 feb · today + 45 days · week",
+    "20 usd in eur · 5 km in mi · 20% of 150 · 12*7",
+    "recap · agenda · pomodoro · focus 45 · dnd on",
+];
+
+/// How to write a command whose first word was recognised but whose rest was not.
+pub fn usage(line: &str) -> Option<&'static str> {
+    let first = line.split_whitespace().next()?.to_lowercase();
+    Some(match first.as_str() {
+        "remind" | "reminder" | "ricorda" | "ricordami" | "promemoria" | "avvisami" => "remind 20m | at 9pm | tomorrow 8:30 | friday 18 · what to remember",
+        "timer" => "timer 25m [name]  (a bare number is minutes)",
+        "focus" | "studio" => "focus 45  (minutes, or 2h)",
+        "dnd" | "silenzio" => "dnd on | dnd off",
+        "todo" | "task" | "compito" => "todo <what to do>",
+        "split" | "dividi" => "split 84.5 by 3",
+        "days" | "giorni" => "days until 3 feb | days since 2027-01-01",
+        "roll" | "dice" | "dado" | "random" | "pw" | "password" => "roll 2d6 | d20 | random 1-100 | pw 24",
+        _ => return None,
+    })
 }
 
 /// What the bar tells while typing: the preview line and whether Enter does something.
 pub fn preview(cmd: &Cmd) -> String {
     match cmd {
-        Cmd::Timer { secs } => format!("Start a timer · {}", crate::duration::fmt_remaining(*secs as i64 * 1000)),
+        Cmd::Timer { secs, label } => format!("Start a timer · {}{}", crate::duration::fmt_remaining(*secs as i64 * 1000), if label.is_empty() { String::new() } else { format!(" · {label}") }),
         Cmd::Pomodoro => "Start a Pomodoro".into(),
         Cmd::Stopwatch => "Start the stopwatch".into(),
         Cmd::Dnd(on) => format!("Do not disturb {}", if *on { "on" } else { "off" }),
         Cmd::Focus { minutes } => format!("Focus mode · {minutes} min"),
         Cmd::Remind { secs, text } => format!("Remind in {} · {text}", human_delay(*secs)),
+        Cmd::UntilNext => "Timer until 5 min before your next event".into(),
+        Cmd::Tomorrow => "Show tomorrow".into(),
+        Cmd::Today => "Show today".into(),
+        Cmd::Deadline { day, text } => format!("Deadline · {} · {text}", crate::quick::fmt_date(crate::calendar::civil_from_days(*day))),
+        Cmd::Train(q) => format!("Pin the train · {q}"),
+        Cmd::TrainOff => "Unpin the train".into(),
+        Cmd::Home(h) => format!("Set home · {h}"),
+        Cmd::Todo(t) => format!("Add to your list · {t}"),
+        Cmd::TodoDaily(t) => format!("Add to your list, every day · {t}"),
+        Cmd::Gen(g) => crate::quick::preview_gen(g),
         Cmd::Value(v) => format!("{v}   (Enter copies)"),
     }
 }
@@ -46,6 +104,27 @@ fn human_delay(secs: i64) -> String {
 
 /// Parses a line. `local_secs` is the time of day now (seconds since midnight, local), to turn `15:30` into a delay.
 pub fn parse(line: &str, local_secs: i64) -> Option<Cmd> {
+    parse_on(line, local_secs, None)
+}
+
+/// Like `parse`, knowing the day of the week (0 Monday .. 6 Sunday), so that `remind friday 9:00 ...` works.
+pub fn parse_on(line: &str, local_secs: i64, weekday: Option<u8>) -> Option<Cmd> {
+    parse_ctx(line, &Ctx { local_secs, weekday, today: None, rates: &[] })
+}
+
+/// What the parser may need to know about now: the time of day, the weekday, the date, the currency rates.
+pub struct Ctx<'a> {
+    pub local_secs: i64,
+    /// 0 Monday .. 6 Sunday
+    pub weekday: Option<u8>,
+    /// (year, month, day) in local time
+    pub today: Option<crate::quick::Ymd>,
+    /// Units of each currency per euro (the ECB's rates)
+    pub rates: &'a [(String, f64)],
+}
+
+pub fn parse_ctx(line: &str, ctx: &Ctx) -> Option<Cmd> {
+    let (local_secs, weekday) = (ctx.local_secs, ctx.weekday);
     let line = line.trim();
     if line.is_empty() {
         return None;
@@ -53,7 +132,41 @@ pub fn parse(line: &str, local_secs: i64) -> Option<Cmd> {
     let lower = line.to_lowercase();
     let words: Vec<&str> = lower.split_whitespace().collect();
     let first = words[0];
+    if let Some(g) = crate::quick::parse_gen(&words) {
+        return Some(Cmd::Gen(g));
+    }
     match first {
+        "tomorrow" | "domani" | "recap" | "riepilogo" if words.len() == 1 => return Some(Cmd::Tomorrow),
+        "today" | "oggi" | "agenda" if words.len() == 1 => return Some(Cmd::Today),
+        "until" | "fino" if words.len() <= 3 && matches!(words.get(1).copied(), Some("next" | "class" | "lecture" | "event" | "lezione" | "alla" | "prossima")) => return Some(Cmd::UntilNext),
+        "deadline" | "scadenza" | "esame" | "exam" if ctx.today.is_some() => {
+            let today = ctx.today?;
+            let (date, used) = crate::quick::parse_date(&words[1..], today)?;
+            let orig: Vec<&str> = line.split_whitespace().collect();
+            let text = orig[(1 + used).min(orig.len())..].join(" ");
+            // an exam is called by what it is, even when only the word was typed
+            let text = if text.is_empty() { if first == "esame" || first == "exam" { "Exam".to_string() } else { return None } } else { text };
+            return Some(Cmd::Deadline { day: crate::calendar::days_from_civil(date.0, date.1, date.2), text });
+        }
+        "train" | "treno" => {
+            let rest = line.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
+            return match rest.to_lowercase().as_str() {
+                "off" | "unpin" | "none" | "rimuovi" | "basta" => Some(Cmd::TrainOff),
+                _ => crate::train::parse_pin_query(&rest).map(|_| Cmd::Train(rest)),
+            };
+        }
+        "home" | "casa" if words.len() >= 2 => return Some(Cmd::Home(line.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
+        "todo" | "task" | "compito" => {
+            let mut skip = 1;
+            let daily = match words.get(1).copied() {
+                Some("daily" | "giornaliero" | "quotidiano") => { skip = 2; true }
+                Some("every") if words.get(2) == Some(&"day") => { skip = 3; true }
+                Some("ogni") if words.get(2) == Some(&"giorno") => { skip = 3; true }
+                _ => false,
+            };
+            let text = line.split_whitespace().skip(skip).collect::<Vec<_>>().join(" ");
+            return (!text.is_empty()).then_some(if daily { Cmd::TodoDaily(text.clone()) } else { Cmd::Todo(text) });
+        }
         "pomodoro" | "pomo" => return Some(Cmd::Pomodoro),
         "stopwatch" | "cronometro" | "sw" => return Some(Cmd::Stopwatch),
         "dnd" | "silenzio" => {
@@ -68,8 +181,8 @@ pub fn parse(line: &str, local_secs: i64) -> Option<Cmd> {
             return (1..=600).contains(&m).then_some(Cmd::Focus { minutes: m as u32 });
         }
         "timer" => {
-            let (secs, _) = take_duration_bare(&words[1..])?;
-            return Some(Cmd::Timer { secs: secs as u64 });
+            let (secs, used) = take_duration_bare(&words[1..])?;
+            return Some(Cmd::Timer { secs: secs as u64, label: label_after(line, 1 + used) });
         }
         "remind" | "reminder" | "ricorda" | "ricordami" | "promemoria" | "avvisami" | "in" | "tra" | "fra" => {
             let mut rest = &words[1..];
@@ -78,11 +191,16 @@ pub fn parse(line: &str, local_secs: i64) -> Option<Cmd> {
                 if matches!(rest.first(), Some(&("me" | "mi"))) {
                     rest = &rest[1..];
                 }
-                if matches!(rest.first(), Some(&("in" | "tra" | "fra" | "at" | "alle" | "to" | "di"))) && rest.get(1).is_some_and(|_| delay_or_clock(&rest[1..], local_secs).is_some()) {
+                if matches!(rest.first(), Some(&("in" | "tra" | "fra" | "to" | "di"))) && rest.get(1).is_some_and(|_| delay_or_clock(&rest[1..], local_secs, weekday).is_some()) {
                     rest = &rest[1..];
                 }
             }
-            let (secs, used) = delay_or_clock(rest, local_secs)?;
+            // "at 9", "alle 21", "at 9pm": the number is a time of day, not minutes
+            let at_clock = matches!(rest.first(), Some(&("at" | "alle" | "@"))).then(|| clock_delay(rest.get(1)?, local_secs, true)).flatten();
+            let (secs, used) = match at_clock {
+                Some(d) => (d, 2),
+                None => delay_or_clock(rest, local_secs, weekday)?,
+            };
             // the text keeps its own capitals: cut the same number of words from the original line
             let orig: Vec<&str> = line.split_whitespace().collect();
             let skip = words.len() - rest.len() + used;
@@ -97,34 +215,132 @@ pub fn parse(line: &str, local_secs: i64) -> Option<Cmd> {
         _ => {}
     }
     // "10m tea": a duration with a unit first
-    if let Some((secs, _)) = take_duration(&words) {
+    if let Some((secs, used)) = take_duration(&words) {
         if words.len() == 1 || !matches!(words.get(2).copied(), Some("in" | "to" | "as" | "->")) {
-            return Some(Cmd::Timer { secs: secs as u64 });
+            return Some(Cmd::Timer { secs: secs as u64, label: label_after(line, used) });
         }
     }
+    if matches!(first, "split" | "dividi") {
+        return split(&words).map(Cmd::Value);
+    }
+    if let Some(t) = ctx.today {
+        if let Some(v) = crate::quick::date_calc(&lower, t) {
+            return Some(Cmd::Value(v));
+        }
+    }
+    if let Some(v) = crate::quick::convert_currency(&lower, ctx.rates) {
+        return Some(Cmd::Value(v));
+    }
     if let Some(v) = convert(&lower) {
+        return Some(Cmd::Value(v));
+    }
+    if let Some(v) = percent(&lower) {
         return Some(Cmd::Value(v));
     }
     let expr = lower.strip_prefix('=').unwrap_or(&lower);
     eval(expr).map(|v| Cmd::Value(format_number(v)))
 }
 
-fn delay_or_clock(words: &[&str], local_secs: i64) -> Option<(i64, usize)> {
+/// 0 Monday .. 6 Sunday, from the English or Italian name (full or three letters).
+fn weekday_of(w: &str) -> Option<u8> {
+    const DAYS: [&[&str]; 7] = [
+        &["monday", "mon", "lunedi", "lunedì", "lun"],
+        &["tuesday", "tue", "martedi", "martedì", "mar"],
+        &["wednesday", "wed", "mercoledi", "mercoledì", "mer"],
+        &["thursday", "thu", "giovedi", "giovedì", "gio"],
+        &["friday", "fri", "venerdi", "venerdì", "ven"],
+        &["saturday", "sat", "sabato", "sab"],
+        &["sunday", "sun", "domenica", "dom"],
+    ];
+    DAYS.iter().position(|d| d.contains(&w)).map(|i| i as u8)
+}
+
+fn delay_or_clock(words: &[&str], local_secs: i64, weekday: Option<u8>) -> Option<(i64, usize)> {
+    // "friday 9:30" / "venerdì alle 9" / "friday": that day, at that time (nine o'clock when none is given)
+    if let (Some(today), Some(target)) = (weekday, words.first().and_then(|w| weekday_of(w))) {
+        let skip = usize::from(matches!(words.get(1), Some(&("at" | "alle" | "@")))) + 1;
+        let (at, used) = match words.get(skip).and_then(|w| clock_secs(w, true)) {
+            Some(a) => (a, skip + 1),
+            None => (9 * 3600, 1),
+        };
+        let mut days = (target + 7 - today) % 7;
+        if days == 0 && at <= local_secs {
+            days = 7;
+        }
+        return Some((days as i64 * 86_400 - local_secs + at, used));
+    }
+    // "tomorrow 8:30" / "domani 9": that clock time, on the next day
+    if matches!(words.first(), Some(&("tomorrow" | "domani"))) {
+        let at = clock_secs(words.get(1)?, true)?;
+        return Some((86_400 - local_secs + at, 2));
+    }
     if let Some((secs, n)) = take_duration_bare(words) {
         return Some((secs, n));
     }
     // 15:30 or 9.05
     let w = words.first()?;
-    let (h, m) = w.split_once([':', '.'])?;
-    let (h, m): (i64, i64) = (h.parse().ok()?, m.parse().ok()?);
-    if !(0..24).contains(&h) || !(0..60).contains(&m) {
-        return None;
-    }
-    let mut d = h * 3600 + m * 60 - local_secs;
+    clock_delay(w, local_secs, false).map(|d| (d, 1))
+}
+
+/// A time of day as seconds since midnight: `15:30`, `9.05`, and with `bare` also `9`, `9pm`, `9:30am`.
+fn clock_secs(w: &str, bare: bool) -> Option<i64> {
+    let (body, pm) = match (w.strip_suffix("pm"), w.strip_suffix("am")) {
+        (Some(b), _) => (b, Some(true)),
+        (_, Some(b)) => (b, Some(false)),
+        _ => (w, None),
+    };
+    let (h, m): (i64, i64) = match body.split_once([':', '.']) {
+        Some((h, m)) => (h.parse().ok()?, m.parse().ok()?),
+        None if bare || pm.is_some() => (body.parse().ok()?, 0),
+        None => return None,
+    };
+    let h = match pm {
+        Some(true) if (1..=12).contains(&h) => h % 12 + 12,
+        Some(false) if (1..=12).contains(&h) => h % 12,
+        Some(_) => return None,
+        None => h,
+    };
+    ((0..24).contains(&h) && (0..60).contains(&m)).then_some(h * 3600 + m * 60)
+}
+
+/// Seconds until the next time the clock shows `w`.
+fn clock_delay(w: &str, local_secs: i64, bare: bool) -> Option<i64> {
+    let mut d = clock_secs(w, bare)? - local_secs;
     if d <= 0 {
         d += 86_400;
     }
-    Some((d, 1))
+    Some(d)
+}
+
+/// What is left of the line after its first `skip` words, with its own capitals.
+fn label_after(line: &str, skip: usize) -> String {
+    line.split_whitespace().skip(skip).collect::<Vec<_>>().join(" ")
+}
+
+/// A plain number or a sum (`eval` alone wants an operator).
+fn number(s: &str) -> Option<f64> {
+    let s = s.trim();
+    s.parse().ok().or_else(|| eval(s))
+}
+
+/// `20% of 150`, `80 + 15%`, `80 - 20%`: a share of an amount, or an amount raised or cut by a rate.
+fn percent(lower: &str) -> Option<String> {
+    let t = lower.trim();
+    if let Some((rate, base)) = t.split_once("% of ").or_else(|| t.split_once("%of ")).or_else(|| t.split_once(" % of ")) {
+        let (r, b) = (number(rate)?, number(base)?);
+        return Some(format_number(r / 100.0 * b));
+    }
+    let body = t.strip_suffix('%')?;
+    let at = body.rfind(['+', '-'])?;
+    let (base, rate) = (number(&body[..at])?, number(&body[at + 1..])?);
+    Some(format_number(if body.as_bytes()[at] == b'+' { base * (1.0 + rate / 100.0) } else { base * (1.0 - rate / 100.0) }))
+}
+
+/// `split 84.5 by 3`: what each person pays.
+fn split(words: &[&str]) -> Option<String> {
+    let rest: Vec<&str> = words.iter().skip(1).copied().filter(|w| !matches!(*w, "by" | "per" | "tra" | "in" | "for")).collect();
+    let (total, people): (f64, f64) = (rest.first()?.parse().ok()?, rest.get(1)?.parse().ok()?);
+    (rest.len() == 2 && people >= 1.0 && people.fract() == 0.0).then(|| format!("{} each", format_number((total / people * 100.0).round() / 100.0)))
 }
 
 /// A duration that needs a unit (`10m`, `1h30m`, `20 minutes`): seconds and how many words it used.
@@ -441,14 +657,14 @@ mod tests {
 
     #[test]
     fn a_duration_first_is_a_timer() {
-        assert_eq!(p("10m tea"), Some(Cmd::Timer { secs: 600 }));
-        assert_eq!(p("25m"), Some(Cmd::Timer { secs: 1500 }));
-        assert_eq!(p("1h30m"), Some(Cmd::Timer { secs: 5400 }));
-        assert_eq!(p("90s"), Some(Cmd::Timer { secs: 90 }));
-        assert_eq!(p("timer 20 minutes"), Some(Cmd::Timer { secs: 1200 }));
-        assert_eq!(p("timer 25"), Some(Cmd::Timer { secs: 1500 }), "a bare number is minutes");
-        assert_eq!(p("2 ore"), Some(Cmd::Timer { secs: 7200 }));
-        assert_eq!(p("1.5h"), Some(Cmd::Timer { secs: 5400 }));
+        assert_eq!(p("10m tea"), Some(Cmd::Timer { secs: 600, label: "tea".into() }));
+        assert_eq!(p("25m"), Some(Cmd::Timer { secs: 1500, label: String::new() }));
+        assert_eq!(p("1h30m"), Some(Cmd::Timer { secs: 5400, label: String::new() }));
+        assert_eq!(p("90s"), Some(Cmd::Timer { secs: 90, label: String::new() }));
+        assert_eq!(p("timer 20 minutes"), Some(Cmd::Timer { secs: 1200, label: String::new() }));
+        assert_eq!(p("timer 25"), Some(Cmd::Timer { secs: 1500, label: String::new() }), "a bare number is minutes");
+        assert_eq!(p("2 ore"), Some(Cmd::Timer { secs: 7200, label: String::new() }));
+        assert_eq!(p("1.5h"), Some(Cmd::Timer { secs: 5400, label: String::new() }));
     }
 
     #[test]
@@ -462,6 +678,141 @@ mod tests {
         assert_eq!(p("focus 2h"), Some(Cmd::Focus { minutes: 120 }));
         assert_eq!(p("focus"), Some(Cmd::Focus { minutes: 25 }));
         assert_eq!(p("focus 0"), None);
+    }
+
+    #[test]
+    fn a_time_of_day_after_at_is_a_clock_not_minutes() {
+        // p() runs at 12:00
+        assert_eq!(p("remind at 9pm dentist"), Some(Cmd::Remind { secs: 9 * 3600, text: "dentist".into() }));
+        assert_eq!(p("remind me at 14 call"), Some(Cmd::Remind { secs: 2 * 3600, text: "call".into() }));
+        assert_eq!(p("ricordami alle 9 palestra"), Some(Cmd::Remind { secs: 21 * 3600, text: "palestra".into() }), "9 already past: tomorrow");
+        assert_eq!(p("remind at 12:30am x"), Some(Cmd::Remind { secs: 12 * 3600 + 1800, text: "x".into() }));
+        assert_eq!(p("remind tomorrow 8:30 gym"), Some(Cmd::Remind { secs: 12 * 3600 + 8 * 3600 + 1800, text: "gym".into() }));
+        assert_eq!(p("remind domani 9 spesa"), Some(Cmd::Remind { secs: 12 * 3600 + 9 * 3600, text: "spesa".into() }));
+        assert_eq!(p("remind 9 tea"), Some(Cmd::Remind { secs: 540, text: "tea".into() }), "without at, a bare number is still minutes");
+        assert_eq!(p("remind at 25 x"), None);
+    }
+
+    #[test]
+    fn a_timer_can_have_a_name() {
+        assert_eq!(p("10m Tea"), Some(Cmd::Timer { secs: 600, label: "Tea".into() }));
+        assert_eq!(p("timer 25 pasta al forno"), Some(Cmd::Timer { secs: 1500, label: "pasta al forno".into() }));
+        assert_eq!(p("1h30m"), Some(Cmd::Timer { secs: 5400, label: String::new() }));
+        assert_eq!(preview(&Cmd::Timer { secs: 600, label: "tea".into() }), "Start a timer · 10:00 · tea");
+    }
+
+    #[test]
+    fn a_day_of_the_week_is_the_next_one() {
+        // NOON is 12:00; weekday 2 is Wednesday
+        let on = |l: &str| parse_on(l, NOON, Some(2));
+        assert_eq!(on("remind friday 9:30 dentist"), Some(Cmd::Remind { secs: 2 * 86_400 - NOON + 9 * 3600 + 1800, text: "dentist".into() }));
+        assert_eq!(on("ricordami venerdì alle 18 cena"), Some(Cmd::Remind { secs: 2 * 86_400 - NOON + 18 * 3600, text: "cena".into() }));
+        assert_eq!(on("remind monday call"), Some(Cmd::Remind { secs: 5 * 86_400 - NOON + 9 * 3600, text: "call".into() }), "no time: nine o'clock");
+        assert_eq!(on("remind wednesday 9 standup"), Some(Cmd::Remind { secs: 7 * 86_400 - NOON + 9 * 3600, text: "standup".into() }), "today at 9 is past: next week");
+        assert_eq!(on("remind wednesday 18 standup"), Some(Cmd::Remind { secs: 6 * 3600, text: "standup".into() }), "today at 18 is still ahead");
+        assert_eq!(p("remind friday 9 x"), None, "without knowing the weekday it is not understood");
+    }
+
+    #[test]
+    fn the_bar_generates_computes_dates_and_converts_money() {
+        let rates = vec![("USD".to_string(), 1.08)];
+        let ctx = Ctx { local_secs: NOON, weekday: Some(4), today: Some((2027, 1, 15)), rates: &rates };
+        let q = |l: &str| parse_ctx(l, &ctx);
+        assert_eq!(q("pw 24"), Some(Cmd::Gen(crate::quick::Gen::Password(24))));
+        assert_eq!(q("d20"), Some(Cmd::Gen(crate::quick::Gen::Dice { n: 1, sides: 20 })));
+        assert!(matches!(q("days until 3 feb"), Some(Cmd::Value(v)) if v.ends_with("in 19 days (2 weeks 5 days)")));
+        assert!(matches!(q("today + 2 weeks"), Some(Cmd::Value(v)) if v.ends_with("= Fri 29 Jan 2027")));
+        assert_eq!(q("20 usd in eur"), Some(Cmd::Value("20 USD = 18.519 EUR".into())));
+        assert_eq!(q("5 km in mi").map(|c| matches!(c, Cmd::Value(_))), Some(true), "units still work");
+        assert!(matches!(q("2m"), Some(Cmd::Timer { secs: 120, .. })), "a duration is still a timer");
+        assert!(matches!(q("10m tea"), Some(Cmd::Timer { .. })));
+        assert!(matches!(q("12*7"), Some(Cmd::Value(_))));
+        assert_eq!(parse("pw", NOON), Some(Cmd::Gen(crate::quick::Gen::Password(20))), "no date needed for those");
+        assert_eq!(parse("days until 3 feb", NOON), None, "without today a date means nothing");
+        assert_eq!(preview(&Cmd::Gen(crate::quick::Gen::Coin)), "Flip a coin");
+    }
+
+    #[test]
+    fn a_half_written_command_gets_its_usage_and_the_empty_bar_its_examples() {
+        assert!(usage("remind").unwrap().contains("at 9pm"));
+        assert!(usage("Timer banana").unwrap().starts_with("timer 25m"));
+        assert_eq!(usage("hello world"), None);
+        assert_eq!(usage(""), None);
+        assert!(HINTS.iter().all(|h| h.chars().count() <= 60), "one line of the bar");
+        // every example is something the parser understands (the first words of each, at least)
+        for ex in ["10m tea", "remind at 9pm call mom", "todo buy milk", "pw 24", "roll 2d6", "uuid", "coin", "random 1-100", "5 km in mi", "20% of 150", "12*7", "recap", "agenda", "pomodoro", "focus 45", "dnd on"] {
+            assert!(parse(ex, NOON).is_some(), "{ex}");
+        }
+    }
+
+    #[test]
+    fn tomorrow_alone_shows_tomorrow_and_with_more_words_is_something_else() {
+        assert_eq!(p("tomorrow"), Some(Cmd::Tomorrow));
+        assert_eq!(p("domani"), Some(Cmd::Tomorrow));
+        assert_eq!(p("recap"), Some(Cmd::Tomorrow));
+        assert!(matches!(p("remind domani 9 spesa"), Some(Cmd::Remind { .. })), "more words: a reminder");
+        assert_eq!(preview(&Cmd::Tomorrow), "Show tomorrow");
+        assert_eq!((p("today"), p("oggi"), p("agenda")), (Some(Cmd::Today), Some(Cmd::Today), Some(Cmd::Today)));
+        assert_eq!(preview(&Cmd::Today), "Show today");
+    }
+
+    #[test]
+    fn the_bar_pins_a_train_and_sets_home() {
+        assert_eq!(p("treno pisa centrale 17:12 verso lucca"), Some(Cmd::Train("pisa centrale 17:12 verso lucca".into())));
+        assert_eq!(p("train from Pisa Centrale 7:05"), Some(Cmd::Train("from Pisa Centrale 7:05".into())));
+        assert_eq!(p("train pisa centrale"), None, "a train needs its time");
+        assert_eq!(p("train off"), Some(Cmd::TrainOff));
+        assert_eq!(p("treno basta"), Some(Cmd::TrainOff));
+        assert_eq!(p("home 43.7085, 10.4036"), Some(Cmd::Home("43.7085, 10.4036".into())));
+        assert_eq!(p("casa Via Roma 1 Pisa"), Some(Cmd::Home("Via Roma 1 Pisa".into())));
+        assert_eq!(p("home"), None, "home alone is not a command");
+        assert_eq!(preview(&Cmd::TrainOff), "Unpin the train");
+    }
+
+    #[test]
+    fn until_the_next_class() {
+        assert_eq!((p("until class"), p("until next"), p("fino alla lezione")), (Some(Cmd::UntilNext), Some(Cmd::UntilNext), Some(Cmd::UntilNext)));
+        assert_eq!(p("until banana"), None);
+        assert_eq!(preview(&Cmd::UntilNext), "Timer until 5 min before your next event");
+    }
+
+    #[test]
+    fn a_deadline_is_a_date_and_a_name() {
+        let ctx = Ctx { local_secs: NOON, weekday: Some(4), today: Some((2027, 1, 15)), rates: &[] };
+        let d = |l: &str| parse_ctx(l, &ctx);
+        let feb3 = crate::calendar::days_from_civil(2027, 2, 3);
+        assert_eq!(d("deadline 3 feb Reti exam"), Some(Cmd::Deadline { day: feb3, text: "Reti exam".into() }));
+        assert_eq!(d("esame 2027-02-03 Algoritmi e Strutture"), Some(Cmd::Deadline { day: feb3, text: "Algoritmi e Strutture".into() }));
+        assert_eq!(d("scadenza 3/2 consegna progetto"), Some(Cmd::Deadline { day: feb3, text: "consegna progetto".into() }));
+        assert_eq!(d("exam 3 feb"), Some(Cmd::Deadline { day: feb3, text: "Exam".into() }));
+        assert_eq!(d("deadline 3 feb"), None, "a deadline needs a name");
+        assert_eq!(d("deadline banana x"), None);
+        assert_eq!(parse("deadline 3 feb x", NOON), None, "no date known: no deadline");
+        assert_eq!(preview(&Cmd::Deadline { day: feb3, text: "x".into() }), "Deadline · Wed 3 Feb 2027 · x");
+    }
+
+    #[test]
+    fn a_todo_keeps_its_capitals() {
+        assert_eq!(p("todo Buy milk"), Some(Cmd::Todo("Buy milk".into())));
+        assert_eq!(p("compito  chiamare   Anna"), Some(Cmd::Todo("chiamare Anna".into())));
+        assert_eq!(p("todo"), None);
+        assert_eq!(p("todo daily Bring the charger"), Some(Cmd::TodoDaily("Bring the charger".into())));
+        assert_eq!(p("todo ogni giorno portare il caricatore"), Some(Cmd::TodoDaily("portare il caricatore".into())));
+        assert_eq!(p("todo every day lunch"), Some(Cmd::TodoDaily("lunch".into())));
+        assert_eq!(p("todo daily"), None);
+        assert_eq!(preview(&Cmd::Todo("x".into())), "Add to your list · x");
+    }
+
+    #[test]
+    fn shares_rates_and_bills() {
+        assert_eq!(p("20% of 150"), Some(Cmd::Value("30".into())));
+        assert_eq!(p("15 % of 80"), Some(Cmd::Value("12".into())));
+        assert_eq!(p("80 + 15%"), Some(Cmd::Value("92".into())));
+        assert_eq!(p("80 - 20%"), Some(Cmd::Value("64".into())));
+        assert_eq!(p("split 84.5 by 3"), Some(Cmd::Value("28.17 each".into())));
+        assert_eq!(p("dividi 90 3"), Some(Cmd::Value("30 each".into())));
+        assert_eq!(p("split 90 0"), None);
+        assert_eq!(p("10 % 3"), Some(Cmd::Value("1".into())), "modulo still works");
     }
 
     #[test]
@@ -541,7 +892,7 @@ mod tests {
 
     #[test]
     fn previews_say_what_enter_will_do() {
-        assert_eq!(preview(&Cmd::Timer { secs: 600 }), "Start a timer · 10:00");
+        assert_eq!(preview(&Cmd::Timer { secs: 600, label: String::new() }), "Start a timer · 10:00");
         assert_eq!(preview(&Cmd::Remind { secs: 1200, text: "x".into() }), "Remind in 20 min · x");
         assert_eq!(preview(&Cmd::Remind { secs: 7500, text: "y".into() }), "Remind in 2 h 5 min · y");
         assert_eq!(preview(&Cmd::Dnd(false)), "Do not disturb off");

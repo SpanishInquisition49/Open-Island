@@ -94,6 +94,30 @@ pub struct Event {
     pub location: String,
 }
 
+/// An event as JSON, for the copy kept on disk (so that the schedule is there without a network).
+pub fn event_to_json(e: &Event) -> serde_json::Value {
+    serde_json::json!({
+        "id": e.id, "title": e.title, "start": e.start_ms, "end": e.end_ms, "all_day": e.all_day, "url": e.url,
+        "color": e.color.map(|(r, g, b)| [r, g, b]), "calendar": e.calendar, "location": e.location,
+    })
+}
+
+pub fn event_from_json(v: &serde_json::Value) -> Option<Event> {
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let color = v.get("color").and_then(|c| c.as_array()).and_then(|c| Some((c.first()?.as_u64()? as u8, c.get(1)?.as_u64()? as u8, c.get(2)?.as_u64()? as u8)));
+    Some(Event {
+        id: s("id"),
+        title: s("title"),
+        start_ms: v.get("start")?.as_i64()?,
+        end_ms: v.get("end")?.as_i64()?,
+        all_day: v.get("all_day").and_then(|x| x.as_bool()).unwrap_or(false),
+        url: v.get("url").and_then(|x| x.as_str()).map(str::to_string),
+        color,
+        calendar: s("calendar"),
+        location: s("location"),
+    })
+}
+
 /// Events overlapping [start, end), all-day ones first, then by start time.
 pub fn events_between(events: &[Event], start_ms: i64, end_ms: i64) -> Vec<&Event> {
     let mut out: Vec<&Event> = events.iter().filter(|e| e.start_ms < end_ms && e.end_ms > start_ms).collect();
@@ -211,4 +235,14 @@ mod tests {
         assert_eq!(out[0].id, "d");
         assert_eq!(events_between(&evs, 5000, 6000).len(), 1);
     }
+
+    #[test]
+    fn an_event_survives_the_trip_to_disk() {
+        let e = Event { id: "a".into(), title: "Reti".into(), start_ms: 1, end_ms: 2, all_day: true, url: Some("https://x".into()), color: Some((1, 2, 3)), calendar: "Uni".into(), location: "Aula 3".into() };
+        assert_eq!(event_from_json(&event_to_json(&e)), Some(e));
+        let bare = Event { id: "b".into(), start_ms: 5, end_ms: 6, ..Default::default() };
+        assert_eq!(event_from_json(&event_to_json(&bare)), Some(bare));
+        assert_eq!(event_from_json(&serde_json::json!({"title": "no times"})), None);
+    }
 }
+

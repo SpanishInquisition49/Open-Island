@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 const NOMINATIM: &str = "https://nominatim.openstreetmap.org/search";
 const OSRM: &str = "https://router.project-osrm.org/route/v1/driving";
 const TRANSITOUS: &str = "https://api.transitous.org/api/v1/plan";
+const STOPS: &str = "https://api.transitous.org/api/v1/map/stops";
 
 /// Places already looked up (None: nothing found), kept for the run.
 type Coords = Option<(f64, f64)>;
@@ -61,14 +62,20 @@ pub fn plan(mode: Mode, from: (f64, f64), to: (f64, f64), start_ms: i64, margin_
             Ok(Trip { secs, meters: Some(meters), leave_ms: Some(tr::leave_for(start_ms, secs, margin_secs)), transfers: None })
         }
         Mode::Walk => {
-            let secs = transit_plan(from, to, start_ms, false).ok().and_then(|j| tr::parse_walk(&j)).unwrap_or_else(|| tr::walk_estimate(from, to));
+            let secs = transit_plan(from, to, start_ms, false, false).ok().and_then(|j| tr::parse_walk(&j)).unwrap_or_else(|| tr::walk_estimate(from, to));
             Ok(Trip { secs, meters: None, leave_ms: Some(tr::leave_for(start_ms, secs, margin_secs)), transfers: None })
         }
-        Mode::Transit => {
-            let j = transit_plan(from, to, start_ms, true)?;
+        Mode::Transit | Mode::Train => {
+            let rail = mode == Mode::Train;
+            if rail {
+                if let Some(t) = rail_trip(from, to, start_ms, margin_secs) {
+                    return Ok(t);
+                }
+            }
+            let j = transit_plan(from, to, start_ms, true, rail)?;
             // a short trip has no bus worth taking: the planner then offers the walk
             let Some(mut t) = tr::parse_transit(&j, start_ms) else {
-                let secs = tr::parse_walk(&j).ok_or("no public transport in time")?;
+                let secs = tr::parse_walk(&j).ok_or(if rail { "no train in time" } else { "no public transport in time" })?;
                 return Ok(Trip { secs, meters: None, leave_ms: Some(tr::leave_for(start_ms, secs, margin_secs)), transfers: None });
             };
             // the margin: leave earlier by what was asked for
@@ -78,10 +85,66 @@ pub fn plan(mode: Mode, from: (f64, f64), to: (f64, f64), start_ms: i64, margin_
     }
 }
 
-fn transit_plan(from: (f64, f64), to: (f64, f64), start_ms: i64, arrive_by: bool) -> Result<String, String> {
+/// The railway stop nearest to a place: a few kilometres around it are looked at, then a wider square.
+fn rail_stop_near(at: (f64, f64)) -> Option<tr::RailStop> {
+    for d in [0.06, 0.25] {
+        let (min, max) = (format!("{},{}", at.0 - d, at.1 - d), format!("{},{}", at.0 + d, at.1 + d));
+        if let Some(stop) = get(STOPS, &[("min", &min), ("max", &max)]).ok().and_then(|j| tr::rail_stops_near(&j, at).into_iter().next()) {
+            return Some(stop);
+        }
+    }
+    None
+}
+
+/// The ride between two stops, rail only.
+fn rail_ride(from_stop: &str, to_stop: &str, start_ms: i64, arrive_by: bool) -> Result<String, String> {
+    let iso = tr::iso_utc(start_ms);
+    get(TRANSITOUS, &[("fromPlace", from_stop), ("toPlace", to_stop), ("time", &iso), ("arriveBy", if arrive_by { "true" } else { "false" }), ("numItineraries", "5"), ("transitModes", "RAIL")])
+}
+
+/// A walk between two points: the planner's own, else a straight line and an estimate.
+fn walk_leg(a: (f64, f64), b: (f64, f64), at_ms: i64) -> (i64, Vec<tr::Segment>) {
+    transit_plan(a, b, at_ms, false, false).ok().as_deref().and_then(tr::parse_walk_path).unwrap_or_else(|| (tr::walk_estimate(a, b), vec![tr::Segment { points: vec![a, b], walk: true }]))
+}
+
+/// By train as a person thinks of it: on foot to the station nearest to where you are, the train, off at the station nearest to where you
+/// are going, on foot from there. None when there is no such pair of stations or no train between them (the caller then lets the planner choose).
+fn rail_route(from: (f64, f64), to: (f64, f64), now_ms: i64) -> Option<(Trip, Vec<tr::Segment>)> {
+    let (s1, s2) = (rail_stop_near(from)?, rail_stop_near(to)?);
+    if s1.id == s2.id {
+        return None;
+    }
+    let walk_in = walk_leg(from, (s1.lat, s1.lon), now_ms);
+    let walk_out = walk_leg((s2.lat, s2.lon), to, now_ms + walk_in.0 * 1000);
+    let ride = rail_ride(&s1.id, &s2.id, now_ms + walk_in.0 * 1000, false).ok().as_deref().and_then(tr::parse_transit_now)?;
+    Some(tr::compose_rail(now_ms, walk_in, ride, walk_out))
+}
+
+/// The same for arriving by `arrive_ms`: when to leave, door to door.
+fn rail_trip(from: (f64, f64), to: (f64, f64), arrive_ms: i64, margin_secs: i64) -> Option<Trip> {
+    let (s1, s2) = (rail_stop_near(from)?, rail_stop_near(to)?);
+    if s1.id == s2.id {
+        return None;
+    }
+    let walk_in = tr::walk_estimate(from, (s1.lat, s1.lon));
+    let walk_out = tr::walk_estimate((s2.lat, s2.lon), to);
+    let at_stop2 = arrive_ms - walk_out * 1000;
+    let ride = rail_ride(&s1.id, &s2.id, at_stop2, true).ok().as_deref().and_then(|j| tr::parse_transit(j, at_stop2))?;
+    Some(Trip { secs: walk_in + ride.secs + walk_out, meters: None, leave_ms: ride.leave_ms.map(|l| l - (walk_in + margin_secs) * 1000), transfers: ride.transfers })
+}
+
+/// A plan from the transit planner; `rail` keeps only the railways (Trenitalia and the like), with the walks to the stations.
+fn transit_plan(from: (f64, f64), to: (f64, f64), start_ms: i64, arrive_by: bool, rail: bool) -> Result<String, String> {
     let (f, t) = (format!("{},{}", from.0, from.1), format!("{},{}", to.0, to.1));
     let iso = tr::iso_utc(start_ms);
-    get(TRANSITOUS, &[("fromPlace", &f), ("toPlace", &t), ("time", &iso), ("arriveBy", if arrive_by { "true" } else { "false" }), ("numItineraries", "5"), ("maxDirectTime", "7200")])
+    let mut q: Vec<(&str, &str)> = vec![("fromPlace", &f), ("toPlace", &t), ("time", &iso), ("arriveBy", if arrive_by { "true" } else { "false" }), ("numItineraries", "5"), ("maxDirectTime", "7200")];
+    if rail {
+        q.push(("transitModes", "RAIL"));
+        // the stations may be an hour's walk away: the planner gives up after fifteen minutes unless it is told otherwise
+        q.push(("maxPreTransitTime", "3600"));
+        q.push(("maxPostTransitTime", "3600"));
+    }
+    get(TRANSITOUS, &q)
 }
 
 /// The places for a name, near a point when there is one (the answers nearest to it come first).
@@ -111,9 +174,14 @@ pub fn route_now(mode: Mode, from: (f64, f64), to: (f64, f64), now_ms: i64) -> R
             let path = tr::parse_osrm_path(&j);
             Ok((Trip { secs, meters: Some(meters), leave_ms: Some(now_ms), transfers: None }, if path.len() >= 2 { vec![tr::Segment { points: path, walk: false }] } else { straight(false) }))
         }
-        Mode::Walk | Mode::Transit => {
-            let j = transit_plan(from, to, now_ms, false).ok();
-            if mode == Mode::Transit {
+        Mode::Walk | Mode::Transit | Mode::Train => {
+            if mode == Mode::Train {
+                if let Some(found) = rail_route(from, to, now_ms) {
+                    return Ok(found);
+                }
+            }
+            let j = transit_plan(from, to, now_ms, false, mode == Mode::Train).ok();
+            if mode != Mode::Walk {
                 if let Some((trip, segs)) = j.as_deref().and_then(tr::parse_transit_now) {
                     return Ok((trip, segs));
                 }
@@ -162,10 +230,7 @@ pub fn command(rep: &Reporter, c: Command) {
     std::thread::spawn(move || {
         let settings = crate::config::load();
         // from where the machine is (a GeoClue fix of the last quarter hour, asked for when there is none), else the settings
-        #[cfg(target_os = "linux")]
         let here = if settings.ui.follow_position { super::location::recent().or_else(|| super::location::fix(6).map(|(la, lo, _)| (la, lo))) } else { None };
-        #[cfg(not(target_os = "linux"))]
-        let here: Option<(f64, f64)> = None;
         let from = here.or(settings.latitude.zip(settings.longitude));
         let mut dest_found = None;
         let outcome = match from {
@@ -201,7 +266,7 @@ mod tests {
         assert!(!found.is_empty());
         let to = (found[0].lat, found[0].lon);
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
-        for mode in [Mode::Car, Mode::Walk, Mode::Transit] {
+        for mode in [Mode::Car, Mode::Walk, Mode::Transit, Mode::Train] {
             let (trip, segs) = route_now(mode, here, to, now).unwrap_or_else(|e| panic!("{mode:?}: {e}"));
             eprintln!("{mode:?}: {} {} segments, {} points", tr::fmt_secs(trip.secs), segs.len(), segs.iter().map(|s| s.points.len()).sum::<usize>());
             assert!(segs.iter().all(|s| s.points.len() >= 2) && trip.secs > 0);
@@ -218,10 +283,28 @@ mod tests {
         eprintln!("Firenze by transit: {} leave {:?} transfers {:?}", tr::fmt_secs(t.secs), t.leave_ms.map(tr::iso_utc), t.transfers);
         assert!(t.secs > 1800, "a train ride");
         let start = tr::parse_iso("2026-11-23T08:30:00Z").unwrap();
-        for mode in [Mode::Car, Mode::Walk, Mode::Transit] {
+        for mode in [Mode::Car, Mode::Walk, Mode::Transit, Mode::Train] {
             let t = plan(mode, from, to, start, 300).unwrap_or_else(|e| panic!("{mode:?}: {e}"));
             eprintln!("{mode:?}: {} leave {:?}", tr::fmt_secs(t.secs), t.leave_ms);
             assert!(t.secs > 0);
         }
     }
+
+    /// The way by train from the university in Pisa to a home near Pietrasanta: `cargo test -p open-island live_by_train -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "needs the network"]
+    fn live_by_train() {
+        let (polo, home) = ((43.7208, 10.4072), (43.964268, 10.221497));
+        let (s1, s2) = (rail_stop_near(polo).unwrap(), rail_stop_near(home).unwrap());
+        eprintln!("nearest to the polo: {} ({:.0} m); nearest to home: {} ({:.0} m)", s1.name, s1.metres, s2.name, s2.metres);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+        let (trip, segs) = route_now(Mode::Train, polo, home, now).expect("a way by train");
+        eprintln!("by train: {} in {} segments ({:?}), transfers {:?}", tr::fmt_secs(trip.secs), segs.len(), segs.iter().map(|s| if s.walk { "walk" } else { "train" }).collect::<Vec<_>>(), trip.transfers);
+        assert_eq!(segs.iter().map(|s| s.walk).collect::<Vec<_>>(), [true, false, true], "on foot, by train, on foot");
+        assert!(trip.secs > 40 * 60, "{}", trip.secs);
+        let t = plan(Mode::Train, polo, home, now + 4 * 3_600_000, 300).expect("a trip by train");
+        eprintln!("to arrive in 4 h: leave {:?}, {}", t.leave_ms.map(tr::iso_utc), tr::fmt_secs(t.secs));
+        assert!(t.leave_ms.unwrap() < now + 4 * 3_600_000);
+    }
 }
+

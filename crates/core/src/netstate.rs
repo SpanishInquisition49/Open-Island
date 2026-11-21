@@ -67,6 +67,29 @@ pub fn is_vpn_iface(name: &str) -> bool {
     ["tun", "tap", "wg", "ppp", "tailscale", "proton", "mullvad", "nordlynx", "zt"].iter().any(|p| name.starts_with(p))
 }
 
+/// The gateway of the default route from `route print -4 0.0.0.0` (the table is numbers only, so any language reads
+/// the same): rows `0.0.0.0  0.0.0.0  <gateway>  <interface>  <metric>`, the lowest metric wins. "On-link" gateways have no address.
+pub fn windows_gateway(table: &str) -> Option<[u8; 4]> {
+    let parse = |s: &str| -> Option<[u8; 4]> {
+        let v: Vec<u8> = s.split('.').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+        <[u8; 4]>::try_from(v).ok()
+    };
+    table
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            (f.len() == 5 && f[0] == "0.0.0.0" && f[1] == "0.0.0.0").then(|| Some((f[4].parse::<u32>().ok()?, parse(f[2])?)))?
+        })
+        .min_by_key(|(m, _)| *m)
+        .map(|(_, g)| g)
+}
+
+/// Does a list of adapter descriptions (one per line, the ones that are up) hold a tunnel adapter.
+pub fn any_vpn_adapter(descriptions: &str) -> bool {
+    const WORDS: &[&str] = &["tap-windows", "wintun", "wireguard", "tailscale", "openvpn", "anyconnect", "fortinet", "nordlynx", "proton", "mullvad", "vpn", "zerotier", "pangp", "sonicwall"];
+    descriptions.lines().map(str::to_lowercase).any(|d| WORDS.iter().any(|w| d.contains(w)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +122,20 @@ mod tests {
     fn tunnels_are_recognised() {
         assert!(is_vpn_iface("wg0") && is_vpn_iface("tun0") && is_vpn_iface("tailscale0"));
         assert!(!is_vpn_iface("wlan0") && !is_vpn_iface("eth0") && !is_vpn_iface("docker0"));
+    }
+
+    #[test]
+    fn the_windows_route_table_gives_the_gateway() {
+        let t = "===========\nIPv4 Route Table\n===========\nActive Routes:\nNetwork Destination        Netmask          Gateway       Interface  Metric\n          0.0.0.0          0.0.0.0      192.168.1.1    192.168.1.50     25\n          0.0.0.0          0.0.0.0       10.0.0.1       10.0.0.7    300\n        127.0.0.0        255.0.0.0         On-link         127.0.0.1    331\n";
+        assert_eq!(windows_gateway(t), Some([192, 168, 1, 1]));
+        assert_eq!(windows_gateway("          0.0.0.0          0.0.0.0         On-link     192.168.1.50     25"), None);
+        assert_eq!(windows_gateway(""), None);
+    }
+
+    #[test]
+    fn tunnel_adapters_are_recognised() {
+        assert!(any_vpn_adapter("Intel(R) Wi-Fi 6 AX201\nWireGuard Tunnel\n"));
+        assert!(any_vpn_adapter("TAP-Windows Adapter V9"));
+        assert!(!any_vpn_adapter("Intel(R) Ethernet Connection\nRealtek PCIe GbE Family Controller\n"));
     }
 }

@@ -180,7 +180,7 @@ pub fn send_files(peer: &Peer, paths: &[String], mut on: impl FnMut(Progress)) -
 /// Sends in the background: the progress pill shows it, and a card says how it ended.
 pub fn send(rep: Reporter, peer: Peer, paths: Vec<String>) {
     std::thread::spawn(move || {
-        let act = |detail: String, frac: Option<f64>| Activity { label: format!("Sending to {}", peer.alias), detail, icon: Some("send".into()), tint: None, frac };
+        let act = |detail: String, frac: Option<f64>| Activity { id: "send".into(), label: format!("Sending to {}", peer.alias), detail, icon: Some("send".into()), tint: None, frac };
         let last = Mutex::new(Instant::now() - Duration::from_secs(1));
         let result = send_files(&peer, &paths, |p| {
             let (detail, frac) = match p {

@@ -11,6 +11,8 @@ vello = "0.12"
 skrifa = { version = "0.49", default-features = false, features = ["std"] }
 fontdb = "0.24"
 log = "0.4"
+# the OS random source, for passwords and dice from the command bar
+getrandom = "0.3"
 
 [dev-dependencies]
 png = "0.18"

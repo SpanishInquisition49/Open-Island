@@ -193,6 +193,7 @@ fn main() {
         ("lyrics-scroll", Box::new(|i, d| { media(d, true); d.media.as_mut().unwrap().position_ms = 109_600.0; i.push(NOW, Input::Peek); })),
         ("media-timer-bubble", Box::new(|i, d| { media(d, true); i.push(NOW, Input::StartTimer(600)); })),
         ("timer-mini", Box::new(|i, _| i.push(NOW, Input::StartTimer(1500)))),
+        ("timer-parallel", Box::new(|i, _| { i.push(NOW, Input::StartTimer(1500)); i.push(NOW, Input::StartTimer(180)); i.push(NOW, Input::StartTimer(900)); i.push(NOW, Input::OpenPage(island_core::face::Page::Timer)); })),
         ("timer-full", Box::new(|i, _| { i.push(NOW, Input::StartTimer(1500)); i.push(NOW, Input::Peek); })),
         ("progress-card", Box::new(|i, _| i.push(NOW, Input::Progress("64 rsync backup".into())))),
         ("progress-bubble", Box::new(|i, _| i.push(NOW - 5000, Input::Progress("64 rsync backup".into())))),
@@ -200,8 +201,8 @@ fn main() {
         ("device-low", Box::new(|i, _| i.push(NOW, Input::DeviceLow(island_ui::model::Device { id: "x".into(), name: "Nothing Ear".into(), kind: island_core::bluetooth::Kind::Earbuds, battery: Some(12) })))),
         ("qs-devices", Box::new(|i, d| { d.devices = vec![island_ui::model::Device { id: "x".into(), name: "Sony XM5".into(), kind: island_core::bluetooth::Kind::Headphones, battery: Some(85) }, island_ui::model::Device { id: "y".into(), name: "Nothing Ear".into(), kind: island_core::bluetooth::Kind::Earbuds, battery: Some(12) }, island_ui::model::Device { id: "z".into(), name: "MX Master".into(), kind: island_core::bluetooth::Kind::Mouse, battery: None }]; i.push(NOW, Input::OpenPage(island_core::face::Page::Qs)) })),
         ("progress-done", Box::new(|i, _| { i.push(NOW, Input::Progress("64 rsync backup".into())); i.push(NOW, Input::ProgressDone("rsync backup".into())) })),
-        ("activity-run", Box::new(|i, _| i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { label: "CI main".into(), detail: "building 3/5".into(), icon: Some("git-branch".into()), tint: Some((255, 159, 10)), frac: None })))),
-        ("activity-fail", Box::new(|i, _| { i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { label: "CI main".into(), icon: Some("git-branch".into()), ..Default::default() })); i.push(NOW, Input::Activity(island_core::progress::State::Fail, island_core::progress::Activity { label: "CI main".into(), detail: "2 tests failed".into(), ..Default::default() })) })),
+        ("activity-run", Box::new(|i, _| i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { id: String::new(), label: "CI main".into(), detail: "building 3/5".into(), icon: Some("git-branch".into()), tint: Some((255, 159, 10)), frac: None })))),
+        ("activity-fail", Box::new(|i, _| { i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { id: String::new(), label: "CI main".into(), icon: Some("git-branch".into()), ..Default::default() })); i.push(NOW, Input::Activity(island_core::progress::State::Fail, island_core::progress::Activity { id: String::new(), label: "CI main".into(), detail: "2 tests failed".into(), ..Default::default() })) })),
         ("osd", Box::new(|i, _| i.push(NOW, Input::Osd { kind: OsdKind::Volume, level: 0.62, muted: false }))),
         ("power-low", Box::new(|i, _| i.push(NOW, Input::Power(PowerEvent::Low)))),
         ("notif", Box::new(|i, _| i.push(NOW, Input::Notification(Incoming { id: 1, app: "Telegram".into(), summary: "Marco".into(), body: "Ci vediamo alle 18 in aula?".into(), ..Default::default() })))),
@@ -220,6 +221,68 @@ fn main() {
             let ev = |t: &str, h: i64, m: i64, dur: i64, url: bool| island_core::calendar::Event { id: t.into(), title: t.into(), start_ms: NOW / 86_400_000 * 86_400_000 + (h * 60 + m) * 60_000, end_ms: NOW / 86_400_000 * 86_400_000 + (h * 60 + m + dur) * 60_000, all_day: false, url: url.then(|| "https://meet.example/x".to_string()), color: Some((90, 160, 255)), calendar: "Uni".into(), location: String::new() };
             d.events = vec![ev("Reti di calcolatori", 8, 30, 120, false), ev("Pranzo", 12, 30, 60, false), ev("Ricevimento", 15, 0, 45, true), ev("Studio di gruppo", 17, 0, 90, false)];
             i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
+        })),
+        ("page-today-running", Box::new(|i, d| {
+            let ev = |t: &str, h: i64, m: i64, dur: i64| island_core::calendar::Event { id: t.into(), title: t.into(), start_ms: NOW / 86_400_000 * 86_400_000 + (h * 60 + m) * 60_000, end_ms: NOW / 86_400_000 * 86_400_000 + (h * 60 + m + dur) * 60_000, all_day: false, url: None, color: Some((90, 160, 255)), calendar: "Uni".into(), location: String::new() };
+            d.events = vec![ev("Reti di calcolatori", 8, 30, 120), ev("Pranzo", 12, 30, 60)];
+            i.push(NOW, Input::StartTimer(1500));
+            i.push(NOW, Input::Progress("64 rsync backup".into()));
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
+        })),
+        ("page-today-agents", Box::new(|i, _| {
+            let act = |id: &str, label: &str, detail: &str, f: Option<f64>| island_core::progress::Activity { id: id.into(), label: label.into(), detail: detail.into(), icon: Some("bolt".into()), frac: f, ..Default::default() };
+            i.push(NOW, Input::Activity(island_core::progress::State::Run, act("s1", "Claude · site", "Edit lib.rs", None)));
+            i.push(NOW, Input::Activity(island_core::progress::State::Run, act("s2", "Codex · api", "running tests", Some(0.6))));
+            i.push(NOW, Input::StartNamedTimer(900, "pasta".into()));
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
+        })),
+        ("page-today-evening", Box::new(|i, d| {
+            let day = NOW / 86_400_000 * 86_400_000;
+            let ev = |t: &str, h: i64, m: i64, dur: i64| island_core::calendar::Event { id: t.into(), title: t.into(), start_ms: day + 86_400_000 + (h * 60 + m) * 60_000, end_ms: day + 86_400_000 + (h * 60 + m + dur) * 60_000, all_day: false, url: None, color: Some((90, 160, 255)), calendar: "Uni".into(), location: String::new() };
+            d.events = vec![ev("Reti di calcolatori", 8, 30, 120), ev("Algorithm Engineering", 11, 0, 90), ev("Laboratorio", 14, 0, 120)];
+            i.restore_todos(["Comprare il latte", "Chiamare Anna", "Restituire il libro in biblioteca"].iter().map(|t| island_ui::island::Todo { text: t.to_string(), ..Default::default() }).collect());
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
+        })),
+        ("evening-card", Box::new(|i, d| {
+            let day = NOW / 86_400_000 * 86_400_000 + 86_400_000;
+            let ev = |t: &str, h: i64, m: i64| island_core::calendar::Event { id: t.into(), title: t.into(), start_ms: day + (h * 60 + m) * 60_000, end_ms: day + (h * 60 + m + 90) * 60_000, all_day: false, url: None, color: None, calendar: "Uni".into(), location: String::new() };
+            d.events = vec![ev("Reti di calcolatori", 8, 30), ev("Algorithm Engineering", 11, 0), ev("Laboratorio", 14, 0)];
+            i.restore_todos(vec![island_ui::island::Todo { text: "Chiamare Anna".into(), ..Default::default() }]);
+            // the card comes by itself on the first frame after the data is in
+            i.cfg.evening_recap_min = 60;
+            i.cfg.evening_weekends = true;
+        })),
+        ("page-today-student", Box::new(|i, d| {
+            let day = NOW / 86_400_000 * 86_400_000;
+            let ev = |t: &str, h: i64, m: i64, dur: i64| island_core::calendar::Event { id: t.into(), title: t.into(), start_ms: day + (h * 60 + m) * 60_000, end_ms: day + (h * 60 + m + dur) * 60_000, all_day: false, url: None, color: Some((90, 160, 255)), calendar: "Uni".into(), location: "Aula 3".into() };
+            d.events = vec![ev("Reti di calcolatori", 15, 30, 120), ev("Laboratorio", 19, 0, 120)];
+            d.events[0].location = "Aula 3, Polo Fibonacci, Largo Bruno Pontecorvo 3, Pisa".into();
+            i.cfg.commute_minutes = 70;
+            i.cfg.travel_margin_ms = 10 * 60_000;
+            i.restore_deadlines(vec![island_ui::island::Deadline { day: NOW / 86_400_000 + 2, text: "Esame Algoritmi".into() }, island_ui::island::Deadline { day: NOW / 86_400_000 + 9, text: "Consegna progetto".into() }]);
+            i.restore_todos(vec![island_ui::island::Todo { text: "Portare il caricatore".into(), daily: true, done_day: i64::MIN }, island_ui::island::Todo { text: "Restituire il libro".into(), ..Default::default() }]);
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
+        })),
+        ("page-today-train", Box::new(|i, d| {
+            let day = NOW / 86_400_000 * 86_400_000;
+            let ev = |t: &str, h: i64, m: i64, dur: i64| island_core::calendar::Event { id: t.into(), title: t.into(), start_ms: day + (h * 60 + m) * 60_000, end_ms: day + (h * 60 + m + dur) * 60_000, all_day: false, url: None, color: Some((90, 160, 255)), calendar: "Uni".into(), location: String::new() };
+            d.events = vec![ev("Laboratorio", 19, 0, 120)];
+            d.train = Some(island_core::train::TrainPin { from_id: "S06500".into(), from_name: "Pisa Centrale".into(), time: "17:12".into(), number: "18567".into(), category: "REG".into(), to_name: "Lucca".into(), arrival: "17:52".into(), ..Default::default() });
+            d.train_status = Some(island_core::train::TrainStatus { delay_min: Some(6), cancelled: false, platform: Some("3".into()), at_ms: 0, next: vec![island_core::train::NextTrain { time: "17:42".into(), label: "REG 4177".into(), delay_min: None }, island_core::train::NextTrain { time: "18:12".into(), label: "RV 4181".into(), delay_min: Some(4) }] });
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
+        })),
+        ("notif-grouped", Box::new(|i, _| {
+            for (id, text) in [(1, "Ci sei per il lab?"), (2, "Ho trovato l'aula"), (3, "Terzo piano, aula 3")] {
+                i.push(NOW, Input::Notification(island_ui::model::Incoming { id, app: "Telegram".into(), summary: "Anna".into(), body: text.into(), ..Default::default() }));
+            }
+        })),
+        ("page-notifs-grouped", Box::new(|i, _| {
+            // held by the quiet mode: they go straight to the history, no card in the way
+            i.push(NOW, Input::SetDnd(true));
+            for (id, from, text) in [(1u32, "Anna", "Ci sei per il lab?"), (2, "Anna", "Ho trovato l'aula"), (3, "Anna", "Terzo piano, aula 3"), (4, "Marco", "Mi mandi gli appunti?"), (5, "Gruppo Reti", "Domani niente lezione")] {
+                i.push(NOW, Input::Notification(island_ui::model::Incoming { id, app: "Telegram".into(), summary: from.into(), body: text.into(), ..Default::default() }));
+            }
+            i.push(NOW + 20_000, Input::OpenPage(island_core::face::Page::Notifs));
         })),
         ("page-send", Box::new(|i, d| {
             let peer = |a: &str, m: &str, k: &str| island_core::localsend::Peer { alias: a.into(), ip: "192.168.1.9".into(), port: 53317, https: true, model: m.into(), kind: k.into() };
@@ -270,6 +333,7 @@ fn main() {
             d.utc_offset_secs = 3600;
             i.data.utc_offset_secs = 3600;
             d.position = Some(island_ui::model::Position { lat: 43.7255, lon: 10.3908, accuracy_m: 380.0, at_ms: NOW, source: island_ui::model::PosSource::Geoclue });
+            d.config.home_pos = Some((43.7262, 10.3995));
             d.events = vec![island_core::calendar::Event { id: "e".into(), title: "Studio di gruppo".into(), start_ms: day + 17 * 3_600_000, end_ms: day + 18 * 3_600_000, location: "Biblioteca, Via Santa Maria 36, Pisa".into(), ..Default::default() }];
             d.trips = vec![island_ui::model::TripInfo { event_id: "e".into(), mode: island_core::travel::Mode::Car, trip: Some(island_core::travel::Trip { secs: 480, meters: Some(2300), leave_ms: Some(day + 16 * 3_600_000), transfers: None }), error: None, at_ms: NOW, dest: Some((43.7167, 10.4017)) }];
             // stand-in tiles: a dark ground with a street grid, so the layout can be judged without the network
@@ -326,11 +390,14 @@ fn main() {
         ("focus-mini", Box::new(|_, d| d.focus = Some(Focus { active: true, end_epoch: Some(NOW / 1000 + 23 * 60) }))),
         ("focus-full", Box::new(|i, d| { d.focus = Some(Focus { active: true, end_epoch: Some(NOW / 1000 + 23 * 60) }); i.push(NOW, Input::OpenPage(island_core::face::Page::Focus)); })),
         ("page-sys-opening", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Sys)))),
-        ("page-settings", Box::new(|i, d| { d.config = ConfigView { font: "Inter".into(), font_missing: false, calendars: vec![CalendarView { name: "Università".into(), detail: "calendar.google.com".into(), color: (0xff, 0x9f, 0x0a) }, CalendarView { name: String::new(), detail: "p01-caldav.icloud.com".into(), color: (0x30, 0xd1, 0x58) }, CalendarView { name: "iCloud".into(), detail: "iCloud · me@icloud.com".into(), color: (0x0a, 0x84, 0xff) }], latitude: Some(43.7228), longitude: Some(10.4017), notification_sound: "/home/me/Music/UWU.ogg".into(), filters: vec![], timer_presets: "5 min, 10 min, 25 min".into(), screen: "focused".into(), map_tile_url: String::new(), map_key_set: false }; i.push(NOW, Input::OpenPage(island_core::face::Page::Settings)); })),
+        ("page-settings", Box::new(|i, d| { d.config = ConfigView { font: "Inter".into(), font_missing: false, calendars: vec![CalendarView { name: "Università".into(), detail: "calendar.google.com".into(), color: (0xff, 0x9f, 0x0a) }, CalendarView { name: String::new(), detail: "p01-caldav.icloud.com".into(), color: (0x30, 0xd1, 0x58) }, CalendarView { name: "iCloud".into(), detail: "iCloud · me@icloud.com".into(), color: (0x0a, 0x84, 0xff) }], latitude: Some(43.7228), longitude: Some(10.4017), notification_sound: "/home/me/Music/UWU.ogg".into(), filters: vec![], timer_presets: "5 min, 10 min, 25 min".into(), screen: "focused".into(), map_tile_url: String::new(), map_key_set: false, home: "Via Roma 1, Pisa".into(), home_pos: Some((43.7255, 10.3908)) }; i.push(NOW, Input::OpenPage(island_core::face::Page::Settings)); })),
         ("page-weather", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Weather)))),
         ("home-rain", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Home)))),
         ("page-options", Box::new(|i, d| { d.config.timer_presets = "5 min, 10 min, 25 min".into(); d.config.screen = "focused".into(); i.push(NOW, Input::OpenPage(island_core::face::Page::Options)) })),
         ("page-options-rules", Box::new(|i, d| { d.config.filters = vec![island_ui::model::FilterView { app: "Zen Browser".into(), content: String::new(), show: false, sound: false }, island_ui::model::FilterView { app: "Telegram".into(), content: "unseen".into(), show: true, sound: false }]; i.push(NOW, Input::OpenPage(island_core::face::Page::Options)); i.show_options_tab(3); })),
+        ("page-options-quiet", Box::new(|i, _| { i.push(NOW, Input::OpenPage(island_core::face::Page::Options)); i.show_options_tab(2); })),
+        ("page-options-day", Box::new(|i, _| { i.push(NOW, Input::OpenPage(island_core::face::Page::Options)); i.show_options_tab(3); })),
+        ("page-options-places", Box::new(|i, d| { d.config.map_tile_url = String::new(); i.push(NOW, Input::OpenPage(island_core::face::Page::Options)); i.show_options_tab(4); })),
         ("page-options-alerts", Box::new(|i, _| { i.push(NOW, Input::OpenPage(island_core::face::Page::Options)); i.show_options_tab(1); })),
         ("media-japanese", Box::new(|i, d| { media(d, true); let m = d.media.as_mut().unwrap(); m.title = "夜に駆ける (Racing into the Night)".into(); m.artist = "YOASOBI · 요아소비 · 约会".into(); i.push(NOW, Input::OpenPage(island_core::face::Page::Media)); })),
         ("page-qs", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Qs)))),
