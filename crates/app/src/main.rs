@@ -20,6 +20,8 @@ fn usage() {
     eprintln!(
         "open-island {}\n\nUSAGE:\n  open-island [--backend winit|wayland]   run the island\n  open-island msg <event> [payload]       talk to a running island
   open-island notify <title> [body]       show a notification (any platform)
+  open-island pin <text> | unpin [text|all]  keep a note on the Today page (a click copies it)
+  open-island watch <pid|program> [label]  a card when that process ends
   open-island autostart on|off|status     start with the session
   open-island doctor                      what works on this machine, what is missing
   open-island --version\n\nEVENTS (for msg):\n  peek | open [page] | reply | dnd <on|off> | page <home|cal|qs|sys|notifs|media|timer|clip> | timer <25m> | pomodoro | stopwatch | timer-cancel\n  key enter|escape|backspace|left|right|up|down|home|end|tab|text <t> (type into the island, for tests)
@@ -88,6 +90,9 @@ fn main() {
         Some("activity") => std::process::exit(cli::activity(&args[1..])),
         Some("hook") => std::process::exit(hook::run(&args[1..])),
         Some("todo") if args.len() >= 2 => std::process::exit(if services::ipc::send(&format!("todo {}", args[1..].join(" "))) { 0 } else { eprintln!("open-island is not running"); 1 }),
+        Some("pin") => std::process::exit(cli::pin(&args[1..])),
+        Some("unpin") => std::process::exit(if services::ipc::send(&format!("unpin {}", args[1..].join(" "))) { 0 } else { eprintln!("open-island is not running"); 1 }),
+        Some("watch") if args.len() >= 2 => std::process::exit(if services::ipc::send(&format!("watch {}", args[1..].join(" "))) { 0 } else { eprintln!("open-island is not running"); 1 }),
         Some("agent") => std::process::exit(agent::run(&args[1..])),
         Some("timer") if args.len() >= 2 => std::process::exit(if services::ipc::send(&format!("timer {}", args[1..].join(" "))) { 0 } else { eprintln!("open-island is not running"); 1 }),
         Some("-h") | Some("--help") | Some("help") => usage(),

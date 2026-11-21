@@ -33,6 +33,8 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, _settings: std::sync::Arc
                 Command::ReconnectNetwork => {}
                 Command::PauseProcs { .. } | Command::ResumeProcs(_) | Command::QuitProcs(_) => super::culprit::command(&rep2, &c),
                 Command::PinTrain(_) | Command::UnpinTrain | Command::SetHome(_) => super::trains::command(&rep2, &c),
+                Command::PhoneOpen(_) | Command::PhoneSend { .. } | Command::PhoneSearch(_) | Command::PhoneCall(_) => super::phone::command(&rep2, &c),
+                Command::Ocr => super::ocr::start(rep2.clone()),
                 Command::ScanPeers => super::send::scan(rep2.clone()),
                 Command::SendFiles { peer, paths } => super::send::send(rep2.clone(), peer, paths),
                 Command::CopyCode(c) => super::generic::copy_code(&c),

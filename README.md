@@ -118,6 +118,15 @@ The weather, the map and the trips use where the machine is (GeoClue, see "Follo
 above are the fallback, and the whole answer when `follow_position` is off. The island calls out only to the services a feature
 needs: see "What leaves the machine" at the end.
 
+## Finding a page
+
+There are many pages, so three ways in. The bar at the bottom of a page holds Home, whatever is live (music, a timer, the next
+event, a running activity), the pages you open most (it learns, `dock_icons` sets how many, 4-12, 7 by default) and the page you
+are on; the last icon opens **All pages**, a grid of every page in groups (Day, Now, Messages, Device, Island), one click each.
+And in the command bar `go <page>` (also `vai`, `apri`) opens one by name, in English or Italian, or by the start of a name when
+only one page begins so: `go phone`, `go meteo`, `go sett`, `go all`. The control socket takes the same names: `msg open phone`,
+`msg page all`. The swipe order is unchanged. Usage is counted in `page-usage.json` in the state folder.
+
 ## Moving between pages
 
 Every page carries a row of page icons at the bottom (media and timer first when active, then home, calendar, quick settings,
@@ -175,6 +184,67 @@ beside the pill, then a card again when it ends (red when it failed).
 ## Licence
 
 MIT. Tabler icons are MIT (`crates/ui/assets/TABLER-LICENSE.txt`).
+
+### The iPhone (through tether)
+
+With [tether](https://github.com/zackb/tether) paired to your iPhone, the Phone page (`go phone`, `msg open phone`; after Today and
+Map in the dock) shows:
+
+- the phone's **battery** and what the Bluetooth link carries;
+- **calls**, when call control is on (a button on the page turns it on): a ringing call is a card with a sound and a green and a red
+  button on the page to answer or hang up, and in a conversation a phone button dials the number (the audio stays on the phone);
+- the **message conversations** (SMS and iMessage), newest first; a click opens one (the last four messages) and "Reply" sends a
+  reply through the phone;
+- **a new message**: "New message…" looks a name up in the phone's contacts and writes to its first number;
+- a **card for each new message** (checked every 20 seconds, calls every 4 while call control is on), since the iPhone's own
+  notifications do not come through on every setup (see `tether --bt-connection`).
+
+The island only runs the `tether` command (`--bt-connection`, `--bt-threads`, `--bt-messages`, `--bt-send`, `--bt-calls`,
+`--bt-answer`, `--bt-hangup`, `--bt-call`, `--bt-calls-enable`, `--bt-contacts`), always as separate arguments and never through a
+shell; a reply or a search that starts with a dash is changed so it cannot be read as an option, only plain numbers are dialled, and
+only conversation keys from the list are used. The page is not offered when `tether` is missing or no phone is connected. Not done:
+the AirPods, the iPhone's other notifications.
+
+### Files to your own devices over Tailscale (Taildrop)
+
+The Send page (`open-island send file...`) also lists the devices of your tailnet that Taildrop can reach right now (`tailscale file
+cp --targets`), marked "Tailscale", next to the LocalSend ones: a click sends with `tailscale file cp`, the pill says where it goes
+and a card says how it ended (Taildrop reports no progress). Receiving is not done here on purpose: whatever already empties the
+Taildrop inbox (`tailscale file get`) keeps doing it, and two readers would take files from each other.
+
+### Text from an image (OCR)
+
+A screenshot's card (the compositor's "Screenshot captured") becomes one with a **Copy text** button that does the same; switch it off with
+`ocr_screenshots` (Options > Alerts > "Text from screenshots").
+
+`ocr` in the command bar (or `open-island msg ocr`) reads the text of the image on the clipboard (a screenshot of a slide, a
+scanned page) with Tesseract and puts the text on the clipboard; a card shows how it starts. It asks for Italian and English
+when both are installed (`tesseract-data-ita`), joins words cut by a hyphen at the end of a line and drops the empty lines in a
+row. Offline: the image goes to the local `tesseract` and is written, for that moment only, to a private file in the runtime
+folder. Linux (wl-clipboard + tesseract); other systems say it is not there yet. Not done: reading by itself after every
+screenshot.
+
+### Downloads
+
+A browser download shows as an activity with what has arrived and how fast ("48 MB · 2.1 MB/s"), and turns green with the size and
+the time when the file is complete. No extension: the island looks at the download folder (the XDG one, else `~/Downloads`) for
+the files a browser writes meanwhile (`.part` Firefox, `.crdownload` Chrome / Edge / Brave, `.download` Safari, `.opdownload`
+Opera). The total size is not known, so there is no percentage; a download that stops growing for 20 s says "stalled", one that
+disappears without its file is dropped quietly. Only names and sizes are read. Off with `watch_downloads` (Options > Island > "Show
+downloads"). Not done: torrent clients' own APIs.
+
+### Notes and waiting, from the shell
+
+```sh
+open-island pin "ssh pi@10.0.0.5 -p 2222"     # or: echo 10.0.0.5 | open-island pin  ·  in the bar: pin <text>
+open-island unpin ssh                         # a part of the text; no words = the newest; `unpin all`
+open-island watch 4821 "render"               # a card when process 4821 ends, with how long it took
+open-island watch ffmpeg                      # by program name: it ends when the last one is gone
+```
+
+A pin stays on the Today page (the newest four are drawn, eight are kept, they survive a restart); a click copies it,
+the cross takes it off. `watch` also works for what you did not start through the shell hook; while it waits it shows as a
+pill, and since the exit code of a process that is not its child cannot be read, it only says "done", never "failed".
 
 ## A pill for every long shell command
 
@@ -313,6 +383,8 @@ home 43.7085, 10.4036                      # or an address: home Via Roma 1, Pis
 
 ## The morning and the evening card
 
+
+If the pinned train is late or cancelled and has not left yet (the board read in the last 20 minutes), the evening card opens with "18:50 train +12 min" before anything else; on time is not news.
 Set a time (Options > Day > "Evening", or `"evening_recap_time": "18:30"` in the configuration, or
 `open-island msg set evening_recap_time 18:30`) and at that time, once a day, a card shows tomorrow: how many events,
 reminders and to-dos, and the first ones with their times ("Tomorrow · 3 events, 1 to do: 09:30 Reti di calcolatori · ..."). It stays
@@ -398,6 +470,8 @@ a script with `open-island msg set <option> <value>`:
 | tab | option | default |
 |---|---|---|
 | Island | `clock_in_pill`, `status_icons`, `hide_on_fullscreen`, `clipboard_history`, `timer_sound`, `auto_audio_output` | on |
+| Island | `mini_pills` (1-4, 2): how many small pills may sit beside the main one; a timer, focus, an event and each running activity (an agent's turn, a build) get their own, in that order; 1 is a single pill beside it | 2 |
+| Island | `dock_icons` (4-12, 7): how many page icons the bottom bar shows (Home, what is live, the pages used most, the page you are on); the rest are on the All pages grid | 7 |
 | Island | `timer_presets` (["5m","10m","25m"]), `screen` (`focused` or a name such as `eDP-1`; pinning by connector name, on Wayland too; an unknown name is logged and the compositor chooses), `timer_sound_file` (the sound file the timer plays) | |
 | Alerts | `show_notifications`, `show_osd`, `battery_alerts`, `meeting_alerts`, `rain_alerts`, `culprit_alerts` | on |
 | Alerts | `notification_seconds` (2-30, 5), `osd_seconds` (0.5-5, 1.6), `low_battery_percent` (5-50, 15), `meeting_lead_minutes` (1-60, 10: the card), `meeting_pill_minutes` (1-120, 10: the pill on the side) | |

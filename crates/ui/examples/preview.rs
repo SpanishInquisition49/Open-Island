@@ -192,6 +192,15 @@ fn main() {
         ("media-transition", Box::new(|i, d| { media(d, true); i.push(NOW, Input::Peek); i.cfg.lyrics = false; })),
         ("lyrics-scroll", Box::new(|i, d| { media(d, true); d.media.as_mut().unwrap().position_ms = 109_600.0; i.push(NOW, Input::Peek); })),
         ("media-timer-bubble", Box::new(|i, d| { media(d, true); i.push(NOW, Input::StartTimer(600)); })),
+        ("pills-many", Box::new(|i, d| {
+            media(d, true);
+            d.focus = Some(Focus { active: true, end_epoch: Some(NOW / 1000 + 25 * 60) });
+            i.cfg.mini_pills = 4;
+            i.push(NOW, Input::StartTimer(600));
+            for (id, label, detail) in [("a1", "Claude · site", "Edit lib.rs"), ("a2", "Codex · api", "thinking")] {
+                i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { id: id.into(), label: label.into(), detail: detail.into(), ..Default::default() }));
+            }
+        })),
         ("timer-mini", Box::new(|i, _| i.push(NOW, Input::StartTimer(1500)))),
         ("timer-parallel", Box::new(|i, _| { i.push(NOW, Input::StartTimer(1500)); i.push(NOW, Input::StartTimer(180)); i.push(NOW, Input::StartTimer(900)); i.push(NOW, Input::OpenPage(island_core::face::Page::Timer)); })),
         ("timer-full", Box::new(|i, _| { i.push(NOW, Input::StartTimer(1500)); i.push(NOW, Input::Peek); })),
@@ -261,7 +270,36 @@ fn main() {
             i.cfg.travel_margin_ms = 10 * 60_000;
             i.restore_deadlines(vec![island_ui::island::Deadline { day: NOW / 86_400_000 + 2, text: "Esame Algoritmi".into() }, island_ui::island::Deadline { day: NOW / 86_400_000 + 9, text: "Consegna progetto".into() }]);
             i.restore_todos(vec![island_ui::island::Todo { text: "Portare il caricatore".into(), daily: true, done_day: i64::MIN }, island_ui::island::Todo { text: "Restituire il libro".into(), ..Default::default() }]);
+            i.restore_pins(vec!["ssh pi@10.0.0.5 -p 2222".into(), "Aula B3, piano 2".into()]);
             i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
+        })),
+        ("notif-screenshot", Box::new(|i, _| {
+            i.push(NOW, Input::Notification(Incoming { id: 7, app: "niri".into(), summary: "Screenshot captured".into(), body: "You can paste the image from the clipboard.".into(), ..Default::default() }));
+        })),
+        ("page-grid", Box::new(|i, d| {
+            media(d, true);
+            d.phone = Some(Phone { link: island_core::phone::Link { present: true, messages: true, battery: Some(80), ..Default::default() }, ..Default::default() });
+            i.push(NOW, Input::StartTimer(600));
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Grid));
+        })),
+        ("page-phone", Box::new(|i, d| {
+            use island_core::phone::{Link, Thread};
+            let th = |n: &str, k: &str, w: &str, p: &str| Thread { name: n.into(), key: k.into(), when: w.into(), preview: p.into() };
+            d.phone = Some(Phone { link: Link { present: true, messages: true, contacts: true, battery: Some(80), ..Default::default() }, threads: vec![th("Enrica", "tel:+39", "2026-11-21 18:06", "Se vuoi possiamo chiedere anche a Giovanni"), th("iliad", "sender:iliad", "2026-10-26 09:23", "La tua offerta si rinnova il 27/10"), th("Corriere", "tel:+38", "2026-09-03 15:59", "Ciao, ho lasciato il pacco")], messages: None, at_ms: NOW, ..Default::default() });
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Phone));
+        })),
+        ("page-phone-call", Box::new(|i, d| {
+            use island_core::phone::{Call, Link, Thread};
+            let th = |n: &str, k: &str, w: &str, p: &str| Thread { name: n.into(), key: k.into(), when: w.into(), preview: p.into() };
+            d.phone = Some(Phone { link: Link { present: true, messages: true, contacts: true, calls: true, battery: Some(18), ..Default::default() }, threads: vec![th("Enrica", "tel:+39", "2026-11-21 18:06", "Stasera ci sei?"), th("iliad", "sender:iliad", "2026-10-26 09:23", "La tua offerta si rinnova")], calls: vec![Call { state: "ringing".into(), number: "+39347".into(), name: "Enrica".into() }], at_ms: NOW, ..Default::default() });
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Phone));
+        })),
+        ("page-phone-chat", Box::new(|i, d| {
+            use island_core::phone::{Link, Msg, Thread};
+            let m = |mine: bool, t: &str| Msg { when: "2026-11-21 18:06".into(), mine, text: t.into() };
+            d.phone = Some(Phone { link: Link { present: true, messages: true, contacts: true, battery: Some(80), ..Default::default() }, threads: vec![Thread { name: "Enrica".into(), key: "tel:+39".into(), when: "2026-11-21 18:06".into(), preview: String::new() }], messages: Some(("tel:+39".into(), vec![m(false, "Stasera ci sei?"), m(true, "Sì, arrivo alle 19"), m(false, "Perfetto, porta il pane"), m(true, "Ok")])), at_ms: NOW, ..Default::default() });
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Phone));
+            i.set_preview_phone_open("tel:+39");
         })),
         ("page-today-train", Box::new(|i, d| {
             let day = NOW / 86_400_000 * 86_400_000;
@@ -285,7 +323,7 @@ fn main() {
             i.push(NOW + 20_000, Input::OpenPage(island_core::face::Page::Notifs));
         })),
         ("page-send", Box::new(|i, d| {
-            let peer = |a: &str, m: &str, k: &str| island_core::localsend::Peer { alias: a.into(), ip: "192.168.1.9".into(), port: 53317, https: true, model: m.into(), kind: k.into() };
+            let peer = |a: &str, m: &str, k: &str| island_core::localsend::Peer { alias: a.into(), ip: "192.168.1.9".into(), port: 53317, https: true, model: m.into(), kind: k.into(), taildrop: false };
             d.peers = vec![peer("Pixel di Gabriele", "Pixel 8", "mobile"), peer("Studio-PC", "Windows", "desktop")];
             d.peers_scanning = true;
             i.push(NOW, Input::SendFiles(vec!["/tmp/preview-report.pdf".into()]));

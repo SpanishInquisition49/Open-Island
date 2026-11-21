@@ -17,6 +17,8 @@ pub enum Face {
     Send,
     Activity,
     Map,
+    Phone,
+    Grid,
     Weather,
     Update,
     Clip,
@@ -59,6 +61,8 @@ impl Face {
             Send => (410.0, 220.0),
             Activity => (410.0, 260.0),
             Map => (420.0, 290.0),
+            Phone => (410.0, 200.0),
+            Grid => (410.0, 300.0),
             Weather => (420.0, 318.0),
             Update => (400.0, 64.0),
             Clip => (400.0, 236.0),
@@ -95,7 +99,10 @@ pub enum Side {
     Meeting,
     Focus,
     Media,
+    /// The main running activity (the latest).
     Op,
+    /// Another running activity beside it: the n-th of the others.
+    OpAt(u8),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -114,11 +121,14 @@ pub enum Page {
     Send,
     Activity,
     Map,
+    Phone,
     Weather,
     Cal,
     Sys,
     Focus,
     Op,
+    /// Every page, in groups.
+    Grid,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,6 +221,8 @@ pub fn choose(s: &Snapshot) -> (Face, Option<Side>) {
             Some(Page::Send) => Some(Send),
             Some(Page::Activity) => Some(Activity),
             Some(Page::Map) => Some(Map),
+            Some(Page::Phone) => Some(Phone),
+            Some(Page::Grid) => Some(Grid),
             Some(Page::Weather) => Some(Weather),
             Some(Page::Media) if s.media => Some(media_face),
             Some(Page::Timer) if s.timer => Some(TimerFull),
@@ -260,6 +272,145 @@ pub fn choose(s: &Snapshot) -> (Face, Option<Side>) {
         return (MeetMini, op);
     }
     (Idle, op)
+}
+
+/// The small pills after the first one (`choose` gave `first`): what else runs beside the main face, in the order of
+/// importance (timer, focus, event, the main activity, then the other activities), at most `room` of them.
+/// `also_ops` is how many activities run beside the main one.
+pub fn more_sides(face: Face, first: Option<Side>, s: &Snapshot, also_ops: usize, room: usize) -> Vec<Side> {
+    let Some(first) = first else { return vec![] };
+    let main = match face {
+        Face::MediaMini => Some(Side::Media),
+        Face::TimerMini => Some(Side::Timer),
+        Face::FocusMini => Some(Side::Focus),
+        Face::MeetMini => Some(Side::Meeting),
+        _ => None,
+    };
+    let mut all = vec![];
+    if s.timer {
+        all.push(Side::Timer);
+    }
+    if s.focus {
+        all.push(Side::Focus);
+    }
+    if s.soon {
+        all.push(Side::Meeting);
+    }
+    if s.op {
+        all.push(Side::Op);
+    }
+    all.extend((0..also_ops.min(8)).map(|k| Side::OpAt(k as u8)));
+    all.into_iter().filter(|x| Some(*x) != main && *x != first).take(room).collect()
+}
+
+impl Page {
+    /// The short name the control socket and the command bar use.
+    pub fn key(self) -> &'static str {
+        match self {
+            Page::Home => "home",
+            Page::Clip => "clip",
+            Page::Timer => "timer",
+            Page::Meeting => "event",
+            Page::Media => "music",
+            Page::Qs => "quick",
+            Page::Notifs => "notifs",
+            Page::Settings => "settings",
+            Page::Options => "options",
+            Page::Audio => "sound",
+            Page::Today => "today",
+            Page::Send => "send",
+            Page::Activity => "activity",
+            Page::Map => "map",
+            Page::Phone => "phone",
+            Page::Weather => "weather",
+            Page::Cal => "calendar",
+            Page::Sys => "system",
+            Page::Focus => "focus",
+            Page::Op => "running",
+            Page::Grid => "all",
+        }
+    }
+
+    /// The name on the page grid (short: it has to fit a cell).
+    pub fn label(self) -> &'static str {
+        match self {
+            Page::Home => "Home",
+            Page::Clip => "Clipboard",
+            Page::Timer => "Timer",
+            Page::Meeting => "Event",
+            Page::Media => "Music",
+            Page::Qs => "Quick",
+            Page::Notifs => "Notifications",
+            Page::Settings => "Settings",
+            Page::Options => "Options",
+            Page::Audio => "Sound",
+            Page::Today => "Today",
+            Page::Send => "Send",
+            Page::Activity => "Activity",
+            Page::Map => "Map",
+            Page::Phone => "iPhone",
+            Page::Weather => "Weather",
+            Page::Cal => "Calendar",
+            Page::Sys => "System",
+            Page::Focus => "Focus",
+            Page::Op => "Running",
+            Page::Grid => "All pages",
+        }
+    }
+
+    /// Which group of the grid the page belongs to.
+    pub fn group(self) -> &'static str {
+        match self {
+            Page::Today | Page::Cal | Page::Weather | Page::Map => "Day",
+            Page::Qs | Page::Sys | Page::Activity | Page::Audio | Page::Send => "Device",
+            Page::Notifs | Page::Phone | Page::Clip => "Messages",
+            Page::Media | Page::Timer | Page::Focus | Page::Meeting | Page::Op => "Now",
+            Page::Home | Page::Options | Page::Settings | Page::Grid => "Island",
+        }
+    }
+}
+
+/// The groups of the grid, in order.
+pub const GROUPS: [&str; 5] = ["Day", "Now", "Messages", "Device", "Island"];
+
+/// Every page, in one list.
+pub const ALL_PAGES: [Page; 21] = [
+    Page::Home, Page::Today, Page::Cal, Page::Weather, Page::Map, Page::Media, Page::Timer, Page::Focus, Page::Meeting, Page::Op, Page::Notifs, Page::Phone, Page::Clip, Page::Qs, Page::Sys,
+    Page::Activity, Page::Audio, Page::Send, Page::Options, Page::Settings, Page::Grid,
+];
+
+/// A page by what somebody types: its key, a name in Italian, or the start of a name when only one page starts so.
+pub fn page_by_name(name: &str) -> Option<Page> {
+    let n = name.trim().to_lowercase();
+    if n.is_empty() {
+        return None;
+    }
+    let alias = match n.as_str() {
+        "oggi" | "day" => Some(Page::Today),
+        "calendario" | "cal" => Some(Page::Cal),
+        "meteo" => Some(Page::Weather),
+        "mappa" | "where" | "position" => Some(Page::Map),
+        "musica" | "media" => Some(Page::Media),
+        "evento" | "meeting" => Some(Page::Meeting),
+        "notifiche" | "notifications" | "alerts" => Some(Page::Notifs),
+        "tel" | "telefono" | "iphone" => Some(Page::Phone),
+        "appunti" | "clipboard" => Some(Page::Clip),
+        "rapide" | "qs" => Some(Page::Qs),
+        "sistema" | "sys" => Some(Page::Sys),
+        "attivita" | "attività" | "rewind" | "attention" => Some(Page::Activity),
+        "audio" | "suono" => Some(Page::Audio),
+        "invia" | "invio" => Some(Page::Send),
+        "opzioni" => Some(Page::Options),
+        "impostazioni" | "config" => Some(Page::Settings),
+        "tutto" | "tutte" | "pagine" | "griglia" | "grid" | "pages" => Some(Page::Grid),
+        "casa" => Some(Page::Home),
+        "in corso" | "op" => Some(Page::Op),
+        _ => None,
+    };
+    alias.or_else(|| ALL_PAGES.iter().copied().find(|p| p.key() == n)).or_else(|| {
+        let starts: Vec<Page> = ALL_PAGES.iter().copied().filter(|p| p.key().starts_with(&n)).collect();
+        (starts.len() == 1).then(|| starts[0])
+    })
 }
 
 /// Pages a horizontal swipe cycles through while the island is open: the live activities first, then
@@ -386,5 +537,42 @@ mod tests {
             assert!(w >= 100.0 && h >= 20.0);
         }
         assert!(Face::Idle.is_compact() && !Face::Qs.is_compact());
+    }
+
+    #[test]
+    fn more_small_pills_follow_the_first_in_order_up_to_the_room_there_is() {
+        let all = Snapshot { media: true, timer: true, focus: true, soon: true, op: true, ..snap() };
+        let (face, first) = choose(&all);
+        assert_eq!((face, first), (Face::MediaMini, Some(Side::Timer)));
+        assert_eq!(more_sides(face, first, &all, 2, 3), [Side::Focus, Side::Meeting, Side::Op]);
+        assert_eq!(more_sides(face, first, &all, 2, 5), [Side::Focus, Side::Meeting, Side::Op, Side::OpAt(0), Side::OpAt(1)]);
+        assert!(more_sides(face, first, &all, 2, 0).is_empty(), "one pill only: the old behaviour");
+        // the main face is not repeated
+        let t = Snapshot { timer: true, focus: true, ..snap() };
+        let (face, first) = choose(&t);
+        assert_eq!((face, first), (Face::TimerMini, Some(Side::Focus)));
+        assert!(more_sides(face, first, &t, 0, 3).is_empty());
+        // several activities and nothing else: the main one in the face's place is not an activity, so all are pills
+        let o = Snapshot { op: true, ..snap() };
+        let (face, first) = choose(&o);
+        assert_eq!((face, first), (Face::Idle, Some(Side::Op)));
+        assert_eq!(more_sides(face, first, &o, 2, 3), [Side::OpAt(0), Side::OpAt(1)]);
+        assert!(more_sides(Face::Notif, None, &o, 2, 3).is_empty(), "no first pill, no more");
+    }
+
+    #[test]
+    fn pages_are_found_by_key_alias_or_unique_start() {
+        assert_eq!(page_by_name("phone"), Some(Page::Phone));
+        assert_eq!(page_by_name("Telefono"), Some(Page::Phone));
+        assert_eq!(page_by_name("meteo"), Some(Page::Weather));
+        assert_eq!(page_by_name("sett"), Some(Page::Settings), "a start that only one page has");
+        assert_eq!(page_by_name("s"), None, "several pages start with s");
+        assert_eq!(page_by_name("all"), Some(Page::Grid));
+        assert_eq!(page_by_name("nothing"), None);
+        assert_eq!(page_by_name(""), None);
+        // every page has a different key and a group of the list
+        let keys: std::collections::BTreeSet<_> = ALL_PAGES.iter().map(|p| p.key()).collect();
+        assert_eq!(keys.len(), ALL_PAGES.len());
+        assert!(ALL_PAGES.iter().all(|p| GROUPS.contains(&p.group()) && page_by_name(p.key()) == Some(*p)));
     }
 }

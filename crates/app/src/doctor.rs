@@ -30,6 +30,9 @@ pub fn tools() -> Vec<(&'static str, &'static str)> {
             ("niri", "hiding under fullscreen windows, and the activity page (niri only)"),
             ("ping", "the router check of the network warning"),
             ("xdg-open", "opening links, mail and the map in the browser"),
+            ("tesseract", "reading the text of an image (`ocr`)"),
+            ("tether", "the iPhone page: messages, calls, battery (github.com/zackb/tether)"),
+            ("tailscale", "sending files to your own devices (Taildrop)"),
         ]
     } else if cfg!(windows) {
         vec![("powershell", "the brightness slider (laptops and tablets only)")]
@@ -75,6 +78,8 @@ pub fn run() {
     }
 
     your_day();
+    #[cfg(target_os = "linux")]
+    integrations(&path);
 
     let tools = tools();
     if !tools.is_empty() {
@@ -123,6 +128,58 @@ fn your_day() {
     match crate::services::state_file("rates.json").and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
         Some(v) => println!("  ok      currency rates: {} currencies, fetched {}", v.get("rates").and_then(|x| x.as_object()).map_or(0, |o| o.len()), age(v.get("at").and_then(|x| x.as_i64()).unwrap_or(0) * 1000)),
         None => println!("  {} currency rates: none yet{}", on(s.ui.currency_rates), if s.ui.currency_rates { " (fetched at the next start)" } else { " (switched off)" }),
+    }
+}
+
+/// The things that live outside the island: the iPhone through tether, Tailscale, the download folder, Tesseract.
+#[cfg(target_os = "linux")]
+fn integrations(path: &str) {
+    use std::process::{Command, Stdio};
+    let on = |b: bool| if b { "ok     " } else { "off    " };
+    let out = |cmd: &str, args: &[&str]| Command::new(cmd).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    println!("\nPhone, files and text");
+    // the iPhone
+    if !tool_in_path("tether", path) {
+        println!("  off     iPhone: tether is not installed (github.com/zackb/tether: messages, calls and battery on the iPhone page)");
+    } else {
+        match out("tether", &["--bt-connection"]).map(|t| island_core::phone::parse_link(&t)) {
+            None => println!("  off     iPhone: the tether daemon is not running (`systemctl --user enable --now tetherd`)"),
+            Some(l) if !l.present => println!("  off     iPhone: tether runs, no phone is connected (Bluetooth on the phone, in range)"),
+            Some(l) => {
+                let yn = |b: bool| if b { "on" } else { "off" };
+                println!("  ok      iPhone: battery {}, messages {}, contacts {}, calls {}, notifications {}", l.battery.map_or("?".to_string(), |b| format!("{b}%")), yn(l.messages), yn(l.contacts), yn(l.calls), yn(l.notifications));
+                if !l.messages {
+                    println!("          messages are off: Settings > Bluetooth > (i) on the iPhone > Show Message Notifications");
+                }
+                if !l.calls {
+                    println!("          calls are off: turn them on from the iPhone page, or `tether --bt-calls-enable on`");
+                }
+                if !l.notifications {
+                    println!("          the iPhone's own notifications are not coming (the LE link is down: see `tether --bt-connection`); new messages still show as cards");
+                }
+            }
+        }
+    }
+    // Tailscale
+    if tool_in_path("tailscale", path) {
+        let targets = out("tailscale", &["file", "cp", "--targets"]).map(|t| island_core::taildrop::parse_targets(&t).len());
+        match targets {
+            Some(n) => println!("  ok      Taildrop: {n} device{} can receive files now (Send page)", if n == 1 { "" } else { "s" }),
+            None => println!("  off     Taildrop: tailscale does not answer (is tailscaled running and logged in?)"),
+        }
+    } else {
+        println!("  off     Taildrop: tailscale is not installed");
+    }
+    // downloads
+    let ui = crate::config::load().ui;
+    match crate::services::downloads::folder() {
+        Some(f) => println!("  {} downloads: {} {}", on(ui.watch_downloads && f.is_dir()), f.display(), if !ui.watch_downloads { "(switched off)" } else if f.is_dir() { "" } else { "(the folder does not exist)" }),
+        None => println!("  off     downloads: no download folder"),
+    }
+    // OCR
+    match out("tesseract", &["--list-langs"]) {
+        Some(l) => println!("  ok      ocr: tesseract reads {}{}", island_core::ocr::pick_langs(&l).replace('+', " and "), if l.lines().any(|x| x.trim() == "ita") { "" } else { " (no Italian: install tesseract-data-ita)" }),
+        None => println!("  off     ocr: tesseract is not installed"),
     }
 }
 

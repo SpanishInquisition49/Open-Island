@@ -304,6 +304,8 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     u.away_recap = b("away_recap", u.away_recap);
     u.evening_weekends = b("evening_weekends", u.evening_weekends);
     u.currency_rates = b("currency_rates", u.currency_rates);
+    u.watch_downloads = b("watch_downloads", u.watch_downloads);
+    u.ocr_screenshots = b("ocr_screenshots", u.ocr_screenshots);
     if let Some(m) = v.get("commute_minutes").and_then(|x| x.as_i64()).filter(|m| (0..=240).contains(m)) {
         u.commute_minutes = m;
     }
@@ -338,6 +340,12 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     }
     if let Some(m) = v.get("travel_margin_minutes").and_then(|x| x.as_i64()).filter(|m| (0..=30).contains(m)) {
         u.travel_margin_ms = m * 60_000;
+    }
+    if let Some(m) = v.get("dock_icons").and_then(|x| x.as_i64()).filter(|m| (4..=12).contains(m)) {
+        u.dock_icons = m as u32;
+    }
+    if let Some(m) = v.get("mini_pills").and_then(|x| x.as_i64()).filter(|m| (1..=4).contains(m)) {
+        u.mini_pills = m as u32;
     }
     u.quiet_on_screen_share = b("quiet_on_screen_share", u.quiet_on_screen_share);
     u.battery_alerts = b("battery_alerts", u.battery_alerts);
@@ -389,11 +397,11 @@ pub fn parse(text: &str) -> Result<Settings, String> {
 /// The options of the options page: the keys that are on or off.
 pub const BOOL_OPTIONS: &[&str] = &[
     "show_notifications", "show_osd", "media_auto_expand", "timer_sound", "battery_alerts", "weather", "rain_alerts", "meeting_alerts", "lyrics", "lyrics_in_pill", "art_tint", "status_icons",
-    "clipboard_history", "clock_in_pill", "hide_on_fullscreen", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "away_recap", "culprit_alerts", "travel_times", "map_dark", "follow_position", "wifi_position", "quiet_on_screen_share", "evening_weekends", "currency_rates",
+    "clipboard_history", "clock_in_pill", "hide_on_fullscreen", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "away_recap", "culprit_alerts", "travel_times", "map_dark", "follow_position", "wifi_position", "quiet_on_screen_share", "evening_weekends", "currency_rates", "watch_downloads", "ocr_screenshots",
 ];
 
 /// The numeric options: key, smallest, largest, and whether it is a whole number.
-pub const NUM_OPTIONS: &[(&str, f64, f64, bool)] = &[("notification_seconds", 2.0, 30.0, true), ("osd_seconds", 0.5, 5.0, false), ("low_battery_percent", 5.0, 50.0, true), ("meeting_lead_minutes", 1.0, 60.0, true), ("meeting_pill_minutes", 1.0, 120.0, true), ("travel_margin_minutes", 0.0, 30.0, true), ("deep_work_minutes", 0.0, 120.0, true), ("break_minutes", 0.0, 240.0, true), ("evening_recap_time", 0.0, 1425.0, true), ("morning_recap_time", 0.0, 1425.0, true), ("commute_minutes", 0.0, 240.0, true)];
+pub const NUM_OPTIONS: &[(&str, f64, f64, bool)] = &[("notification_seconds", 2.0, 30.0, true), ("osd_seconds", 0.5, 5.0, false), ("low_battery_percent", 5.0, 50.0, true), ("meeting_lead_minutes", 1.0, 60.0, true), ("meeting_pill_minutes", 1.0, 120.0, true), ("travel_margin_minutes", 0.0, 30.0, true), ("mini_pills", 1.0, 4.0, true), ("dock_icons", 4.0, 12.0, true), ("deep_work_minutes", 0.0, 120.0, true), ("break_minutes", 0.0, 240.0, true), ("evening_recap_time", 0.0, 1425.0, true), ("morning_recap_time", 0.0, 1425.0, true), ("commute_minutes", 0.0, 240.0, true)];
 
 /// Adds a notification rule (once): `hide` drops the notifications, otherwise they only lose their sound.
 pub fn add_filter(o: &mut serde_json::Map<String, serde_json::Value>, app: &str, content: &str, hide: bool) {

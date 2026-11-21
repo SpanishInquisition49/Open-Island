@@ -9,9 +9,28 @@ impl Island {
         (x - self.pill_origin.0, y - self.pill_origin.1)
     }
 
+    /// The width the small pills take: a first one and `more` after it.
+    pub(crate) fn side_slot(&self, first: bool, more: usize) -> f64 {
+        if first { (1 + more) as f64 * (BUBBLE_W + BUBBLE_GAP) } else { 0.0 }
+    }
+
+    /// The small pills on show, first one first.
+    pub(crate) fn sides_shown(&self) -> Vec<Side> {
+        self.shown_side.into_iter().chain(self.shown_more.iter().copied()).collect()
+    }
+
+    /// The small pill under this x (surface coordinates), when it is over one.
+    fn side_at(&self, x: f64) -> Option<Side> {
+        let rel = x - (self.pill_origin.0 + self.spring.w.pos + BUBBLE_GAP);
+        if rel < 0.0 {
+            return None;
+        }
+        self.sides_shown().get((rel / (BUBBLE_W + BUBBLE_GAP)) as usize).copied()
+    }
+
     pub(super) fn pill_rect(&self) -> (f64, f64, f64, f64) {
         let (w, h) = (self.spring.w.pos, self.spring.h.pos);
-        let side = if self.shown_side.is_some() { ((BUBBLE_W + BUBBLE_GAP) * self.bubble_k).round() } else { 0.0 };
+        let side = (self.side_slot(self.shown_side.is_some(), self.shown_more.len()) * self.bubble_k).round();
         (self.pill_origin.0, self.pill_origin.1, w + side, h)
     }
 
@@ -31,7 +50,7 @@ impl Island {
         // what opens depends on where the pointer rests: the side bubble opens its own activity, the pill its own
         if inside && self.shown.is_compact() {
             let over_bubble = self.shown_side.is_some() && x > px + self.spring.w.pos;
-            self.hover_page = if over_bubble { self.shown_side.map(side_page) } else { main_page(self.shown) };
+            self.hover_page = if over_bubble { self.side_at(x).map(side_page) } else { main_page(self.shown) };
         }
         if self.dragging == Some(Action::MapPan) {
             let (dx, dy) = (x - self.map_drag_last.0, y - self.map_drag_last.1);
@@ -125,7 +144,7 @@ impl Island {
         // a click on the side bubble opens its own activity
         let main_w = self.spring.w.pos;
         if self.shown_side.is_some() && x > px + main_w {
-            self.hover_page = self.shown_side.map(side_page);
+            self.hover_page = self.side_at(x).map(side_page);
             self.page = self.hover_page;
             self.expand_until = now + 6000;
             return vec![];
@@ -233,6 +252,9 @@ impl Island {
         if let Some(at) = v.iter().position(|p| *p == Page::Home) {
             v.insert(at + 1, Page::Today);
             v.insert(at + 2, Page::Map);
+            if self.data.phone.as_ref().is_some_and(|p| p.link.present) {
+                v.insert(at + 3, Page::Phone);
+            }
         }
         if self.cfg.clipboard_history {
             v.push(Page::Clip);
@@ -243,6 +265,24 @@ impl Island {
         v.push(Page::Options);
         v.push(Page::Settings);
         v
+    }
+
+    /// The pages the dock shows: Home, what is live now, the ones opened most, and the page on screen; the rest are on the grid.
+    pub(crate) fn dock_pages(&self) -> Vec<Page> {
+        let all = self.pages();
+        let room = (self.cfg.dock_icons as usize).clamp(4, 12);
+        let live = |p: &Page| matches!(p, Page::Media | Page::Timer | Page::Focus | Page::Meeting | Page::Op);
+        let mut ranked: Vec<Page> = all.iter().copied().filter(|p| *p != Page::Home).collect();
+        ranked.sort_by_key(|p| (!live(p), std::cmp::Reverse(self.page_uses.get(p).copied().unwrap_or(0))));
+        let mut keep: Vec<Page> = ranked.into_iter().take(room - 1).collect();
+        // the page you are on stays in the bar, so that it can be seen where you are
+        if let Some(cur) = self.page.or_else(|| page_of(self.shown)).filter(|c| all.contains(c) && *c != Page::Home) {
+            if !keep.contains(&cur) {
+                keep.pop();
+                keep.push(cur);
+            }
+        }
+        all.into_iter().filter(|p| *p == Page::Home || keep.contains(p)).collect()
     }
 
     /// When it rains next, from the forecast.
@@ -342,6 +382,37 @@ impl Island {
                     self.deadlines.remove(n);
                 }
             }
+            Action::PhoneThread(n) => {
+                if let Some(t) = self.data.phone.as_ref().and_then(|p| p.threads.get(n)).cloned() {
+                    self.phone_open = Some(t.key.clone());
+                    return vec![Command::PhoneOpen(t.key)];
+                }
+            }
+            Action::PhoneList => {
+                self.phone_open = None;
+                self.phone_search = false;
+            }
+            Action::PhoneContact(n) => {
+                let number = self.data.phone.as_ref().and_then(|p| p.contacts.as_ref()).and_then(|c| c.get(n)).and_then(|c| c.numbers.first()).cloned();
+                if let Some(number) = number {
+                    let key = island_core::phone::key_for_number(&number);
+                    self.phone_search = false;
+                    self.phone_open = Some(key.clone());
+                    return vec![Command::PhoneOpen(key)];
+                }
+            }
+            Action::PhoneCallDo(c) => return vec![Command::PhoneCall(c)],
+            Action::PinCopy(n) => {
+                if let Some(t) = self.pins.get(n).cloned() {
+                    self.say("Copied", &t);
+                    return vec![Command::RestoreClipboard(t)];
+                }
+            }
+            Action::PinRemove(n) => {
+                if n < self.pins.len() {
+                    self.pins.remove(n);
+                }
+            }
             Action::TodoDone(n) => {
                 if n < self.todos.len() {
                     if self.todos[n].daily {
@@ -421,6 +492,10 @@ impl Island {
                     self.reminders.sort_by_key(|r| r.due_ms);
                     self.close_notif(CloseReason::Dismissed);
                 }
+            }
+            Action::NotifAction(key) if key == "open-island:ocr" => {
+                self.close_notif(CloseReason::Dismissed);
+                return vec![Command::Ocr];
             }
             Action::NotifAction(key) => {
                 if key == "inline-reply" {

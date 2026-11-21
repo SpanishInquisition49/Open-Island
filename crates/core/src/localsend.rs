@@ -16,6 +16,8 @@ pub struct Peer {
     pub https: bool,
     /// "mobile", "desktop", "web", "headless", "server"
     pub kind: String,
+    /// Reached through Tailscale's Taildrop (`tailscale file cp`), not LocalSend: `ip` is its tailnet address.
+    pub taildrop: bool,
 }
 
 /// The reply of `GET /api/localsend/v2/info`.
@@ -26,7 +28,7 @@ pub fn parse_info(ip: &str, port: u16, https: bool, body: &str) -> Option<Peer> 
         return None;
     }
     let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    Some(Peer { alias: alias.chars().take(40).collect(), ip: ip.into(), port, https, model: s("deviceModel"), kind: s("deviceType") })
+    Some(Peer { alias: alias.chars().take(40).collect(), ip: ip.into(), port, https, model: s("deviceModel"), kind: s("deviceType"), taildrop: false })
 }
 
 /// Every other address of the /24 network the address is on.
@@ -146,7 +148,7 @@ mod tests {
     #[test]
     fn a_device_is_read_from_its_info() {
         let p = parse_info("192.168.1.9", PORT, true, r#"{"alias":"Pixel","version":"2.0","deviceModel":"Pixel 8","deviceType":"mobile","fingerprint":"x","download":false}"#).unwrap();
-        assert_eq!(p, Peer { alias: "Pixel".into(), ip: "192.168.1.9".into(), port: PORT, https: true, model: "Pixel 8".into(), kind: "mobile".into() });
+        assert_eq!(p, Peer { alias: "Pixel".into(), ip: "192.168.1.9".into(), port: PORT, https: true, model: "Pixel 8".into(), kind: "mobile".into(), taildrop: false });
         assert!(parse_info("1.2.3.4", PORT, true, r#"{"alias":"  "}"#).is_none());
         assert!(parse_info("1.2.3.4", PORT, true, "<html>").is_none());
     }

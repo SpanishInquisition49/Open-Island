@@ -364,6 +364,25 @@ fn run(args: &[String]) -> i32 {
     code
 }
 
+/// `open-island pin <text>` (or the text on stdin: `echo 10.0.0.5 | open-island pin`): a note on the Today page, a click there copies it.
+pub fn pin(args: &[String]) -> i32 {
+    use std::io::{IsTerminal, Read};
+    let mut text = args.join(" ");
+    if text.trim().is_empty() && !std::io::stdin().is_terminal() {
+        let _ = std::io::stdin().take(4096).read_to_string(&mut text);
+    }
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        eprintln!("usage: open-island pin <text>   (or pipe the text in)   ·   open-island unpin [text|all]");
+        return 2;
+    }
+    if !ipc::send(&format!("pin {text}")) {
+        eprintln!("open-island is not running");
+        return 1;
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

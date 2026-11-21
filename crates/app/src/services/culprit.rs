@@ -223,6 +223,11 @@ mod sys {
 
 use sys::{read_procs, HZ};
 
+/// Every process now running (for `watch`).
+pub fn processes() -> Vec<Proc> {
+    read_procs()
+}
+
 fn paused_names() -> Vec<String> {
     PAUSED.lock().map(|p| p.iter().map(|(n, _)| n.clone()).collect()).unwrap_or_default()
 }

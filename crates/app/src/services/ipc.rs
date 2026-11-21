@@ -15,25 +15,7 @@ fn socket_name() -> String {
 }
 
 fn page(name: &str) -> Option<island_core::face::Page> {
-    use island_core::face::Page;
-    Some(match name {
-        "home" => Page::Home,
-        "cal" | "calendar" => Page::Cal,
-        "qs" => Page::Qs,
-        "sys" | "system" => Page::Sys,
-        "notifs" | "notifications" => Page::Notifs,
-        "media" => Page::Media,
-        "clip" | "clipboard" => Page::Clip,
-        "audio" | "sound" => Page::Audio,
-        "today" | "day" => Page::Today,
-        "send" => Page::Send,
-        "map" | "where" | "position" => Page::Map,
-        "activity" | "rewind" | "attention" => Page::Activity,
-        "focus" => Page::Focus,
-        "settings" | "config" => Page::Settings,
-        "timer" => Page::Timer,
-        _ => return None,
-    })
+    island_core::face::page_by_name(name)
 }
 
 /// Settings from a script: `font <family or file>`, `calendar add <url>`, `calendar remove <n>` (1-based),
@@ -44,6 +26,7 @@ fn parse_command(line: &str) -> Option<island_ui::model::Command> {
     let (event, payload) = line.split_once(char::is_whitespace).map_or((line, ""), |(a, b)| (a, b.trim()));
     Some(match event {
         "refresh" => Command::RefreshCalendars,
+        "ocr" => Command::Ocr,
         "font" => Command::SetFont(payload.to_string()),
         // `set <option> <value>`: the same as the options page
         "set" => {
@@ -188,6 +171,9 @@ pub(crate) fn parse(line: &str) -> Option<Input> {
         },
         // `todo <text>` or `todo add <text>`: something for the list on the Today page
         "todo" if !payload.is_empty() => Input::TodoAdd(payload.strip_prefix("add ").unwrap_or(payload).into()),
+        // `pin <text>`: a note that stays on the Today page; `unpin [text|all]` takes it off
+        "pin" if !payload.is_empty() => Input::PinAdd(payload.into()),
+        "unpin" => Input::PinRemove(payload.into()),
         "pomodoro" => Input::StartPomodoro,
         "stopwatch" => Input::StartStopwatch,
         // "timer-cancel" ends the main timer; "timer-cancel tea" the ones named tea
@@ -250,7 +236,9 @@ pub fn start(rep: Reporter) {
                 let mut reader = BufReader::new(conn);
                 let mut line = String::new();
                 while reader.read_line(&mut line).unwrap_or(0) > 0 {
-                    if let Some(input) = parse(&line) {
+                    if let Some(spec) = line.trim().strip_prefix("watch ") {
+                        super::watchpid::start(&rep, spec);
+                    } else if let Some(input) = parse(&line) {
                         track(&input);
                         rep.input(input);
                     } else if let Some(cmd) = parse_command(&line) {
@@ -289,6 +277,10 @@ mod tests {
         }
         assert!(parse("notify").is_none(), "nothing to show");
         assert!(matches!(parse("reply"), Some(Input::StartReply)));
+        assert!(matches!(parse("pin ssh 10.0.0.5"), Some(Input::PinAdd(t)) if t == "ssh 10.0.0.5"));
+        assert!(parse("pin").is_none());
+        assert!(matches!(parse("unpin all"), Some(Input::PinRemove(t)) if t == "all"));
+        assert!(matches!(parse("unpin"), Some(Input::PinRemove(t)) if t.is_empty()));
         assert!(matches!(parse("dnd on"), Some(Input::SetDnd(true))));
         assert!(parse("dnd maybe").is_none());
         assert!(matches!(parse("progress 42 Copying"), Some(Input::Progress(p)) if p == "42 Copying"));

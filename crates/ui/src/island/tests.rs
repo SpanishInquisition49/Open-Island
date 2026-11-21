@@ -1197,7 +1197,7 @@ fn pages_carry_a_dock_that_jumps_straight_to_a_page() {
     i.push(T0, Input::OpenPage(Page::Qs));
     draw_frames(&mut i, 200);
     let gotos: Vec<Page> = i.hits.iter().filter_map(|h| if let Action::Goto(p) = h.action { Some(p) } else { None }).collect();
-    assert_eq!(gotos, vec![Page::Home, Page::Today, Page::Map, Page::Cal, Page::Qs, Page::Sys, Page::Activity, Page::Clip, Page::Options, Page::Settings], "no media, timer, notifications or forecast yet");
+    assert_eq!(gotos, vec![Page::Home, Page::Today, Page::Map, Page::Cal, Page::Qs, Page::Sys, Page::Activity, Page::Grid], "Home and six more, in the order of the pages, then the grid");
     let home = i.hits.iter().find(|h| h.action == Action::Goto(Page::Sys)).unwrap().rect;
     i.pointer_down(i.now, home.center().x + i.pill_origin.0, home.center().y + i.pill_origin.1);
     assert_eq!(i.page, Some(Page::Sys));
@@ -1677,7 +1677,7 @@ fn the_today_page_lists_events_and_reminders_with_a_now_line() {
 #[test]
 fn files_to_send_open_a_page_of_devices_and_a_click_sends_them() {
     let mut i = Island::new(Config::default());
-    let peer = |a: &str| island_core::localsend::Peer { alias: a.into(), ip: "10.0.0.2".into(), port: 53317, https: true, model: "Pixel 8".into(), kind: "mobile".into() };
+    let peer = |a: &str| island_core::localsend::Peer { alias: a.into(), ip: "10.0.0.2".into(), port: 53317, https: true, model: "Pixel 8".into(), kind: "mobile".into(), taildrop: false };
     i.push(T0, Input::SendFiles(vec![]));
     assert!(i.take_commands().is_empty(), "no files, no page");
     i.push(T0, Input::SendFiles(vec!["/tmp/a.txt".into(), "/tmp/b.txt".into()]));
@@ -2928,3 +2928,232 @@ fn the_history_page_shows_a_conversation_as_one_row_and_a_click_takes_all_of_it(
     assert!(i.pending.iter().any(|c| matches!(c, Command::FocusApp { app, .. } if app == "Telegram")), "and the app is opened");
 }
 
+
+#[test]
+fn the_evening_card_leads_with_the_train_home_when_it_is_late_or_cancelled() {
+    let mut i = evening_island();
+    // 18:31 local is T0 + 10 h 31 min
+    let now = T0 + 10 * 3_600_000 + 31 * 60_000;
+    i.now = now;
+    let pin = island_core::train::TrainPin { time: "18:50".into(), number: "4177".into(), ..Default::default() };
+    i.data.train = Some(pin);
+    let st = |d: Option<i32>, c: bool, at: i64| island_core::train::TrainStatus { delay_min: d, cancelled: c, at_ms: at, ..Default::default() };
+    i.data.train_status = Some(st(Some(12), false, now - 60_000));
+    assert_eq!(i.train_tonight().as_deref(), Some("18:50 train +12 min"));
+    assert!(i.evening_card().unwrap().1.starts_with("18:50 train +12 min"), "first on the card");
+    i.data.train_status = Some(st(None, true, now - 60_000));
+    assert_eq!(i.train_tonight().as_deref(), Some("18:50 train cancelled"));
+    i.data.train_status = Some(st(Some(1), false, now - 60_000));
+    assert!(i.train_tonight().is_none(), "on time is not news");
+    i.data.train_status = Some(st(Some(12), false, now - 30 * 60_000));
+    assert!(i.train_tonight().is_none(), "an old reading is not trusted");
+    i.data.train_status = Some(st(Some(12), false, now - 60_000));
+    i.now = T0 + 11 * 3_600_000;
+    assert!(i.train_tonight().is_none(), "it has left");
+}
+
+#[test]
+fn pinned_notes_stay_on_today_a_click_copies_them_and_unpin_takes_them_off() {
+    let mut i = Island::new(Config::default());
+    let plain = i.today_height();
+    i.push(T0, Input::PinAdd("  ssh   10.0.0.5 ".into()));
+    i.push(T0, Input::PinAdd("Aula B3".into()));
+    i.push(T0, Input::PinAdd("   ".into()));
+    i.push(T0, Input::PinAdd("ssh 10.0.0.5".into()));
+    assert_eq!(i.pins(), ["ssh 10.0.0.5", "Aula B3"], "spaces squeezed, the same text moves up instead of repeating");
+    assert_eq!(i.today_height(), plain + 22.0 + 2.0 * 28.0, "a heading and a row each");
+    let cmds = i.activate(Action::PinCopy(1));
+    assert!(matches!(cmds.as_slice(), [Command::RestoreClipboard(t)] if t == "Aula B3"));
+    assert!(i.activate(Action::PinCopy(9)).is_empty(), "a stale position does nothing");
+    i.activate(Action::PinRemove(0));
+    assert_eq!(i.pins(), ["Aula B3"]);
+    i.push(i.now, Input::PinAdd("one".into()));
+    i.push(i.now, Input::PinRemove("AULA".into()));
+    assert_eq!(i.pins(), ["one"], "by a part of the text, any case");
+    i.push(i.now, Input::PinRemove(String::new()));
+    assert!(i.pins().is_empty(), "no words: the newest");
+    for n in 0..12 {
+        i.push(i.now, Input::PinAdd(format!("p{n}")));
+    }
+    assert_eq!(i.pins().len(), 8, "eight are kept");
+    i.push(i.now, Input::PinRemove("all".into()));
+    assert!(i.pins().is_empty());
+    assert_eq!(i.today_height(), plain);
+}
+
+#[test]
+fn the_command_bar_pins_and_unpins() {
+    let mut i = Island::new(Config::default());
+    i.run_bar(island_core::bar::Cmd::Pin("ssh pi@10.0.0.9".into()));
+    assert_eq!(i.pins(), ["ssh pi@10.0.0.9"]);
+    i.run_bar(island_core::bar::Cmd::Unpin("pi@".into()));
+    assert!(i.pins().is_empty());
+}
+
+#[test]
+fn several_small_pills_sit_beside_the_main_one_up_to_the_option() {
+    let act = |id: &str, label: &str| island_core::progress::Activity { id: id.into(), label: label.into(), detail: "thinking".into(), ..Default::default() };
+    let build = |pills: u32| {
+        let mut i = Island::new(Config { mini_pills: pills, ..Config::default() });
+        i.data = data(); // music is playing
+        i.data.focus = Some(Focus { active: true, end_epoch: None });
+        i.push(T0, Input::StartTimer(600));
+        i.push(T0, Input::Activity(island_core::progress::State::Run, act("a1", "Claude · site")));
+        i.push(T0, Input::Activity(island_core::progress::State::Run, act("a2", "Codex · api")));
+        i.push(T0, Input::Activity(island_core::progress::State::Run, act("a3", "Aider · docs")));
+        run(&mut i, 5000);
+        i
+    };
+    let i = build(1);
+    assert_eq!((i.current_face(), i.sides_shown()), (Face::MediaMini, vec![Side::Timer]), "one: as it always was");
+    let i = build(2);
+    assert_eq!(i.sides_shown(), [Side::Timer, Side::Focus]);
+    let i = build(4);
+    assert_eq!(i.sides_shown(), [Side::Timer, Side::Focus, Side::Op, Side::OpAt(0)]);
+    let (px, _, pw, _) = i.pill_rect();
+    assert!(pw > i.spring.w.pos + 3.0 * BUBBLE_W, "the pill rect holds all the bubbles");
+    // each one opens its own page
+    let mut i = i;
+    let fr = i.tick(i.now + 8, 8.0);
+    i.draw(&mut Scene::new(), &fonts(), fr.surface, 1.0);
+    let hits: Vec<Action> = i.hits.iter().map(|h| h.action.clone()).collect();
+    assert_eq!(hits.iter().filter(|a| matches!(a, Action::Open(Page::Timer | Page::Focus | Page::Op))).count(), 4, "{hits:?}");
+    let _ = px;
+    // fewer room again: the extra ones go
+    let mut i = build(4);
+    i.cfg.mini_pills = 1;
+    run(&mut i, 600);
+    assert_eq!(i.sides_shown(), [Side::Timer]);
+}
+
+#[test]
+fn the_phone_page_lists_conversations_opens_one_and_sends_a_reply() {
+    use island_core::phone::{Link, Msg, Thread};
+    let mut i = Island::new(Config::default());
+    assert!(!i.pages().contains(&Page::Phone), "no phone, no page");
+    let th = |name: &str, key: &str| Thread { name: name.into(), key: key.into(), when: "2026-10-26 09:23".into(), preview: "Ciao".into() };
+    i.data.phone = Some(Phone { link: Link { present: true, messages: true, battery: Some(80), ..Default::default() }, threads: vec![th("Enrica", "tel:+39347"), th("iliad", "sender:iliad")], messages: None, at_ms: T0, ..Default::default() });
+    assert!(i.pages().contains(&Page::Phone));
+    i.push(T0, Input::OpenPage(Page::Phone));
+    draw_frames(&mut i, 200);
+    assert_eq!(i.current_face(), Face::Phone);
+    let cmds = i.activate(Action::PhoneThread(1));
+    assert_eq!(cmds, vec![Command::PhoneOpen("sender:iliad".into())]);
+    assert_eq!(i.phone_open.as_deref(), Some("sender:iliad"));
+    // the messages arrive; the page draws them and a reply is typed and sent
+    i.data.phone.as_mut().unwrap().messages = Some(("sender:iliad".into(), vec![Msg { when: "2026-10-26 09:23".into(), mine: false, text: "Ciao".into() }]));
+    draw_frames(&mut i, 50);
+    // through the Reply button, as a click does, and the field must survive the frames that follow
+    i.activate(Action::EditField(Field::PhoneReply));
+    draw_frames(&mut i, 50);
+    assert!(i.edit.as_ref().is_some_and(|e| e.field == Field::PhoneReply), "the reply field stays open on the Phone page");
+    i.push(i.now, Input::Key(KeyInput::Text("va bene".into())));
+    i.push(i.now, Input::Key(KeyInput::Enter));
+    let sent: Vec<Command> = i.take_commands();
+    assert!(sent.contains(&Command::PhoneSend { key: "sender:iliad".into(), text: "va bene".into() }), "{sent:?}");
+    i.activate(Action::PhoneList);
+    assert!(i.phone_open.is_none());
+    // the phone goes away: the page is not offered any more
+    i.data.phone = None;
+    assert!(!i.pages().contains(&Page::Phone));
+}
+
+#[test]
+fn the_dock_keeps_what_is_live_and_what_is_used_and_the_grid_has_the_rest() {
+    let mut i = Island::new(Config::default());
+    let default = i.dock_pages();
+    assert_eq!(default.len(), 7, "Home and six: the room the option gives");
+    assert!(!default.contains(&Page::Options) && !default.contains(&Page::Clip), "unused pages wait on the grid");
+    // pages that get opened move into the dock
+    i.page_uses.insert(Page::Clip, 9);
+    i.page_uses.insert(Page::Options, 4);
+    let d = i.dock_pages();
+    assert!(d.contains(&Page::Clip) && d.contains(&Page::Options) && d.len() == 7, "{d:?}");
+    assert_eq!(d[0], Page::Home);
+    // something live comes first whatever the history says
+    i.data.phone = Some(Phone { link: island_core::phone::Link { present: true, ..Default::default() }, ..Default::default() });
+    i.push(T0, Input::StartTimer(60));
+    assert!(i.dock_pages().contains(&Page::Timer));
+    // the page on screen is always there
+    i.page = Some(Page::Weather);
+    i.data.weather = None;
+    let mut j = Island::new(Config { dock_icons: 4, ..Config::default() });
+    j.page = Some(Page::Sys);
+    assert!(j.dock_pages().contains(&Page::Sys) && j.dock_pages().len() == 4);
+}
+
+#[test]
+fn the_grid_lists_every_page_in_groups_and_a_click_opens_one() {
+    let mut i = Island::new(Config::default());
+    let groups = i.grid_groups();
+    let names: Vec<&str> = groups.iter().map(|g| g.0).collect();
+    assert_eq!(names, ["Day", "Messages", "Device", "Island"], "no live page, no Now group");
+    let all: Vec<Page> = groups.iter().flat_map(|g| g.1.clone()).collect();
+    assert!(all.contains(&Page::Options) && all.contains(&Page::Audio) && !all.contains(&Page::Grid) && !all.contains(&Page::Phone), "{all:?}");
+    i.push(T0, Input::OpenPage(Page::Grid));
+    draw_frames(&mut i, 200);
+    assert_eq!(i.current_face(), Face::Grid);
+    let opens: Vec<Page> = i.hits.iter().filter_map(|h| if let Action::Open(p) = h.action { Some(p) } else { None }).collect();
+    assert_eq!(opens.len(), all.len(), "one cell for each page");
+    // the bar: `go phone` opens a page, `go all` the grid
+    i.run_bar(island_core::bar::Cmd::Go(Page::Cal));
+    draw_frames(&mut i, 200);
+    assert_eq!(i.current_face(), Face::Cal);
+}
+
+#[test]
+fn the_phone_page_answers_calls_searches_contacts_and_starts_a_new_conversation() {
+    use island_core::phone::{Call, Contact, Link};
+    let mut i = Island::new(Config::default());
+    i.data.phone = Some(Phone { link: Link { present: true, messages: true, calls: false, ..Default::default() }, ..Default::default() });
+    i.push(T0, Input::OpenPage(Page::Phone));
+    draw_frames(&mut i, 200);
+    let off = i.phone_height();
+    // calls are off: the page offers to turn them on
+    assert!(i.hits.iter().any(|h| h.action == Action::PhoneCallDo(PhoneCall::Enable(true))));
+    assert_eq!(i.activate(Action::PhoneCallDo(PhoneCall::Enable(true))), vec![Command::PhoneCall(PhoneCall::Enable(true))]);
+    // a ringing call shows with the two buttons
+    i.data.phone = Some(Phone { link: Link { present: true, messages: true, calls: true, ..Default::default() }, calls: vec![Call { state: "ringing".into(), number: "+39347".into(), name: "Enrica".into() }], ..Default::default() });
+    draw_frames(&mut i, 200);
+    assert!(i.hits.iter().any(|h| h.action == Action::PhoneCallDo(PhoneCall::Answer)) && i.hits.iter().any(|h| h.action == Action::PhoneCallDo(PhoneCall::Hangup)));
+    assert!(i.phone_height() > off - 30.0 + 40.0, "room for the call row");
+    // a search for a contact: typed, sent as a command, the result opens a conversation with the number
+    i.activate(Action::EditField(Field::PhoneSearch));
+    draw_frames(&mut i, 20);
+    i.push(i.now, Input::Key(KeyInput::Text("enri".into())));
+    i.push(i.now, Input::Key(KeyInput::Enter));
+    assert!(i.take_commands().contains(&Command::PhoneSearch("enri".into())));
+    assert!(i.phone_search);
+    i.data.phone.as_mut().unwrap().contacts = Some(vec![Contact { name: "Enrica Rossi".into(), numbers: vec!["+39 347 123 4567".into()] }]);
+    draw_frames(&mut i, 100);
+    assert!(i.hits.iter().any(|h| h.action == Action::PhoneContact(0)));
+    let cmds = i.activate(Action::PhoneContact(0));
+    assert_eq!(cmds, vec![Command::PhoneOpen("tel:+393471234567".into())]);
+    assert!(!i.phone_search && i.phone_open.as_deref() == Some("tel:+393471234567"));
+    // in the conversation, a call button when calls are on
+    draw_frames(&mut i, 100);
+    assert!(i.hits.iter().any(|h| h.action == Action::PhoneCallDo(PhoneCall::Dial("+393471234567".into()))));
+}
+
+#[test]
+fn a_screenshot_card_offers_the_text_in_the_picture() {
+    let shot = |id: u32| Incoming { id, app: "niri".into(), summary: "Screenshot captured".into(), body: "You can paste the image from the clipboard.".into(), ..Default::default() };
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::Notification(shot(7)));
+    let n = i.notif.clone().expect("a card");
+    assert!(n.app == "open-island" && n.actions.iter().any(|a| a.key == "open-island:ocr"), "{:?} {:?}", n.app, n.actions.len());
+    assert_eq!(n.summary, "Screenshot captured", "it still says what happened");
+    assert!(i.history.iter().any(|(h, _)| h.app == "niri"), "the original stays in the history");
+    // its button reads the image, and the card goes
+    let cmds = i.activate(Action::NotifAction("open-island:ocr".into()));
+    assert_eq!(cmds, vec![Command::Ocr]);
+    assert!(i.notif.is_none());
+    // switched off: the card is the compositor's own
+    let mut j = Island::new(Config { ocr_screenshots: false, ..Config::default() });
+    j.push(T0, Input::Notification(shot(8)));
+    assert_eq!(j.notif.as_ref().map(|n| n.app.as_str()), Some("niri"));
+    // other notifications are not touched, and quiet time keeps the card back as it does for any
+    let mut k = Island::new(Config::default());
+    k.push(T0, Input::Notification(Incoming { id: 9, app: "Telegram".into(), summary: "Enrica".into(), ..Default::default() }));
+    assert_eq!(k.notif.as_ref().map(|n| n.app.as_str()), Some("Telegram"));
+}

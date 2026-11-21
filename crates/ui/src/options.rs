@@ -20,6 +20,7 @@ pub fn toggles(tab: usize) -> &'static [(&'static str, &'static str)] {
             ("clipboard_history", "Clipboard history"),
             ("timer_sound", "Timer sound"),
             ("auto_audio_output", "Audio to headphones"),
+            ("watch_downloads", "Show downloads"),
         ],
         1 => &[
             ("show_notifications", "Show notifications"),
@@ -28,6 +29,7 @@ pub fn toggles(tab: usize) -> &'static [(&'static str, &'static str)] {
             ("meeting_alerts", "Meeting heads-up"),
             ("rain_alerts", "Rain alerts"),
             ("culprit_alerts", "Heavy program alerts"),
+            ("ocr_screenshots", "Text from screenshots"),
         ],
         2 => &[("quiet_in_meetings", "Quiet in meetings"), ("quiet_on_mic", "Quiet on a call"), ("quiet_on_screen_share", "Quiet when sharing"), ("away_recap", "Recap when back")],
         3 => &[("travel_times", "Travel times"), ("evening_weekends", "Cards on weekends")],
@@ -44,6 +46,8 @@ pub fn describe(key: &str) -> &'static str {
         "status_icons" => "Icons in the pill for the microphone, camera, screen share and quiet mode",
         "clipboard_history" => "Keep a list of what you copy (pinned entries survive restarts)",
         "hide_on_fullscreen" => "Slide the island away while a window is fullscreen",
+        "ocr_screenshots" => "A screenshot card offers to copy the text in the picture",
+        "watch_downloads" => "Show browser downloads as they come (reads the download folder)",
         "currency_rates" => "Fetch the ECB daily rates (20 usd in eur in the command bar)",
         "wifi_position" => "Send nearby Wi-Fi addresses to beacondb.net for a position within metres",
         "follow_position" => "Weather, trips and the map use where you are; off: the settings coordinates",
@@ -72,6 +76,8 @@ pub fn describe(key: &str) -> &'static str {
         "low_battery_percent" => "The battery level that gives the low battery warning",
         "meeting_lead_minutes" => "How long before an event its card appears",
         "meeting_pill_minutes" => "How long before an event the pill on the side appears",
+        "dock_icons" => "How many page icons the bottom bar shows (the rest: All pages)",
+        "mini_pills" => "How many small pills may sit beside the main one (timer, focus, activities)",
         "travel_margin_minutes" => "How much earlier than needed to be told to leave for an event",
         "commute_minutes" => "Door to door to your lectures: cards say when to leave (0: off)",
         "deep_work_minutes" => "Hold notifications after this long on work apps in a row (0: off)",
@@ -99,6 +105,7 @@ pub fn steppers(tab: usize) -> &'static [Stepper] {
             ("meeting_lead_minutes", "Event card", "min", 1.0, 1.0, 60.0),
             ("meeting_pill_minutes", "Event pill", "min", 1.0, 1.0, 120.0),
         ],
+        0 => &[("mini_pills", "Side pills", "", 1.0, 1.0, 4.0), ("dock_icons", "Dock icons", "", 1.0, 4.0, 12.0)],
         2 => &[("deep_work_minutes", "Auto focus", "min", 5.0, 0.0, 120.0), ("break_minutes", "Break nudge", "min", 15.0, 0.0, 240.0)],
         3 => &[
             ("morning_recap_time", "Morning", "time", 15.0, 0.0, 1425.0),
@@ -148,6 +155,8 @@ pub fn get_bool(c: &Config, key: &str) -> bool {
         "follow_position" => c.follow_position,
         "wifi_position" => c.wifi_position,
         "currency_rates" => c.currency_rates,
+        "watch_downloads" => c.watch_downloads,
+        "ocr_screenshots" => c.ocr_screenshots,
         "battery_alerts" => c.battery_alerts,
         "weather" => c.weather,
         "rain_alerts" => c.rain_alerts,
@@ -180,6 +189,8 @@ pub fn set_bool(c: &mut Config, key: &str, on: bool) {
         "follow_position" => c.follow_position = on,
         "wifi_position" => c.wifi_position = on,
         "currency_rates" => c.currency_rates = on,
+        "watch_downloads" => c.watch_downloads = on,
+        "ocr_screenshots" => c.ocr_screenshots = on,
         "battery_alerts" => c.battery_alerts = on,
         "weather" => c.weather = on,
         "rain_alerts" => c.rain_alerts = on,
@@ -210,6 +221,8 @@ pub fn get_num(c: &Config, key: &str) -> f64 {
         "meeting_lead_minutes" => c.meeting_lead_ms as f64 / 60_000.0,
         "meeting_pill_minutes" => c.meeting_pill_ms as f64 / 60_000.0,
         "travel_margin_minutes" => c.travel_margin_ms as f64 / 60_000.0,
+        "mini_pills" => c.mini_pills as f64,
+        "dock_icons" => c.dock_icons as f64,
         "deep_work_minutes" => c.deep_work_minutes as f64,
         "commute_minutes" => c.commute_minutes as f64,
         "break_minutes" => c.break_minutes as f64,
@@ -227,6 +240,8 @@ pub fn set_num(c: &mut Config, key: &str, v: f64) {
         "meeting_lead_minutes" => c.meeting_lead_ms = (v * 60_000.0).round() as i64,
         "meeting_pill_minutes" => c.meeting_pill_ms = (v * 60_000.0).round() as i64,
         "travel_margin_minutes" => c.travel_margin_ms = (v * 60_000.0).round() as i64,
+        "mini_pills" => c.mini_pills = (v.round() as u32).clamp(1, 4),
+        "dock_icons" => c.dock_icons = (v.round() as u32).clamp(4, 12),
         "deep_work_minutes" => c.deep_work_minutes = v.round() as i64,
         "commute_minutes" => c.commute_minutes = v.round() as i64,
         "break_minutes" => c.break_minutes = v.round() as i64,
@@ -287,10 +302,10 @@ mod tests {
     fn every_option_here_is_one_the_platform_layer_can_write() {
         // the keys of the page and the keys the configuration accepts are the same list
         let page: std::collections::BTreeSet<&str> = (0..TABS.len()).flat_map(|t| toggles(t).iter().map(|(k, _)| *k)).collect();
-        assert_eq!(page.len(), 26, "no option on two tabs");
+        assert_eq!(page.len(), 28, "no option on two tabs");
         assert_eq!(TABS[RULES_TAB], "Rules");
         let nums: Vec<&str> = (0..TABS.len()).flat_map(|t| steppers(t).iter().map(|s| s.0)).collect();
-        assert_eq!(nums, ["notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes", "deep_work_minutes", "break_minutes", "morning_recap_time", "evening_recap_time", "commute_minutes", "travel_margin_minutes"]);
+        assert_eq!(nums, ["mini_pills", "dock_icons", "notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes", "deep_work_minutes", "break_minutes", "morning_recap_time", "evening_recap_time", "commute_minutes", "travel_margin_minutes"]);
     }
 
     #[test]

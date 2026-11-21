@@ -136,6 +136,8 @@ impl Island {
             }
             Input::StartTimer(secs) => self.start_timer(secs),
             Input::TodoAdd(text) => self.add_todo(text),
+            Input::PinAdd(text) => self.pin(&text),
+            Input::PinRemove(what) => self.unpin(&what),
             Input::StartNamedTimer(secs, label) => self.start_named_timer(secs, label),
             Input::CancelTimerNamed(label) => {
                 let same = |t: &Timer| t.label.eq_ignore_ascii_case(&label);
@@ -167,6 +169,12 @@ impl Island {
         }
     }
 
+    /// A screenshot taken by the compositor or a tool: its card has no use for the island's own, so it is told apart by its words.
+    fn is_screenshot(n: &Incoming) -> bool {
+        let s = n.summary.to_lowercase();
+        !is_own(n) && n.app != "open-island" && (s.contains("screenshot") || s.contains("schermata") || s.contains("screen capture"))
+    }
+
     pub(super) fn on_notification(&mut self, n: Incoming) {
         log::debug!("notification {} from {:?}: dnd={} showing={}", n.id, n.app, self.data.dnd, self.notif.is_some());
         if !(is_own(&n) && n.app == "open-island") {
@@ -177,6 +185,13 @@ impl Island {
                 self.log_event(LogKind::Notification, text);
             }
         }
+        // a screenshot's card becomes one that offers the text in the picture
+        let n = if self.cfg.ocr_screenshots && self.cfg.show_notifications && !self.quiet() && Self::is_screenshot(&n) {
+            self.next_own_id += 1;
+            Incoming { id: self.next_own_id, app: "open-island".into(), summary: n.summary.clone(), body: "Copy the text in it?".into(), actions: vec![NotifAction { key: "open-island:ocr".into(), label: "Copy text".into() }], expire_ms: Some(8000), ..Default::default() }
+        } else {
+            n
+        };
         if (self.quiet() || !self.cfg.show_notifications) && !n.critical && !is_own(&n) {
             return;
         }
@@ -339,6 +354,12 @@ impl Island {
         if let Some((leave, _)) = self.leave_plan(items).filter(|(l, _)| *l > self.now) {
             lines.insert(0, format!("Leave {}", crate::clock::civil(leave, off).hhmm()));
         }
+        // the way home tonight, when the usual train is not on time: that is the news of the evening
+        if heading == "Tomorrow" {
+            if let Some(t) = self.train_tonight() {
+                lines.insert(0, t);
+            }
+        }
         // the nearest deadline, as what it is: "Reti exam in 3 days"
         if let Some(d) = soon.first() {
             let left = d.day - self.day_number(self.now);
@@ -351,6 +372,21 @@ impl Island {
             lines.push(island_core::weather::forecast_line(f, |ms| crate::clock::civil(ms, off).hhmm()));
         }
         Some((format!("{heading} · {}", head.join(", ")), lines.join(" · ")))
+    }
+
+    /// "17:42 train +12 min" when the pinned train has not left yet, the board was read in the last 20 minutes and it is late or
+    /// cancelled; None when it is on time, unknown or gone.
+    pub(crate) fn train_tonight(&self) -> Option<String> {
+        let (pin, st) = (self.data.train.as_ref()?, self.data.train_status.as_ref()?);
+        let local = crate::clock::civil(self.now, self.data.utc_offset_secs).hhmm();
+        if pin.time.as_str() <= local.as_str() || self.now - st.at_ms > 20 * 60_000 {
+            return None;
+        }
+        match (st.cancelled, st.delay_min) {
+            (true, _) => Some(format!("{} train cancelled", pin.time)),
+            (_, Some(d)) if d >= 3 => Some(format!("{} train +{d} min", pin.time)),
+            _ => None,
+        }
     }
 
     /// When to leave for the first lecture-like event of `items` (see `timeline::leave_plan`); None without a commute set.
@@ -596,6 +632,10 @@ impl Island {
                 self.reminders.truncate(50);
                 self.say("Reminder set", &format!("in {} · {text}", island_core::duration::fmt_took(secs * 1000).replace(' ', "")));
             }
+            Cmd::Ocr => self.pending.push(Command::Ocr),
+            Cmd::Go(page) => self.push(now, Input::OpenPage(page)),
+            Cmd::Pin(text) => self.pin(&text),
+            Cmd::Unpin(what) => self.unpin(&what),
             Cmd::Deadline { day, text } => {
                 self.deadlines.push(Deadline { day, text: text.chars().take(80).collect() });
                 self.deadlines.sort_by_key(|d| d.day);
@@ -714,6 +754,52 @@ impl Island {
         &self.todos
     }
 
+    /// Keeps a note on the Today page (newest first, at most 8; the same text again only moves it up).
+    pub fn pin(&mut self, text: &str) {
+        let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(120).collect();
+        if text.is_empty() {
+            return;
+        }
+        self.pins.retain(|p| *p != text);
+        self.pins.insert(0, text.clone());
+        self.pins.truncate(8);
+        self.say("Pinned to Today", &text);
+    }
+
+    /// Takes pins off: "" the newest, "all" every one, else the first containing the words (any case).
+    pub fn unpin(&mut self, what: &str) {
+        let what = what.trim().to_lowercase();
+        let gone = match what.as_str() {
+            "" => (!self.pins.is_empty()).then(|| vec![self.pins.remove(0)]),
+            "all" | "tutti" => Some(std::mem::take(&mut self.pins)),
+            w => self.pins.iter().position(|p| p.to_lowercase().contains(w)).map(|i| vec![self.pins.remove(i)]),
+        };
+        match gone {
+            Some(g) if !g.is_empty() => self.say("Unpinned", &if g.len() == 1 { g[0].clone() } else { format!("{} notes", g.len()) }),
+            _ => self.say("Nothing to unpin", ""),
+        }
+    }
+
+    /// How often each page was opened, by page key, to be kept between runs.
+    pub fn page_usage(&self) -> Vec<(String, u32)> {
+        let mut v: Vec<(String, u32)> = self.page_uses.iter().map(|(p, n)| (p.key().to_string(), *n)).collect();
+        v.sort();
+        v
+    }
+
+    pub fn restore_page_usage(&mut self, v: Vec<(String, u32)>) {
+        self.page_uses = v.into_iter().filter_map(|(k, n)| Some((island_core::face::page_by_name(&k)?, n))).collect();
+    }
+
+    pub fn pins(&self) -> &[String] {
+        &self.pins
+    }
+
+    pub fn restore_pins(&mut self, p: Vec<String>) {
+        self.pins = p;
+        self.pins.truncate(8);
+    }
+
     pub fn restore_todos(&mut self, t: Vec<Todo>) {
         self.todos = t;
     }
@@ -767,6 +853,11 @@ impl Island {
     /// Opens a tab of the options page (0 Island, 1 Alerts, 2 Music).
     pub fn show_options_tab(&mut self, tab: usize) {
         self.options_tab = tab.min(crate::options::TABS.len() - 1);
+    }
+
+    /// Opens an iPhone conversation on the Phone page (for the preview tool).
+    pub fn set_preview_phone_open(&mut self, key: &str) {
+        self.phone_open = Some(key.into());
     }
 
     /// Picks a place on the map page (for the preview tool).
@@ -826,7 +917,7 @@ impl Island {
             Field::Font => c.font.clone(),
             Field::Latitude => c.latitude.map(|v| v.to_string()).unwrap_or_default(),
             Field::Longitude => c.longitude.map(|v| v.to_string()).unwrap_or_default(),
-            Field::Home => String::new(),
+            Field::Home | Field::PhoneReply | Field::PhoneSearch => String::new(),
             // the pinned train as the line that would pin it again, to be edited
             Field::Train => self.data.train.as_ref().map(|t| format!("{} {}{}", t.from_name, t.time, if t.to_name.is_empty() { String::new() } else { format!(" verso {}", t.to_name) })).unwrap_or_default(),
             Field::Sound => c.notification_sound.clone(),
@@ -911,6 +1002,18 @@ impl Island {
                     Field::CalDavPassword => {
                         self.note = note("A password is needed");
                         self.edit = Some(e);
+                    }
+                    Field::PhoneSearch => {
+                        if !t.trim().is_empty() {
+                            self.phone_search = true;
+                            self.pending.push(Command::PhoneSearch(t.trim().to_string()));
+                        }
+                    }
+                    Field::PhoneReply => {
+                        if let (Some(key), false) = (self.phone_open.clone(), t.trim().is_empty()) {
+                            self.say("Sending", &t);
+                            self.pending.push(Command::PhoneSend { key, text: t });
+                        }
                     }
                     Field::Home => {
                         self.say("Setting home", if t.is_empty() { "removing it" } else { &t });

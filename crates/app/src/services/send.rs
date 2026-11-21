@@ -8,6 +8,7 @@ use island_ui::model::{Incoming, Input};
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -39,6 +40,30 @@ pub fn probe(ip: Ipv4Addr, port: u16, connect_timeout: Duration) -> Option<Peer>
     None
 }
 
+/// Runs `tailscale` and gives what it printed (None when it is not installed, not running, or slow).
+fn tailscale(args: &[&str]) -> Option<String> {
+    let mut child = Command::new("tailscale").args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().ok()?;
+    let began = Instant::now();
+    while child.try_wait().ok()?.is_none() {
+        if began.elapsed() > Duration::from_secs(6) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
+    Some(out)
+}
+
+/// The devices of the tailnet that Taildrop can send to right now.
+fn taildrop_peers() -> Vec<Peer> {
+    let Some(targets) = tailscale(&["file", "cp", "--targets"]) else { return vec![] };
+    let os = tailscale(&["status", "--json"]).map(|j| island_core::taildrop::parse_os(&j)).unwrap_or_default();
+    island_core::taildrop::peers(&island_core::taildrop::parse_targets(&targets), &os)
+}
+
 /// Looks for devices on the /24 network: the list on the island grows as they answer.
 pub fn scan(rep: Reporter) {
     static BUSY: AtomicBool = AtomicBool::new(false);
@@ -46,13 +71,16 @@ pub fn scan(rep: Reporter) {
         return;
     }
     std::thread::spawn(move || {
-        rep.patch(|d| {
-            d.peers.clear();
+        // the tailnet answers at once; the network is looked through after
+        let tail = taildrop_peers();
+        let first = tail.clone();
+        rep.patch(move |d| {
+            d.peers = first;
             d.peers_scanning = true;
         });
         if let Some(own) = local_ip() {
             let hosts = Arc::new(ls::neighbours(own.octets()));
-            let (next, found) = (Arc::new(AtomicUsize::new(0)), Arc::new(Mutex::new(Vec::<Peer>::new())));
+            let (next, found) = (Arc::new(AtomicUsize::new(0)), Arc::new(Mutex::new(tail)));
             let workers: Vec<_> = (0..48)
                 .map(|_| {
                     let (hosts, next, found, rep) = (hosts.clone(), next.clone(), found.clone(), rep.clone());
@@ -179,6 +207,9 @@ pub fn send_files(peer: &Peer, paths: &[String], mut on: impl FnMut(Progress)) -
 
 /// Sends in the background: the progress pill shows it, and a card says how it ended.
 pub fn send(rep: Reporter, peer: Peer, paths: Vec<String>) {
+    if peer.taildrop {
+        return send_taildrop(rep, peer, paths);
+    }
     std::thread::spawn(move || {
         let act = |detail: String, frac: Option<f64>| Activity { id: "send".into(), label: format!("Sending to {}", peer.alias), detail, icon: Some("send".into()), tint: None, frac };
         let last = Mutex::new(Instant::now() - Duration::from_secs(1));
@@ -199,6 +230,25 @@ pub fn send(rep: Reporter, peer: Peer, paths: Vec<String>) {
             Err(e) => (State::Fail, "Send failed".to_string(), e.clone()),
         };
         rep.input(Input::Activity(state, act(body.clone(), Some(1.0))));
+        rep.input(Input::Notification(Incoming { id: 3_600_000 + (std::process::id() % 1000), app: "open-island".into(), summary, body, expire_ms: Some(3500), ..Default::default() }));
+    });
+}
+
+/// Sends through Taildrop: `tailscale file cp <files> <address>:`. It reports no progress, so the pill only says where it goes.
+fn send_taildrop(rep: Reporter, peer: Peer, paths: Vec<String>) {
+    std::thread::spawn(move || {
+        let act = |detail: String| Activity { id: "send".into(), label: format!("Sending to {}", peer.alias), detail, icon: Some("send".into()), tint: None, frac: None };
+        rep.input(Input::Activity(State::Run, act("through Tailscale".into())));
+        let files = collect(&paths);
+        let mut cmd = Command::new("tailscale");
+        cmd.args(["file", "cp", "--"]).args(files.iter().map(|(p, _)| p)).arg(format!("{}:", peer.ip)).stdin(std::process::Stdio::null());
+        let result = if files.is_empty() { Ok(0) } else { cmd.output().map_err(|e| e.to_string()).and_then(|o| if o.status.success() { Ok(files.len()) } else { Err(String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("tailscale failed").trim().to_string()) }) };
+        let (state, summary, body) = match &result {
+            Ok(0) => (State::Done, "Nothing to send".to_string(), "no file".to_string()),
+            Ok(n) => (State::Done, "Sent".to_string(), format!("{} to {} (Tailscale)", if *n == 1 { "1 file".to_string() } else { format!("{n} files") }, peer.alias)),
+            Err(e) => (State::Fail, "Send failed".to_string(), e.clone()),
+        };
+        rep.input(Input::Activity(state, act(body.clone())));
         rep.input(Input::Notification(Incoming { id: 3_600_000 + (std::process::id() % 1000), app: "open-island".into(), summary, body, expire_ms: Some(3500), ..Default::default() }));
     });
 }
@@ -251,7 +301,7 @@ mod tests {
     }
 
     fn peer(port: u16) -> Peer {
-        Peer { alias: "Pixel".into(), ip: "127.0.0.1".into(), port, https: false, model: String::new(), kind: "mobile".into() }
+        Peer { alias: "Pixel".into(), ip: "127.0.0.1".into(), port, https: false, model: String::new(), kind: "mobile".into(), taildrop: false }
     }
 
     fn files(dir: &std::path::Path) -> Vec<String> {

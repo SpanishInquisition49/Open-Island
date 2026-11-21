@@ -31,6 +31,8 @@ impl Island {
             Face::Today => h = self.today_height(),
             Face::TimerFull => h += self.extra_timers.len().min(3) as f64 * 28.0 + if self.extra_timers.is_empty() { 0.0 } else { 8.0 },
             Face::Send => h = self.send_height(),
+            Face::Phone => h = self.phone_height(),
+            Face::Grid => h = self.grid_height(),
             Face::Map => h = 14.0 + 34.0 + MAP_H + 8.0 + 34.0 + 10.0,
             Face::Activity => h = 14.0 + 34.0 + 8.0 + 6.0 * 30.0 + 10.0,
             Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
@@ -40,7 +42,7 @@ impl Island {
         }
         if has_dock(face) {
             h += DOCK_H;
-            w = w.max(self.pages().len() as f64 * 30.0 + 28.0);
+            w = w.max((self.dock_pages().len() + 1) as f64 * 30.0 + 28.0);
         }
         (w, h)
     }
@@ -670,7 +672,7 @@ impl Island {
         self.slow_checks();
         self.sync_lyrics();
         // notifications: expiry and the next waiting one
-        if self.edit.as_ref().is_some_and(|e| now > e.until) || (self.edit.is_some() && !matches!(self.page, Some(Page::Settings | Page::Options | Page::Map))) {
+        if self.edit.as_ref().is_some_and(|e| now > e.until) || (self.edit.is_some() && !matches!(self.page, Some(Page::Settings | Page::Options | Page::Map | Page::Phone))) {
             self.edit = None;
             self.icloud_user = None;
         }
@@ -719,9 +721,11 @@ impl Island {
 
         let (snap, _big) = self.snapshot();
         let (mut want, mut side) = face::choose(&snap);
+        let mut more = face::more_sides(want, side, &snap, self.ops.also.len(), (self.cfg.mini_pills as usize).saturating_sub(1));
         if side.is_none() {
             self.swapped = false;
         } else if self.swapped {
+            more.clear();
             let kind = match want {
                 Face::MediaMini => Some(Side::Media),
                 Face::TimerMini => Some(Side::Timer),
@@ -754,10 +758,16 @@ impl Island {
             };
         }
         if want != self.want {
+            if let Some(p) = page_of(want).filter(|p| !matches!(p, Page::Home | Page::Grid)) {
+                *self.page_uses.entry(p).or_insert(0) += 1;
+            }
+        }
+        if want != self.want {
             log::debug!("face {:?} -> {:?} (shown {:?}, notif {})", self.want, want, self.shown, self.notif.is_some());
         }
         self.want = want;
         self.want_side = side;
+        self.want_more = more;
 
         // content crossfade: out fast, in once the shape is about halfway to its target
         let dt = if dt_ms.is_finite() { dt_ms.clamp(0.0, 1000.0) } else { 0.0 };
@@ -767,11 +777,13 @@ impl Island {
             if self.alpha <= 0.0 {
                 self.shown = self.want;
                 self.shown_side = self.want_side;
+                self.shown_more = self.want_more.clone();
                 self.from_size = (self.spring.w.pos, self.spring.h.pos);
             }
         } else {
             if let Some(s) = self.want_side {
                 self.shown_side = Some(s);
+                self.shown_more = self.want_more.clone();
             }
             let span = (tw - self.from_size.0).abs().max((th - self.from_size.1).abs());
             let done = if span < 1.0 {
@@ -799,11 +811,12 @@ impl Island {
             self.bubble_k = if self.want_side.is_some() { 1.0 } else { 0.0 };
             if self.want_side.is_none() {
                 self.shown_side = None;
+                self.shown_more.clear();
             }
         } else if self.shown_side.is_none() {
             self.bubble_k = 0.0;
         }
-        self.settled = at_rest && self.alpha >= 1.0 && self.want == self.shown && self.want_side == self.shown_side;
+        self.settled = at_rest && self.alpha >= 1.0 && self.want == self.shown && self.want_side == self.shown_side && self.want_more == self.shown_more;
         // what needs frames: motion at every vsync, an equalizer at 30 fps, things that expire a few times a second,
         // a timer twice a second, otherwise the clock once a second
         let levels_moving = self.ease_levels(dt_ms) | self.ease_media_button(dt_ms);
@@ -824,12 +837,12 @@ impl Island {
         };
         let animating = next_ms == 0;
         // the surface: holds both shapes plus room for the overshoot while animating
-        let group_w = self.spring.w.pos + if self.shown_side.is_some() { BUBBLE_W + BUBBLE_GAP } else { 0.0 };
+        let group_w = self.spring.w.pos + self.side_slot(self.shown_side.is_some(), self.shown_more.len());
         let (sw, sh) = if self.settled {
             self.anim_box = None;
             (group_w.ceil(), self.spring.h.pos.ceil())
         } else {
-            let target_w = tw + if self.want_side.is_some() { BUBBLE_W + BUBBLE_GAP } else { 0.0 };
+            let target_w = tw + self.side_slot(self.want_side.is_some(), self.want_more.len());
             let bx = match self.anim_box {
                 Some((aw, ah, bw, bh)) if aw == target_w && ah == th => (bw, bh),
                 _ => (group_w.max(target_w).ceil() + 24.0, self.spring.h.pos.max(th).ceil() + 16.0),
@@ -865,7 +878,9 @@ impl Island {
         let r = (h / 2.0).min(30.0);
         let mut v = vec![(self.pill_origin.0, self.pill_origin.1, w, h, r)];
         if self.shown_side.is_some() && self.bubble_k > 0.5 {
-            v.push((self.pill_origin.0 + w + BUBBLE_GAP, self.pill_origin.1, BUBBLE_W, h, r));
+            for n in 0..=self.shown_more.len() {
+                v.push((self.pill_origin.0 + w + BUBBLE_GAP + n as f64 * (BUBBLE_W + BUBBLE_GAP), self.pill_origin.1, BUBBLE_W, h, r));
+            }
         }
         v
     }

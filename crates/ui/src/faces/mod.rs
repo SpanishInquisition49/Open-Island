@@ -44,7 +44,7 @@ impl Island {
     /// Draws the island into `scene`, in surface coordinates scaled by `scale`.
     pub fn draw(&mut self, scene: &mut Scene, fonts: &Fonts, surface: (f64, f64), scale: f64) {
         let (w, h) = (self.spring.w.pos.max(1.0), self.spring.h.pos.max(1.0));
-        let slot = if self.shown_side.is_some() { (BUBBLE_W + BUBBLE_GAP) * self.bubble_k } else { 0.0 };
+        let slot = self.side_slot(self.shown_side.is_some(), self.shown_more.len()) * self.bubble_k;
         let origin = (((surface.0 - (w + slot)) / 2.0).round(), TOP_MARGIN);
         self.pill_origin = origin;
         let base = Affine::scale(scale) * Affine::translate(origin);
@@ -97,9 +97,9 @@ impl Island {
         scene.pop_layer();
 
         // the side bubble
-        if let (Some(side), true) = (self.shown_side, self.bubble_k > 0.01) {
+        for (n, side) in self.sides_shown().into_iter().enumerate().filter(|_| self.bubble_k > 0.01) {
             let kk = self.bubble_k;
-            let bx = w + BUBBLE_GAP;
+            let bx = w + BUBBLE_GAP + n as f64 * (BUBBLE_W + BUBBLE_GAP);
             let bt = base
                 * Affine::translate((bx + BUBBLE_W / 2.0, h / 2.0))
                 * Affine::scale(0.6 + 0.4 * kk)
@@ -116,7 +116,8 @@ impl Island {
     /// The row of page icons at the bottom of a page: a click goes straight to that page.
     fn draw_dock(&self, p: P, w: f64, h: f64) {
         p.stagger(9);
-        let pages = self.pages();
+        let mut pages = self.dock_pages();
+        pages.push(Page::Grid);
         let current = self.page.or_else(|| page_of(self.shown));
         let n = pages.len().max(1) as f64;
         let step = ((w - 28.0) / n).min(38.0);
@@ -154,6 +155,8 @@ impl Island {
             Face::Reply => self.face_reply(p, w, h),
             Face::Device => self.face_device(p, w, h),
             Face::Weather => self.face_weather(p, w, h),
+            Face::Phone => self.face_phone(p, w, h),
+            Face::Grid => self.face_grid(p, w, h),
             Face::Options => self.face_options(p, w, h),
             Face::Audio => self.face_audio(p, w, h),
             Face::Today => self.face_today(p, w, h),
@@ -843,6 +846,8 @@ impl Island {
 
 mod pages_a;
 mod pages_b;
+mod grid;
+mod phone;
 
 
 fn page_icon(p: Page) -> &'static str {
@@ -866,6 +871,8 @@ fn page_icon(p: Page) -> &'static str {
         Page::Send => "send",
         Page::Activity => "chart-donut",
         Page::Map => "map-pin",
+        Page::Phone => "device-mobile",
+        Page::Grid => "layout-grid",
     }
 }
 
@@ -875,7 +882,7 @@ fn side_to_page(s: Side) -> Page {
         Side::Meeting => Page::Meeting,
         Side::Focus => Page::Focus,
         Side::Media => Page::Media,
-        Side::Op => Page::Op,
+        Side::Op | Side::OpAt(_) => Page::Op,
     }
 }
 

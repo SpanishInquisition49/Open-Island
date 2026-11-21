@@ -37,6 +37,14 @@ pub enum Cmd {
     Todo(String),
     /// The same, but it comes back every day (`todo daily bring the charger`).
     TodoDaily(String),
+    /// Read the text of the image on the clipboard and copy it (`ocr`).
+    Ocr,
+    /// Open a page by name (`go phone`, `go meteo`).
+    Go(crate::face::Page),
+    /// A note that stays on the Today page until it is removed (`pin ssh 10.0.0.5`); a click there copies it.
+    Pin(String),
+    /// Takes a pin off (`unpin ssh`: the first one containing it; `unpin all`; `unpin`: the newest).
+    Unpin(String),
     /// Something to generate (a password, dice): made when Enter is pressed, never while typing.
     Gen(crate::quick::Gen),
     /// A sum or a conversion: the text to show and to copy.
@@ -44,12 +52,13 @@ pub enum Cmd {
 }
 
 /// Examples shown, one set after the other, while the bar is empty: what it can do.
-pub const HINTS: [&str; 5] = [
+pub const HINTS: [&str; 6] = [
     "10m tea · remind at 9pm call mom · todo buy milk",
     "pw 24 · roll 2d6 · uuid · coin · random 1-100",
     "days until 3 feb · today + 45 days · week",
     "20 usd in eur · 5 km in mi · 20% of 150 · 12*7",
     "recap · agenda · pomodoro · focus 45 · dnd on",
+    "go phone · go meteo · ocr (the image on the clipboard)",
 ];
 
 /// How to write a command whose first word was recognised but whose rest was not.
@@ -61,6 +70,8 @@ pub fn usage(line: &str) -> Option<&'static str> {
         "focus" | "studio" => "focus 45  (minutes, or 2h)",
         "dnd" | "silenzio" => "dnd on | dnd off",
         "todo" | "task" | "compito" => "todo <what to do>",
+        "go" | "vai" | "apri" => "go <page>: phone, today, map, weather, calendar, system, sound, options...",
+        "pin" | "appunta" => "pin <text to keep on Today>  ·  unpin [text | all]",
         "split" | "dividi" => "split 84.5 by 3",
         "days" | "giorni" => "days until 3 feb | days since 2027-01-01",
         "roll" | "dice" | "dado" | "random" | "pw" | "password" => "roll 2d6 | d20 | random 1-100 | pw 24",
@@ -86,6 +97,11 @@ pub fn preview(cmd: &Cmd) -> String {
         Cmd::Home(h) => format!("Set home · {h}"),
         Cmd::Todo(t) => format!("Add to your list · {t}"),
         Cmd::TodoDaily(t) => format!("Add to your list, every day · {t}"),
+        Cmd::Ocr => "Read the text of the image on the clipboard and copy it".into(),
+        Cmd::Go(p) => format!("Go to {}", p.label()),
+        Cmd::Pin(t) => format!("Pin to Today · {t}"),
+        Cmd::Unpin(t) if t.is_empty() => "Unpin the newest".into(),
+        Cmd::Unpin(t) => format!("Unpin · {t}"),
         Cmd::Gen(g) => crate::quick::preview_gen(g),
         Cmd::Value(v) => format!("{v}   (Enter copies)"),
     }
@@ -167,6 +183,10 @@ pub fn parse_ctx(line: &str, ctx: &Ctx) -> Option<Cmd> {
             let text = line.split_whitespace().skip(skip).collect::<Vec<_>>().join(" ");
             return (!text.is_empty()).then_some(if daily { Cmd::TodoDaily(text.clone()) } else { Cmd::Todo(text) });
         }
+        "ocr" | "leggi" if words.len() == 1 || words.get(1) == Some(&"testo") => return Some(Cmd::Ocr),
+        "go" | "vai" | "apri" if words.len() >= 2 => return crate::face::page_by_name(&words[1..].join(" ")).map(Cmd::Go),
+        "pin" | "appunta" if words.len() >= 2 => return Some(Cmd::Pin(line.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
+        "unpin" | "stacca" => return Some(Cmd::Unpin(line.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
         "pomodoro" | "pomo" => return Some(Cmd::Pomodoro),
         "stopwatch" | "cronometro" | "sw" => return Some(Cmd::Stopwatch),
         "dnd" | "silenzio" => {
@@ -792,6 +812,17 @@ mod tests {
     }
 
     #[test]
+    fn a_pin_keeps_its_text_and_unpin_names_what_to_take_off() {
+        assert_eq!(p("pin ssh 10.0.0.5 -p 2222"), Some(Cmd::Pin("ssh 10.0.0.5 -p 2222".into())));
+        assert_eq!(p("pin Aula B3"), Some(Cmd::Pin("Aula B3".into())));
+        assert_eq!(p("pin"), None);
+        assert_eq!(p("unpin"), Some(Cmd::Unpin(String::new())));
+        assert_eq!(p("unpin ssh"), Some(Cmd::Unpin("ssh".into())));
+        assert_eq!(p("unpin all"), Some(Cmd::Unpin("all".into())));
+        assert_eq!(preview(&Cmd::Pin("x".into())), "Pin to Today · x");
+    }
+
+    #[test]
     fn a_todo_keeps_its_capitals() {
         assert_eq!(p("todo Buy milk"), Some(Cmd::Todo("Buy milk".into())));
         assert_eq!(p("compito  chiamare   Anna"), Some(Cmd::Todo("chiamare Anna".into())));
@@ -896,5 +927,24 @@ mod tests {
         assert_eq!(preview(&Cmd::Remind { secs: 1200, text: "x".into() }), "Remind in 20 min · x");
         assert_eq!(preview(&Cmd::Remind { secs: 7500, text: "y".into() }), "Remind in 2 h 5 min · y");
         assert_eq!(preview(&Cmd::Dnd(false)), "Do not disturb off");
+    }
+
+    #[test]
+    fn go_opens_a_page_by_name() {
+        use crate::face::Page;
+        assert_eq!(p("go phone"), Some(Cmd::Go(Page::Phone)));
+        assert_eq!(p("vai meteo"), Some(Cmd::Go(Page::Weather)));
+        assert_eq!(p("go all"), Some(Cmd::Go(Page::Grid)));
+        assert_eq!(p("go"), None);
+        assert_eq!(p("go nowhere"), None);
+        assert_eq!(preview(&Cmd::Go(Page::Phone)), "Go to iPhone");
+    }
+
+    #[test]
+    fn ocr_reads_the_clipboard_image() {
+        assert_eq!(p("ocr"), Some(Cmd::Ocr));
+        assert_eq!(p("leggi testo"), Some(Cmd::Ocr));
+        assert_eq!(p("ocr something"), None);
+        assert!(preview(&Cmd::Ocr).contains("clipboard"));
     }
 }

@@ -17,6 +17,10 @@ pub mod devices;
 #[cfg(target_os = "linux")]
 pub mod audio_mixer;
 pub mod culprit;
+pub mod downloads;
+pub mod ocr;
+pub mod phone;
+pub mod watchpid;
 pub mod location;
 pub mod tiles;
 // nothing reads the network's health on macOS yet
@@ -157,6 +161,8 @@ pub fn start(tx: Sender<Msg>, waker: Arc<dyn Fn() + Send + Sync>) -> Sender<Comm
     ipc::start(rep.clone());
     net::start(rep.clone());
     rates::start(rep.clone());
+    downloads::start(rep.clone());
+    phone::start(rep.clone());
     trains::start(rep.clone());
     culprit::start(rep.clone());
     #[cfg(any(target_os = "linux", windows))]
@@ -305,6 +311,45 @@ pub fn save_deadlines_if_changed(d: &[island_ui::island::Deadline]) {
     *last = Some(d.to_vec());
     let items: Vec<serde_json::Value> = d.iter().map(|x| serde_json::json!({"day": x.day, "text": x.text})).collect();
     if let (Some(p), Ok(text)) = (state_file("deadlines.json"), serde_json::to_string(&items)) {
+        let _ = std::fs::write(p, text);
+    }
+}
+
+/// How often each page was opened (by page key), kept between runs for the dock.
+pub fn load_page_usage() -> Vec<(String, u32)> {
+    let Some(text) = state_file("page-usage.json").and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };
+    serde_json::from_str::<std::collections::BTreeMap<String, u32>>(&text).map(|m| m.into_iter().collect()).unwrap_or_default()
+}
+
+pub fn save_page_usage_if_changed(u: &[(String, u32)]) {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<Vec<(String, u32)>>> = Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return };
+    if last.as_deref() == Some(u) || (last.is_none() && u.is_empty()) {
+        return;
+    }
+    *last = Some(u.to_vec());
+    let map: std::collections::BTreeMap<&str, u32> = u.iter().map(|(k, n)| (k.as_str(), *n)).collect();
+    if let (Some(p), Ok(text)) = (state_file("page-usage.json"), serde_json::to_string(&map)) {
+        let _ = std::fs::write(p, text);
+    }
+}
+
+/// The notes pinned to the Today page, kept between runs.
+pub fn load_pins() -> Vec<String> {
+    let Some(text) = state_file("pins.json").and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };
+    serde_json::from_str::<Vec<String>>(&text).unwrap_or_default()
+}
+
+pub fn save_pins_if_changed(pins: &[String]) {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<Vec<String>>> = Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return };
+    if last.as_deref() == Some(pins) || (last.is_none() && pins.is_empty()) {
+        return;
+    }
+    *last = Some(pins.to_vec());
+    if let (Some(p), Ok(text)) = (state_file("pins.json"), serde_json::to_string(pins)) {
         let _ = std::fs::write(p, text);
     }
 }

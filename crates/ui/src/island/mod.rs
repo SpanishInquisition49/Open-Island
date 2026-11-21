@@ -53,6 +53,10 @@ pub struct Config {
     pub travel_mode: island_core::travel::Mode,
     /// How much earlier than needed to leave.
     pub travel_margin_ms: i64,
+    /// How many small pills may sit beside the main one (1-4): a timer, focus, an event, each running activity.
+    pub mini_pills: u32,
+    /// How many page icons the dock shows (Home and the most used ones); the rest are on the grid.
+    pub dock_icons: u32,
     /// Where the map tiles come from, with {z} {x} {y}.
     pub map_tile_url: String,
     /// Darken the (light) tiles to suit the black island.
@@ -86,6 +90,10 @@ pub struct Config {
     pub away_recap: bool,
     /// Fetch the ECB's daily rates for currency conversions in the command bar.
     pub currency_rates: bool,
+    /// Show browser downloads (read from the download folder) as activities.
+    pub watch_downloads: bool,
+    /// A screenshot's card offers to copy the text in it (OCR).
+    pub ocr_screenshots: bool,
     /// Minutes after midnight when the card with tomorrow comes (0: off), and whether it comes on Saturday and Sunday too.
     pub evening_recap_min: i64,
     /// Door-to-door minutes to where lectures are (0: off): the cards say when to leave, and one comes at that moment.
@@ -122,6 +130,8 @@ impl Default for Config {
             travel_times: true,
             travel_mode: island_core::travel::Mode::Car,
             travel_margin_ms: 5 * 60_000,
+            mini_pills: 2,
+            dock_icons: 7,
             map_tile_url: island_core::map::DEFAULT_TILES.to_string(),
             map_dark: true,
             follow_position: true,
@@ -144,6 +154,8 @@ impl Default for Config {
             quiet_on_mic: true,
             away_recap: true,
             currency_rates: true,
+            watch_downloads: true,
+            ocr_screenshots: true,
             evening_recap_min: 0,
             commute_minutes: 0,
             morning_recap_min: 0,
@@ -181,6 +193,18 @@ pub enum Action {
     TimerCancel,
     /// Ticks off (removes) the to-do at this position.
     TodoDone(usize),
+    /// Opens the conversation at this position of the iPhone's list.
+    PhoneThread(usize),
+    /// Back from a conversation or a search to the list.
+    PhoneList,
+    /// Write to the contact at this position of the search result (its first number).
+    PhoneContact(usize),
+    /// Answer, hang up or turn call control on.
+    PhoneCallDo(PhoneCall),
+    /// Copies the pin at this position.
+    PinCopy(usize),
+    /// Takes the pin at this position off.
+    PinRemove(usize),
     /// Removes the deadline at this position of the soonest-first list.
     DeadlineDone(usize),
     /// Cancels one of the countdowns running beside the main one.
@@ -399,6 +423,10 @@ pub enum Field {
     Home,
     /// The usual train: "pisa centrale 17:12 verso lucca" (empty unpins it).
     Train,
+    /// A reply to the iPhone conversation that is open.
+    PhoneReply,
+    /// A name to look for in the phone's contacts.
+    PhoneSearch,
     Sound,
     TimerPresets,
     Screen,
@@ -506,6 +534,9 @@ pub struct Island {
     pub(crate) spring: Spring,
     pub(crate) shown: Face,
     pub(crate) shown_side: Option<Side>,
+    /// The small pills after the first one, in order.
+    pub(crate) shown_more: Vec<Side>,
+    want_more: Vec<Side>,
     want: Face,
     want_side: Option<Side>,
     pub(crate) alpha: f64,
@@ -529,6 +560,14 @@ pub struct Island {
     /// Countdowns running beside `timer`, soonest first.
     pub(crate) extra_timers: Vec<Timer>,
     pub(crate) todos: Vec<Todo>,
+    /// Notes kept on the Today page until removed, newest first.
+    pub(crate) pins: Vec<String>,
+    /// How often each page was opened (the dock keeps the ones that are).
+    pub(crate) page_uses: std::collections::HashMap<Page, u32>,
+    /// The iPhone conversation that is open on its page (its key).
+    pub(crate) phone_open: Option<String>,
+    /// The Phone page shows the result of a contact search (a new message) instead of the conversations.
+    pub(crate) phone_search: bool,
     /// How many messages of one conversation the card on screen stands for (a new one of the same conversation joins it).
     pub(crate) notif_group: u32,
     pub(crate) deadlines: Vec<Deadline>,
@@ -676,6 +715,8 @@ impl Island {
             spring: Spring::new(w, h),
             shown: Face::Idle,
             shown_side: None,
+            shown_more: Vec::new(),
+            want_more: Vec::new(),
             want: Face::Idle,
             want_side: None,
             alpha: 1.0,
@@ -699,6 +740,10 @@ impl Island {
             todos: Vec::new(),
             notif_group: 1,
             deadlines: Vec::new(),
+            pins: Vec::new(),
+            page_uses: std::collections::HashMap::new(),
+            phone_open: None,
+            phone_search: false,
             bar_history: Vec::new(),
             timer_done_until: 0,
             timer_done_text: Default::default(),
@@ -846,7 +891,7 @@ fn side_page(s: Side) -> Page {
         Side::Meeting => Page::Meeting,
         Side::Focus => Page::Focus,
         Side::Media => Page::Media,
-        Side::Op => Page::Op,
+        Side::Op | Side::OpAt(_) => Page::Op,
     }
 }
 
@@ -860,7 +905,7 @@ pub(crate) fn notif_code(n: &Incoming) -> Option<String> {
 
 /// Faces that are pages: they carry the dock at the bottom.
 pub(crate) fn has_dock(f: Face) -> bool {
-    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options | Face::Audio | Face::Today | Face::Send | Face::Activity | Face::Map)
+    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options | Face::Audio | Face::Today | Face::Send | Face::Activity | Face::Map | Face::Phone | Face::Grid)
 }
 
 pub(crate) fn page_of(f: Face) -> Option<Page> {
@@ -883,6 +928,8 @@ pub(crate) fn page_of(f: Face) -> Option<Page> {
         Face::Send => Page::Send,
         Face::Activity => Page::Activity,
         Face::Map => Page::Map,
+        Face::Phone => Page::Phone,
+        Face::Grid => Page::Grid,
         Face::FocusFull => Page::Focus,
         _ => return None,
     })

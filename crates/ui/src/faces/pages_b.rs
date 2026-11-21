@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Pinned notes shown on Today (the rest stay kept).
+const PIN_ROWS: usize = 4;
+
 impl Island {
     /// The map: where the machine is, and where the next event is.
     pub(super) fn face_map(&self, p: P, w: f64, _h: f64) {
@@ -461,6 +464,7 @@ impl Island {
             + 14.0 + 34.0 + 6.0
             + if items.is_empty() { 40.0 } else { items.len() as f64 * 28.0 + 18.0 + self.today_gaps(&items) as f64 * 18.0 }
             + if tomorrow > 0 { 22.0 + tomorrow as f64 * 28.0 } else { 0.0 }
+            + if self.pins.is_empty() { 0.0 } else { 22.0 + self.pins.len().min(PIN_ROWS) as f64 * 28.0 }
             + if self.deadline_rows().is_empty() { 0.0 } else { 22.0 + self.deadline_rows().len() as f64 * 28.0 }
             + if self.todo_rows() > 0 { 22.0 + self.todo_rows() as f64 * 28.0 } else { 0.0 }
             + if self.trip_event().is_some() { 38.0 } else { 0.0 }
@@ -599,6 +603,24 @@ impl Island {
                     p.text(&it.place, w - 16.0, cy, 10.5, REG, theme::DIM, Align::Right, place_w as f32 + 2.0);
                 }
                 p.text(&it.title, 86.0, cy, 12.0, REG, theme::FG, Align::Left, (w - 16.0 - 86.0 - place_w - if place_w > 0.0 { 10.0 } else { 4.0 }).max(60.0) as f32);
+                y += 28.0;
+            }
+        }
+        // notes kept for later: a click copies, the cross takes it off
+        if !self.pins.is_empty() {
+            p.text("Pinned", 20.0, y + 8.0, 10.0, SEMI, theme::DIM, Align::Left, 120.0);
+            y += 22.0;
+            for (n, t) in self.pins.iter().take(PIN_ROWS).enumerate() {
+                let row = rect(8.0, y, w - 16.0, 26.0);
+                let hot = p.hovered(row);
+                if hot {
+                    p.rrect(row, 8.0, theme::CHIP);
+                }
+                let cy = y + 13.0;
+                p.icon("pin", 26.0, cy, 13.0, theme::ACCENT);
+                p.text(t, 44.0, cy, 12.0, REG, theme::FG, Align::Left, (w - 44.0 - 34.0) as f32);
+                p.hit(row, Action::PinCopy(n));
+                p.icon_button(row.x1 - 14.0, cy, 22.0, "x", 11.0, Action::PinRemove(n));
                 y += 28.0;
             }
         }
@@ -765,6 +787,11 @@ impl Island {
     }
 
     pub(super) fn draw_bubble(&self, p: P, side: Side, w: f64, h: f64) {
+        // the activity a pill stands for: the main one, or the n-th of the others
+        let op = match side {
+            Side::OpAt(k) => self.ops.also.get(k as usize),
+            _ => self.ops.op.as_ref(),
+        };
         let (icon, text) = match side {
             Side::Timer => (self.timer_icon(), match &self.timer {
                 Some(t) if t.mode == TimerMode::Stopwatch => duration::fmt_elapsed(self.now - t.start_ms),
@@ -773,7 +800,7 @@ impl Island {
             Side::Meeting => ("calendar-event", self.next_event().map(|e| duration::fmt_bubble((e.start_ms - self.now).max(0))).unwrap_or_default()),
             Side::Focus => ("target", self.focus_minutes_left().map_or("on".to_string(), |m| format!("{m}m"))),
             Side::Media => ("music", String::new()),
-            Side::Op => match &self.ops.op {
+            Side::Op | Side::OpAt(_) => match &op {
                 Some(o) => (
                     match (o.state, o.icon.as_deref()) {
                         (OpState::Fail, _) => "alert-triangle",
@@ -794,10 +821,10 @@ impl Island {
                 None => ("download", String::new()),
             },
         };
-        let tint = match (&side, self.ops.op.as_ref().map(|o| (o.state, o.tint))) {
-            (Side::Op, Some((OpState::Done, _))) => theme::GREEN,
-            (Side::Op, Some((OpState::Fail, _))) => theme::RED,
-            (Side::Op, Some((OpState::Run, Some(t)))) => theme::rgb(t),
+        let tint = match (&side, op.map(|o| (o.state, o.tint))) {
+            (Side::Op | Side::OpAt(_), Some((OpState::Done, _))) => theme::GREEN,
+            (Side::Op | Side::OpAt(_), Some((OpState::Fail, _))) => theme::RED,
+            (Side::Op | Side::OpAt(_), Some((OpState::Run, Some(t)))) => theme::rgb(t),
             _ => theme::ACCENT,
         };
         let tw = (p.fonts.measure(&text, 12.0, SEMI) as f64).min(50.0);

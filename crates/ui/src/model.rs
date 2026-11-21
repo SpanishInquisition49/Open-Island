@@ -281,6 +281,8 @@ pub struct Data {
     /// Devices that can receive files (LocalSend) and whether the network is still being scanned.
     pub peers: Vec<island_core::localsend::Peer>,
     pub peers_scanning: bool,
+    /// The iPhone, as `tether` reports it; None when `tether` is not there or its daemon is not running.
+    pub phone: Option<Phone>,
     /// The program hogging the CPU or the memory, and the programs the island paused.
     pub culprit: Option<Culprit>,
     pub paused: Vec<String>,
@@ -430,6 +432,9 @@ pub enum Input {
     StartTimer(u64),
     /// Something for the to-do list on the Today page.
     TodoAdd(String),
+    /// Keep a note on the Today page, or take pins off (`unpin ssh`, `unpin all`).
+    PinAdd(String),
+    PinRemove(String),
     /// A countdown with a name (`timer 10m tea`).
     StartNamedTimer(u64, String),
     /// Ends the countdowns with this name (case does not matter).
@@ -471,8 +476,42 @@ pub enum OptionValue {
     Text(String),
 }
 
+/// The iPhone: the link, the conversations and the one that is open.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Phone {
+    pub link: island_core::phone::Link,
+    pub threads: Vec<island_core::phone::Thread>,
+    /// The messages of the conversation with this key, once read.
+    pub messages: Option<(String, Vec<island_core::phone::Msg>)>,
+    /// Calls on the phone now (only read while call control is on).
+    pub calls: Vec<island_core::phone::Call>,
+    /// The contacts found by the last search from the page; None before one.
+    pub contacts: Option<Vec<island_core::phone::Contact>>,
+    pub at_ms: i64,
+}
+
+/// What can be done about calls.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PhoneCall {
+    Answer,
+    Hangup,
+    Dial(String),
+    /// Call control on or off in tether (off by default there).
+    Enable(bool),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    /// Read the text of the image on the clipboard and put the text there.
+    Ocr,
+    /// Read the messages of a conversation of the iPhone (its key, from the thread list).
+    PhoneOpen(String),
+    /// Search the phone's contacts (to write to somebody who is not in the conversations).
+    PhoneSearch(String),
+    /// Answer, hang up, dial, or turn call control on or off.
+    PhoneCall(PhoneCall),
+    /// Reply in a conversation of the iPhone.
+    PhoneSend { key: String, text: String },
     MediaPrevious,
     MediaPlayPause,
     MediaNext,

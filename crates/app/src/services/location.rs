@@ -79,13 +79,18 @@ pub fn parse_nmcli_aps(text: &str, max: usize) -> Vec<(String, i32)> {
             let mac = f.next()?.replace('\u{1}', ":");
             let ssid = f.next()?;
             let signal: i32 = f.next()?.trim().parse().ok()?;
-            (mac.len() == 17 && !ssid.to_lowercase().ends_with("_nomap")).then(|| (mac.to_lowercase(), signal / 2 - 100))
+            (mac.len() == 17 && !ssid.to_lowercase().ends_with("_nomap") && !locally_administered(&mac)).then(|| (mac.to_lowercase(), signal / 2 - 100))
         })
         .collect();
     v.sort_by_key(|(_, dbm)| -dbm);
     v.dedup_by(|a, b| a.0 == b.0);
     v.truncate(max);
     v
+}
+
+/// Phones' hotspots and virtual networks use made-up addresses (the "locally administered" bit): they move with their owner and say nothing about the place.
+fn locally_administered(mac: &str) -> bool {
+    mac.get(1..2).and_then(|c| u8::from_str_radix(c, 16).ok()).is_some_and(|d| d & 2 != 0)
 }
 
 /// The request body of the Geolocation API (the Ichnaea / Google format that beacondb.net speaks): Wi-Fi networks only,
@@ -103,13 +108,13 @@ pub fn parse_geolocate(v: &serde_json::Value) -> Option<(f64, f64, f64)> {
     Some((loc.get("lat")?.as_f64()?, loc.get("lng")?.as_f64()?, v.get("accuracy")?.as_f64()?))
 }
 
-/// Looks the position up from the Wi-Fi networks in range (at most 15, the strongest). At least two are needed.
+/// Looks the position up from the Wi-Fi networks in range (at most 50, the strongest: the few nearest are often one building's and the service may not know them). At least two are needed.
 /// Sends their hardware addresses and signal strengths to beacondb.net: only called when the user turned
 /// `wifi_position` on. None when fewer than two are seen or the service does not know them.
 #[cfg(target_os = "linux")]
 fn wifi_fix() -> Option<(f64, f64, f64)> {
     let out = Command::new("nmcli").args(["-t", "-f", "BSSID,SSID,SIGNAL", "dev", "wifi", "list"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
-    let aps = parse_nmcli_aps(&String::from_utf8_lossy(&out.stdout), 15);
+    let aps = parse_nmcli_aps(&String::from_utf8_lossy(&out.stdout), 50);
     if aps.len() < 2 {
         return None;
     }
@@ -224,6 +229,7 @@ mod tests {
         let aps = parse_nmcli_aps(t, 15);
         assert_eq!(aps, vec![("a4:c7:f6:21:31:16".to_string(), -60), ("a4:c7:f6:21:31:14".to_string(), -76), ("a4:c7:f6:21:31:18".to_string(), -77)]);
         assert_eq!(parse_nmcli_aps(t, 1).len(), 1, "capped");
+        assert!(parse_nmcli_aps("B2\\:CA\\:4B\\:35\\:6F\\:22:moto g:87\n", 9).is_empty(), "a phone hotspot (made-up address) says nothing about the place");
         let body = geolocate_body(&aps);
         assert_eq!(body["considerIp"], false, "the IP address is not used");
         assert_eq!(body["wifiAccessPoints"][0]["macAddress"], "a4:c7:f6:21:31:16");
