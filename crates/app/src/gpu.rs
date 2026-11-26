@@ -5,8 +5,30 @@ use island_ui::Island;
 use vello::kurbo::Affine;
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
+use vello::wgpu::util::TextureBlitter;
 use vello::wgpu::{self, CompositeAlphaMode, PresentMode, SurfaceTarget};
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene};
+
+/// The alpha mode that lets what is behind the window show through, if the surface has one.
+fn transparent_mode(offered: &[CompositeAlphaMode]) -> Option<CompositeAlphaMode> {
+    [CompositeAlphaMode::PreMultiplied, CompositeAlphaMode::PostMultiplied, CompositeAlphaMode::Inherit].into_iter().find(|m| offered.contains(m))
+}
+
+/// The texture vello draws into, copied to the surface afterwards (as vello's own helper makes it).
+fn target(device: &wgpu::Device, width: u32, height: u32) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
 
 pub struct Gpu {
     ctx: RenderContext,
@@ -44,28 +66,46 @@ impl Gpu {
         self.finish_attach(surface, width, height)
     }
 
+    /// Configures the surface once, with the alpha mode it will keep. Not through vello's `create_render_surface`,
+    /// which configures with `Auto` first: DirectX 12 fixes the alpha mode when it creates the swap chain and a later
+    /// configure only resizes it, so on Windows the surface stayed opaque while the island believed it transparent
+    /// (a black rectangle behind it while it moved, cut round when it stopped).
     fn finish_attach(&mut self, surface: wgpu::Surface<'static>, width: u32, height: u32) -> Result<(), String> {
-        let mut surface = pollster::block_on(self.ctx.create_render_surface(surface, width.max(1), height.max(1), PresentMode::AutoVsync))
-            .map_err(|e| format!("cannot create the GPU surface: {e}"))?;
-        // a transparent window needs an alpha mode that is not opaque
-        let caps = surface.surface.get_capabilities(self.ctx.devices[surface.dev_id].adapter());
-        let mode = [CompositeAlphaMode::PreMultiplied, CompositeAlphaMode::PostMultiplied, CompositeAlphaMode::Inherit]
-            .into_iter()
-            .find(|m| caps.alpha_modes.contains(m));
+        const CANNOT: &str = "cannot create the GPU surface";
+        let dev_id = pollster::block_on(self.ctx.device(Some(&surface))).ok_or_else(|| format!("{CANNOT}: no graphics adapter can show it"))?;
+        let handle = &self.ctx.devices[dev_id];
+        let caps = surface.get_capabilities(handle.adapter());
+        let format = caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| matches!(f, wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm))
+            .ok_or_else(|| format!("{CANNOT}: no 8-bit format"))?;
+        let mode = transparent_mode(&caps.alpha_modes);
         match mode {
-            Some(m) => {
-                log::info!("transparent surface ({m:?}) on {:?}", self.ctx.devices[surface.dev_id].adapter().get_info());
-                self.transparent = true;
-                surface.config.alpha_mode = m;
-                self.ctx.configure_surface(&surface);
-            }
-            None if cfg!(target_os = "windows") => log::info!("the window surface is opaque (the usual case on Windows): the window is cut to the island's shape instead"),
+            Some(m) => log::info!("transparent surface ({m:?}) on {:?}", handle.adapter().get_info()),
+            None if cfg!(target_os = "windows") => log::info!("the window surface is opaque on {:?}: the window is cut to the island's shape instead", handle.adapter().get_info()),
             None => log::warn!("no transparent surface mode: the island will have a visible rectangle behind it"),
         }
-        let device = &self.ctx.devices[surface.dev_id].device;
+        self.transparent = mode.is_some();
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: width.max(1),
+            height: height.max(1),
+            present_mode: PresentMode::AutoVsync,
+            color_space: wgpu::SurfaceColorSpace::Auto,
+            desired_maximum_frame_latency: 2,
+            alpha_mode: mode.unwrap_or(CompositeAlphaMode::Auto),
+            view_formats: vec![],
+        };
+        let (target_texture, target_view) = target(&handle.device, config.width, config.height);
+        let blitter = TextureBlitter::new(&handle.device, format);
         if self.renderer.is_none() {
-            self.renderer = Some(Renderer::new(device, RendererOptions::default()).map_err(|e| format!("cannot start the renderer: {e}"))?);
+            self.renderer = Some(Renderer::new(&handle.device, RendererOptions::default()).map_err(|e| format!("cannot start the renderer: {e}"))?);
         }
+        let surface = RenderSurface { surface, config, dev_id, format, target_texture, target_view, blitter };
+        self.ctx.configure_surface(&surface);
         self.surface = Some(surface);
         Ok(())
     }
@@ -111,5 +151,19 @@ impl Gpu {
         handle.queue.present(frame);
         let _ = Affine::IDENTITY;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use CompositeAlphaMode::*;
+
+    /// What wgpu 30 offers for the two kinds of surface DirectX 12 has.
+    #[test]
+    fn the_first_configure_already_asks_for_transparency_where_there_is_some() {
+        assert_eq!(transparent_mode(&[Auto, Inherit, Opaque, PostMultiplied, PreMultiplied]), Some(PreMultiplied), "DirectComposition");
+        assert_eq!(transparent_mode(&[Opaque]), None, "a plain window");
+        assert_eq!(transparent_mode(&[Opaque, Inherit]), Some(Inherit));
     }
 }
