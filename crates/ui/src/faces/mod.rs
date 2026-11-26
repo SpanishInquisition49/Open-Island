@@ -784,7 +784,7 @@ fn page_icon(p: Page) -> &'static str {
         Page::Options => "toggle-right",
         Page::Audio => "volume",
         Page::Today => "clock",
-        Page::Plan => "calendar-event",
+        Page::Plan => "school",
         Page::Find => "search",
         Page::Send => "send",
         Page::Activity => "chart-donut",

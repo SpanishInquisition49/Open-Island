@@ -82,6 +82,7 @@ pub fn describe(key: &str) -> &'static str {
         "dock_icons" => "How many page icons the bottom bar shows (the rest: All pages)",
         "mini_pills" => "How many small pills may sit beside the main one (timer, focus, activities)",
         "travel_margin_minutes" => "How much earlier than needed to be told to leave for an event",
+        "study_day_hours" => "Hours a day for lectures and study: the plan fills what lectures leave",
         "commute_minutes" => "Door to door to your lectures: cards say when to leave (0: off)",
         "deep_work_minutes" => "Hold notifications after this long on work apps in a row (0: off)",
         "break_minutes" => "A card after this long on one app without a break (0: off)",
@@ -115,6 +116,7 @@ pub fn steppers(tab: usize) -> &'static [Stepper] {
             ("evening_recap_time", "Evening", "time", 15.0, 0.0, 1425.0),
             ("commute_minutes", "Commute", "min", 5.0, 0.0, 240.0),
             ("travel_margin_minutes", "Leave early", "min", 1.0, 0.0, 30.0),
+            ("study_day_hours", "Study day", "h", 1.0, 2.0, 14.0),
         ],
         _ => &[],
     }
@@ -232,6 +234,7 @@ pub fn get_num(c: &Config, key: &str) -> f64 {
         "dock_icons" => c.dock_icons as f64,
         "deep_work_minutes" => c.deep_work_minutes as f64,
         "commute_minutes" => c.commute_minutes as f64,
+        "study_day_hours" => c.study_day_hours as f64,
         "break_minutes" => c.break_minutes as f64,
         "evening_recap_time" => c.evening_recap_min as f64,
         "morning_recap_time" => c.morning_recap_min as f64,
@@ -251,6 +254,7 @@ pub fn set_num(c: &mut Config, key: &str, v: f64) {
         "dock_icons" => c.dock_icons = (v.round() as u32).clamp(4, 12),
         "deep_work_minutes" => c.deep_work_minutes = v.round() as i64,
         "commute_minutes" => c.commute_minutes = v.round() as i64,
+        "study_day_hours" => c.study_day_hours = (v.round() as u32).clamp(2, 14),
         "break_minutes" => c.break_minutes = v.round() as i64,
         "evening_recap_time" => c.evening_recap_min = (v.round() as i64).clamp(0, 1439),
         "morning_recap_time" => c.morning_recap_min = (v.round() as i64).clamp(0, 1439),
@@ -312,7 +316,7 @@ mod tests {
         assert_eq!(page.len(), 30, "no option on two tabs");
         assert_eq!(TABS[RULES_TAB], "Rules");
         let nums: Vec<&str> = (0..TABS.len()).flat_map(|t| steppers(t).iter().map(|s| s.0)).collect();
-        assert_eq!(nums, ["mini_pills", "dock_icons", "notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes", "deep_work_minutes", "break_minutes", "morning_recap_time", "evening_recap_time", "commute_minutes", "travel_margin_minutes"]);
+        assert_eq!(nums, ["mini_pills", "dock_icons", "notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes", "deep_work_minutes", "break_minutes", "morning_recap_time", "evening_recap_time", "commute_minutes", "travel_margin_minutes", "study_day_hours"]);
     }
 
     #[test]

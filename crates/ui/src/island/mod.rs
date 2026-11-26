@@ -108,6 +108,8 @@ pub struct Config {
     pub evening_recap_min: i64,
     /// Door-to-door minutes to where lectures are (0: off): the cards say when to leave, and one comes at that moment.
     pub commute_minutes: i64,
+    /// Hours a day for lectures and study together: the study plan gives each day what the events leave of them.
+    pub study_day_hours: u32,
     /// The same for the card with today, shown from this time until 14:00.
     pub morning_recap_min: i64,
     pub evening_weekends: bool,
@@ -170,6 +172,7 @@ impl Default for Config {
             ocr_screenshots: true,
             evening_recap_min: 0,
             commute_minutes: 0,
+            study_day_hours: 8,
             morning_recap_min: 0,
             evening_weekends: false,
             culprit_alerts: true,
@@ -233,6 +236,10 @@ pub enum Action {
     PinRemove(usize),
     /// Removes the deadline at this position of the soonest-first list.
     DeadlineDone(usize),
+    /// Opens the bar to add an exam or a hand-in.
+    DeadlineAdd,
+    /// Opens the bar to move or change the deadline at this position, its day first.
+    DeadlineEdit(usize),
     /// Cancels one of the countdowns running beside the main one.
     TimerCancelExtra(usize),
     TimerAddMinute,
@@ -372,6 +379,8 @@ pub struct Bar {
     /// Which earlier line Up / Down has brought back (None: the one being typed, kept in `draft`).
     pub recall: Option<usize>,
     pub draft: String,
+    /// The deadline (by name) the line was opened to change: running it takes that one's place.
+    pub replaces: Option<String>,
 }
 
 /// Something that happened, for the rewind page.
@@ -429,9 +438,14 @@ pub struct Deadline {
     /// Days since 1970-01-01 (local).
     pub day: i64,
     pub text: String,
-    /// What to study for it (a word of an event title), and the minutes of work still to do: the study plan is made of these.
+    /// What to study for it (a word of an event title), and the minutes of work it takes in all: the study plan is made
+    /// of what of them is still to do.
     pub course: String,
     pub est_min: u32,
+    /// Minutes studied for it so far, counted whether or not its hours were said.
+    pub done_min: u32,
+    /// The credits of the exam (0: not said). Without hours they only weigh it against the others (see `share_out`).
+    pub cfu: u32,
 }
 
 /// A reminder set from the command bar.
@@ -948,6 +962,7 @@ use card::{Shown, STACK_MAX};
 mod frame;
 mod inputs;
 mod organizer;
+pub(crate) use organizer::{PLAN_ROWS, SPLIT_ROWS};
 mod pointer;
 mod power;
 mod study;

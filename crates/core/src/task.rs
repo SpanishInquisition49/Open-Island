@@ -146,6 +146,9 @@ pub fn parse_repeat(words: &[&str]) -> Option<(Repeat, usize)> {
     (mask != 0).then_some((Repeat::Weekly(mask), j))
 }
 
+/// The longest piece of work: an exam can take hundreds of hours.
+const MAX_MINUTES: f64 = 999.0 * 60.0;
+
 /// "2h", "30m", "1h30m", "1h30", "1.5h", "90min", "45" (a bare number is minutes) as minutes.
 pub fn parse_minutes(s: &str) -> Option<u32> {
     let s = s.trim().to_lowercase();
@@ -165,7 +168,7 @@ pub fn parse_minutes(s: &str) -> Option<u32> {
         total += n * per;
         any = true;
     }
-    (any && (1.0..=24.0 * 60.0).contains(&total)).then_some(total.round() as u32)
+    (any && (1.0..=MAX_MINUTES).contains(&total)).then_some(total.round() as u32)
 }
 
 /// "1h30", "45m", "2h" for a count of minutes.
@@ -467,6 +470,7 @@ mod tests {
             assert_eq!(parse_minutes(s), Some(m), "{s}");
         }
         assert_eq!((parse_minutes("x"), parse_minutes(""), parse_minutes("0m"), parse_minutes("3d")), (None, None, None, None));
+        assert_eq!((parse_minutes("120h"), parse_minutes("1000h")), (Some(7200), None), "the work for an exam");
         assert_eq!((fmt_minutes(90), fmt_minutes(120), fmt_minutes(45)), ("1h30".into(), "2h".into(), "45m".into()));
         let t = day(2026, 11, 22);
         assert_eq!((due_label(t, t).as_str(), due_label(t + 1, t).as_str(), due_label(t + 5, t).as_str(), due_label(t + 20, t).as_str(), due_label(t - 2, t).as_str()), ("today", "tomorrow", "Fri", "12 Dec", "2 d late"));

@@ -365,6 +365,9 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     if let Some(m) = v.get("commute_minutes").and_then(|x| x.as_i64()).filter(|m| (0..=240).contains(m)) {
         u.commute_minutes = m;
     }
+    if let Some(h) = v.get("study_day_hours").and_then(|x| x.as_u64()).filter(|h| (2..=14).contains(h)) {
+        u.study_day_hours = h as u32;
+    }
     if let Some(m) = v.get("evening_recap_time").and_then(clock_minutes) {
         u.evening_recap_min = m;
     }
@@ -459,7 +462,7 @@ pub const BOOL_OPTIONS: &[&str] = &[
 ];
 
 /// The numeric options: key, smallest, largest, and whether it is a whole number.
-pub const NUM_OPTIONS: &[(&str, f64, f64, bool)] = &[("notification_seconds", 2.0, 30.0, true), ("osd_seconds", 0.5, 5.0, false), ("low_battery_percent", 5.0, 50.0, true), ("meeting_lead_minutes", 1.0, 60.0, true), ("meeting_pill_minutes", 1.0, 120.0, true), ("travel_margin_minutes", 0.0, 30.0, true), ("mini_pills", 1.0, 4.0, true), ("dock_icons", 4.0, 12.0, true), ("deep_work_minutes", 0.0, 120.0, true), ("break_minutes", 0.0, 240.0, true), ("evening_recap_time", 0.0, 1425.0, true), ("morning_recap_time", 0.0, 1425.0, true), ("commute_minutes", 0.0, 240.0, true)];
+pub const NUM_OPTIONS: &[(&str, f64, f64, bool)] = &[("notification_seconds", 2.0, 30.0, true), ("osd_seconds", 0.5, 5.0, false), ("low_battery_percent", 5.0, 50.0, true), ("meeting_lead_minutes", 1.0, 60.0, true), ("meeting_pill_minutes", 1.0, 120.0, true), ("travel_margin_minutes", 0.0, 30.0, true), ("mini_pills", 1.0, 4.0, true), ("dock_icons", 4.0, 12.0, true), ("deep_work_minutes", 0.0, 120.0, true), ("break_minutes", 0.0, 240.0, true), ("evening_recap_time", 0.0, 1425.0, true), ("morning_recap_time", 0.0, 1425.0, true), ("commute_minutes", 0.0, 240.0, true), ("study_day_hours", 2.0, 14.0, true)];
 
 /// Adds a notification rule (once): `hide` drops the notifications, otherwise they only lose their sound.
 pub fn add_filter(o: &mut serde_json::Map<String, serde_json::Value>, app: &str, content: &str, hide: bool) {

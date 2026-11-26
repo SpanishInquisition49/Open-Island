@@ -311,7 +311,7 @@ pub fn load_deadlines() -> Vec<island_ui::island::Deadline> {
     let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(&text) else { return vec![] };
     items
         .iter()
-        .filter_map(|v| Some(island_ui::island::Deadline { day: v.get("day")?.as_i64()?, text: v.get("text")?.as_str()?.to_string(), course: v.get("course").and_then(|c| c.as_str()).unwrap_or("").to_string(), est_min: v.get("est").and_then(|e| e.as_u64()).unwrap_or(0) as u32 }))
+        .filter_map(|v| Some(island_ui::island::Deadline { day: v.get("day")?.as_i64()?, text: v.get("text")?.as_str()?.to_string(), course: v.get("course").and_then(|c| c.as_str()).unwrap_or("").to_string(), est_min: v.get("est").and_then(|e| e.as_u64()).unwrap_or(0) as u32, done_min: v.get("done").and_then(|e| e.as_u64()).unwrap_or(0) as u32, cfu: v.get("cfu").and_then(|e| e.as_u64()).unwrap_or(0) as u32 }))
         .collect()
 }
 
@@ -323,7 +323,7 @@ pub fn save_deadlines_if_changed(d: &[island_ui::island::Deadline]) {
         return;
     }
     *last = Some(d.to_vec());
-    let items: Vec<serde_json::Value> = d.iter().map(|x| serde_json::json!({"day": x.day, "text": x.text, "course": x.course, "est": x.est_min})).collect();
+    let items: Vec<serde_json::Value> = d.iter().map(|x| serde_json::json!({"day": x.day, "text": x.text, "course": x.course, "est": x.est_min, "done": x.done_min, "cfu": x.cfu})).collect();
     if let (Some(p), Ok(text)) = (state_file("deadlines.json"), serde_json::to_string(&items)) {
         let _ = std::fs::write(p, text);
     }

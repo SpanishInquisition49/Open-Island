@@ -31,9 +31,16 @@ fn data() -> Data {
 fn every_page_fits_in_the_fixed_surface() {
     // platforms that cannot resize their window smoothly (Windows) keep one window of MAX_SURFACE
     let mut mx = (0.0f64, 0.0f64);
-    for page in [Page::Home, Page::Clip, Page::Timer, Page::Meeting, Page::Media, Page::Qs, Page::Notifs, Page::Settings, Page::Options, Page::Audio, Page::Today, Page::Send, Page::Activity, Page::Map, Page::Weather, Page::Cal, Page::Sys, Page::Focus, Page::Op] {
+    for page in [Page::Home, Page::Clip, Page::Timer, Page::Meeting, Page::Media, Page::Qs, Page::Notifs, Page::Settings, Page::Options, Page::Audio, Page::Today, Page::Send, Page::Activity, Page::Map, Page::Weather, Page::Cal, Page::Sys, Page::Focus, Page::Op, Page::Plan] {
         let mut i = Island::new(Config::default());
         i.data = data();
+        // the Plan page at its fullest
+        i.tick(T0, 8.0);
+        for n in 0..8 {
+            run_bar(&mut i, &format!("esame {} jan Corso{n} #c{n} 9cfu {}", 20 + n, if n % 2 == 0 { "~20h" } else { "" }));
+            run_bar(&mut i, &format!("log 30m c{n}"));
+        }
+        i.notif = None;
         i.push(T0, Input::OpenPage(page));
         for _ in 0..400 {
             let t = i.now + 8;
@@ -3471,14 +3478,166 @@ fn studying_takes_time_off_the_work_and_the_plan_spreads_what_is_left() {
     assert_eq!(i.deadlines()[0].est_min, 600);
     assert_eq!(i.study_on(today), vec![("Algoritmi".to_string(), 60)], "ten days left: an hour a day");
     run_bar(&mut i, "log 90m algoritmi");
-    assert_eq!(i.deadlines()[0].est_min, 510);
+    assert_eq!((i.deadlines()[0].est_min, i.deadlines()[0].done_min), (600, 90), "the hours stay, what is done is counted");
     assert_eq!(i.study_log(), [(today, "algoritmi".to_string(), 90)]);
     assert_eq!(i.studied_this_week(), vec![("algoritmi".to_string(), 90)]);
-    assert!(i.study_line(today).is_some_and(|l| l.starts_with("Study 55m")), "{:?}", i.study_line(today));
-    let (title, body) = i.agenda_card("Today", &[]).expect("the plan alone is worth a card");
-    assert!(title.starts_with("Today") && body.contains("Study"), "{title} · {body}");
+    assert_eq!(i.study_line(today), None, "more than today's hour is done: nothing more is asked today");
+    assert_eq!(i.study_on(today + 1), vec![("Algoritmi".to_string(), 60)], "the nine other days share the 8h30 left");
+    let (title, body) = i.agenda_card("Tomorrow", &[]).expect("the plan alone is worth a card");
+    assert!(title.starts_with("Tomorrow") && body.contains("Study 1h"), "{title} · {body}");
     run_bar(&mut i, "log 30m chemistry");
-    assert_eq!(i.deadlines()[0].est_min, 510, "a course with no work leaves it alone");
+    assert_eq!(i.deadlines()[0].done_min, 90, "a course with no work leaves it alone");
+}
+
+#[test]
+fn study_counts_for_an_exam_whether_its_hours_are_said_before_or_after() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    run_bar(&mut i, "exam 25 jan mpp");
+    type_in_bar(&mut i, "log 4h MPP");
+    i.push(i.now, Input::Key(KeyInput::Enter));
+    let card = i.notif.take().expect("a card says where it went");
+    assert!(card.body.contains("mpp") && card.body.contains("4h"), "{}", card.body);
+    assert_eq!(i.deadlines()[0].done_min, 240);
+    assert_eq!((i.plan_view().deadlines[0].done_min, i.plan_view().deadlines[0].left_min), (240, 0));
+    // the hours come later, as a total: what was studied is part of it
+    run_bar(&mut i, "exam 25 jan mpp ~20h");
+    let row = &i.plan_view().deadlines[0];
+    assert_eq!((row.est_min, row.done_min, row.left_min), (1200, 240, 960));
+    // moved or renamed from the page, it keeps what was done
+    i.activate(Action::DeadlineEdit(0));
+    i.bar.as_mut().unwrap().text = "exam 2027-01-28 MPP orale ~20h".into();
+    i.push(i.now, Input::Key(KeyInput::Enter));
+    assert_eq!(i.deadlines()[0].done_min, 240);
+    // logged before the exam was written down
+    run_bar(&mut i, "log 90m reti");
+    run_bar(&mut i, "exam 30 jan Reti ~10h");
+    assert_eq!(i.deadlines()[1].done_min, 90, "{:?}", i.deadlines());
+    type_in_bar(&mut i, "log 1h chimica");
+    i.push(i.now, Input::Key(KeyInput::Enter));
+    assert!(i.notif.take().is_some_and(|n| n.body.contains("No exam or task")));
+}
+
+#[test]
+fn study_logged_for_an_exam_saved_without_hours_is_counted_at_the_next_start() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    let today = i.today_day();
+    let saved = |text: &str, day, est_min| Deadline { day, text: text.into(), est_min, ..Default::default() };
+    // as an earlier version left them: no count of what was done; hours already reduced where there were any
+    i.restore_deadlines(vec![saved("mpp", today + 40, 0), saved("reti", today + 50, 300)]);
+    i.restore_study_log(vec![(today, "MPP".into(), 240), (today, "reti".into(), 60)]);
+    assert_eq!(i.deadlines().iter().map(|d| d.done_min).collect::<Vec<_>>(), [240, 0]);
+}
+
+#[test]
+fn exams_with_credits_and_no_hours_share_the_free_time() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    let today = i.today_day();
+    run_bar(&mut i, "exam 25 jan AE 12cfu");
+    run_bar(&mut i, "exam 25 jan ap 6 cfu");
+    run_bar(&mut i, "exam 25 jan mpp");
+    let on = |i: &Island, d: i64| i.study_on(today + d);
+    assert_eq!(on(&i, 0), [("AE".to_string(), 315), ("ap".to_string(), 165)], "eight hours, two to one, in quarters");
+    let view = i.plan_view();
+    assert!(view.today.iter().all(|r| r.suggested));
+    assert_eq!(view.split.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["AE", "ap"], "the one without credits has no weight");
+    assert!(view.week.iter().all(|d| !d.heavy()), "a suggestion fills the day without making it heavy: {:?}", view.week);
+    assert!(i.study_line(today).is_some_and(|l| l.contains("AE 5h15")));
+    // studied for one of them: its part of today goes down
+    type_in_bar(&mut i, "log 2h AE");
+    i.push(i.now, Input::Key(KeyInput::Enter));
+    assert!(i.notif.take().is_some_and(|n| n.body == "AE: 2h studied"));
+    assert_eq!(on(&i, 0), [("AE".to_string(), 195), ("ap".to_string(), 165)]);
+    // hours said for one: they are planned, and the other one gets what is still free
+    run_bar(&mut i, "exam 25 jan AE ~22h");
+    assert_eq!((i.deadlines().iter().find(|d| d.text == "AE").map(|d| d.cfu)), Some(12), "the credits stay");
+    let view = i.plan_view();
+    assert_eq!(view.today.iter().map(|r| (r.what.as_str(), r.suggested)).collect::<Vec<_>>(), [("AE", false), ("ap", true)]);
+    i.activate(Action::DeadlineEdit(i.deadlines().iter().position(|d| d.text == "AE").unwrap()));
+    assert_eq!(i.bar.as_ref().unwrap().text, "exam 2027-01-25 AE 12cfu ~22h");
+}
+
+#[test]
+fn the_plan_never_asks_for_more_time_than_there_is() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    let today = i.today_day();
+    let h = 3_600_000;
+    let ev = |id: &str, from: i64, hours: i64| Event { id: id.into(), title: id.into(), start_ms: from, end_ms: from + hours * h, ..Default::default() };
+    i.data.events = vec![ev("a", i.day_start_ms(today) + 9 * h, 3), ev("b", i.day_start_ms(today + 1) + 9 * h, 10), ev("late", i.day_start_ms(today) + 22 * h, 1)];
+    for line in ["exam 17 jan AE ~40h", "exam 19 jan ap ~30h", "exam 20 jan mpp 6cfu", "todo Report due tomorrow ~9h"] {
+        run_bar(&mut i, line);
+    }
+    let asked = |i: &Island, d: i64| i.study_on(today + d).iter().map(|(_, m)| m).sum::<u32>();
+    // 08:00: eight hours less the four of events
+    assert_eq!(asked(&i, 0), 240);
+    assert_eq!(asked(&i, 1), 0, "ten hours of events");
+    assert!((0..7).all(|d| asked(&i, d) <= 480), "{:?}", (0..7).map(|d| asked(&i, d)).collect::<Vec<_>>());
+    assert!(i.plan_view().deadlines.iter().any(|d| d.short_min > 0), "and what does not fit is told");
+    // 21:00: one hour to the end of the day, none of it taken by the event after
+    i.tick(i.day_start_ms(today) + 21 * h, 8.0);
+    assert_eq!(asked(&i, 0), 60);
+    i.tick(i.day_start_ms(today) + 23 * h + 60_000, 8.0);
+    assert_eq!((asked(&i, 0), i.plan_view().room_today), (0, 0));
+}
+
+#[test]
+fn an_exam_has_one_day_which_can_be_moved() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0); // 15 January
+    run_bar(&mut i, "esame 25 jan Algoritmi #algoritmi ~10h");
+    let first = i.deadlines()[0].day;
+    run_bar(&mut i, "exam 30 jan algoritmi");
+    assert_eq!(i.deadlines().len(), 1, "the same name is the same exam: {:?}", i.deadlines());
+    let d = &i.deadlines()[0];
+    assert_eq!((d.day, d.est_min, d.course.as_str()), (first + 5, 600, "algoritmi"), "moved, and what was not said again stays");
+    run_bar(&mut i, "exam 2 feb");
+    run_bar(&mut i, "exam 9 feb");
+    assert_eq!(i.deadlines().len(), 3, "two without a name are two exams");
+}
+
+#[test]
+fn a_click_on_a_deadline_opens_the_line_that_changes_it_and_running_it_replaces_it() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    run_bar(&mut i, "esame 25 jan Reti #reti_di_calcolatori ~10h30");
+    i.activate(Action::DeadlineEdit(0));
+    let bar = i.bar.clone().expect("the bar is open");
+    assert_eq!(bar.text, "exam 2027-01-25 Reti #reti_di_calcolatori ~10h30");
+    assert_eq!(bar.cursor, "exam 2027-01-25".len(), "ready to change the day");
+    // a new name and no hours: the line says everything
+    i.bar.as_mut().unwrap().text = "exam 2027-01-28 Reti, secondo appello".into();
+    i.push(i.now, Input::Key(KeyInput::Enter));
+    assert_eq!(i.deadlines().len(), 1, "{:?}", i.deadlines());
+    assert_eq!((i.deadlines()[0].text.as_str(), i.deadlines()[0].est_min, i.deadlines()[0].course.as_str()), ("Reti, secondo appello", 0, ""));
+    i.notif = None;
+    i.activate(Action::DeadlineAdd);
+    assert_eq!(i.bar.as_ref().map(|b| (b.text.as_str(), b.replaces.clone())), Some(("exam ", None)));
+}
+
+#[test]
+fn the_plan_gives_less_study_to_a_day_of_lectures_and_never_counts_work_twice() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    let today = i.today_day();
+    let h = 3_600_000;
+    // tomorrow six of the eight hours go in lectures
+    let from = i.day_start_ms(today + 1) + 9 * h;
+    // the same hours entered twice, and one event inside them: six hours are taken, not fourteen
+    let lecture = |id: &str, a: i64, b: i64| Event { id: id.into(), title: "Lezioni".into(), start_ms: a, end_ms: b, ..Default::default() };
+    i.data.events = vec![lecture("l", from, from + 6 * h), lecture("m", from, from + 6 * h), lecture("n", from + h, from + 3 * h)];
+    run_bar(&mut i, "esame 19 jan Algoritmi ~13h"); // four days: 8 + 2 + 8 + 8 hours free
+    let on = |i: &Island, d: i64| i.study_on(today + d).iter().map(|(_, m)| m).sum::<u32>();
+    assert_eq!([on(&i, 0), on(&i, 1), on(&i, 2), on(&i, 3)], [240, 60, 240, 240]);
+    assert_eq!((0..7).map(|d| on(&i, d)).sum::<u32>(), 13 * 60);
+    i.cfg.study_day_hours = 6;
+    assert_eq!(on(&i, 1), 0, "a shorter day leaves nothing next to six hours of lectures");
+    let view = i.plan_view();
+    assert_eq!((view.deadlines.len(), view.deadlines[0].left_min, view.deadlines[0].short_min), (1, 780, 0));
+    i.cfg.study_day_hours = 2;
+    assert!(i.plan_view().deadlines[0].short_min > 0, "six hours free before the exam are not enough for thirteen");
 }
 
 #[test]

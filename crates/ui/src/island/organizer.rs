@@ -2,7 +2,7 @@
 //! and the search. Everything is decided here from what the island holds; the files and servers are the platform layer's.
 
 use super::*;
-use island_core::plan::{self, DayLoad, Hit, HitKind, Load};
+use island_core::plan::{self, DayLoad, Hit, HitKind, Load, StudyPlan, Weighted};
 use island_core::task::{self, Repeat, Spec, Task};
 
 /// Where a load of work comes from, to take studied time off it.
@@ -14,6 +14,64 @@ pub(crate) enum Source {
 
 /// The days kept in the study log.
 const LOG_DAYS: i64 = 120;
+/// How far ahead the calendars are read: past it a day is taken to be like the same weekday of the last week known.
+const CALENDAR_DAYS: usize = 60;
+/// The most rows of today's study and of the deadlines the Plan page shows.
+pub(crate) const PLAN_ROWS: usize = 5;
+/// The hour the study day ends: past it nothing more is planned for today.
+const DAY_END_HOUR: i64 = 23;
+/// The most exams the split of the next seven days names.
+pub(crate) const SPLIT_ROWS: usize = 4;
+
+/// The study ahead, worked out from what the island holds.
+pub(crate) struct Outlook {
+    pub sources: Vec<(Source, Load)>,
+    pub plan: StudyPlan,
+    /// The exams with credits and no hours (their positions among the deadlines), and what is suggested for them each day.
+    pub weighted: Vec<usize>,
+    pub suggested: Vec<Vec<(usize, u32)>>,
+    /// Minutes of today that can still be used for study.
+    pub room_today: u32,
+}
+
+/// One thing to study on a day.
+pub(crate) struct StudyRow {
+    pub what: String,
+    pub min: u32,
+    pub due: i64,
+    /// Only an indication, from the credits: no hours were said for it.
+    pub suggested: bool,
+}
+
+/// What the Plan page shows.
+pub(crate) struct PlanView {
+    /// What to study today, the nearest first.
+    pub today: Vec<StudyRow>,
+    /// How the study of the next seven days divides among the exams: (name, minutes), most first.
+    pub split: Vec<(String, u32)>,
+    /// Minutes studied today, and those that can still be.
+    pub studied_today: u32,
+    pub room_today: u32,
+    pub week: Vec<DayLoad>,
+    /// The deadlines still to come, soonest first.
+    pub deadlines: Vec<DeadlineRow>,
+    /// Minutes studied this week, per course.
+    pub studied: Vec<(String, u32)>,
+}
+
+pub(crate) struct DeadlineRow {
+    /// Its position in the island's list (what the actions take).
+    pub index: usize,
+    pub name: String,
+    pub day: i64,
+    /// Minutes of work it takes in all (0: none was said), of study done for it, and still to do.
+    pub est_min: u32,
+    pub done_min: u32,
+    pub left_min: u32,
+    /// Minutes of it that do not fit in the free time before the day.
+    pub short_min: u32,
+    pub cfu: u32,
+}
 
 impl Island {
     pub(crate) fn today_day(&self) -> i64 {
@@ -366,18 +424,175 @@ impl Island {
             }
         }
         for (i, d) in self.deadlines.iter().enumerate() {
-            if d.est_min > 0 && d.day >= today {
-                v.push((Source::Deadline(i), Load { label: d.text.clone(), course: d.course.clone(), due: d.day, est_min: d.est_min }));
+            let left = d.est_min.saturating_sub(d.done_min);
+            if left > 0 && d.day >= today {
+                v.push((Source::Deadline(i), Load { label: d.text.clone(), course: d.course.clone(), due: d.day, est_min: left }));
             }
         }
         v
     }
 
+    /// The study plan: the work left, spread over the days by the time their events leave free (see `plan::spread`),
+    /// and a suggestion for the time that is still free among the exams that only have credits (see `plan::share_out`).
+    pub(crate) fn outlook(&self) -> Outlook {
+        let today = self.today_day();
+        let sources = self.load_sources();
+        let loads: Vec<Load> = sources.iter().map(|(_, l)| l.clone()).collect();
+        let weighted: Vec<usize> = (0..self.deadlines.len()).filter(|n| Some(&self.deadlines[*n]).is_some_and(|d| d.est_min == 0 && d.cfu > 0 && d.day >= today)).collect();
+        let last = loads.iter().map(|l| l.due).chain(weighted.iter().map(|n| self.deadlines[*n].day)).max().unwrap_or(today);
+        let horizon = (last - today).clamp(7, 366) as usize;
+        let budget = self.cfg.study_day_hours * 60;
+        let mut free: Vec<u32> = plan::event_minutes(&self.data.events, self.day_start_ms(today), horizon.min(CALENDAR_DAYS)).into_iter().map(|busy| budget.saturating_sub(busy)).collect();
+        for day in free.len()..horizon {
+            free.push(free[day - 7]);
+        }
+        // what was studied today counts where `log_study` counted it
+        let (mut done, mut done_weighted) = (vec![0; loads.len()], vec![0; weighted.len()]);
+        for (_, course, min) in self.study_log.iter().filter(|(d, _, _)| *d == today) {
+            if let Some(i) = plan::load_for_course(&loads, course) {
+                done[i] += min;
+            } else if let Some(i) = self.deadline_for(course, today).and_then(|n| weighted.iter().position(|w| *w == n)) {
+                done_weighted[i] += min;
+            }
+        }
+        let room_today = self.room_today(budget);
+        let planned = plan::spread(&loads, &done, today, &free, room_today);
+        let exams: Vec<Weighted> = weighted.iter().map(|n| Weighted { weight: self.deadlines[*n].cfu, due: self.deadlines[*n].day }).collect();
+        let suggested = plan::share_out(&exams, &done_weighted, today, &planned.free, room_today.saturating_sub(planned.minutes_on(0)));
+        Outlook { plan: planned, sources, weighted, suggested, room_today }
+    }
+
+    /// What of today can still be studied: no more than the day's hours less its events and what is done, and no more
+    /// than the time until the study day ends, less the events still in it.
+    fn room_today(&self, budget: u32) -> u32 {
+        let today = self.today_day();
+        let (start, end) = (self.day_start_ms(today), self.day_start_ms(today) + DAY_END_HOUR * 3_600_000);
+        let busy_from = |from: i64| plan::busy_minutes(&self.data.events, from, end);
+        let done: u32 = self.study_log.iter().filter(|(d, _, _)| *d == today).map(|(_, _, m)| m).sum();
+        let by_hours = budget.saturating_sub(busy_from(start)).saturating_sub(done);
+        let now = self.now.max(start);
+        let by_clock = (((end - now).max(0) / 60_000) as u32).saturating_sub(busy_from(now));
+        by_hours.min(by_clock)
+    }
+
     /// What to study on a day: (what, minutes), the most pressing first.
     pub(crate) fn study_on(&self, day: i64) -> Vec<(String, u32)> {
-        let mut v: Vec<(i64, String, u32)> = self.load_sources().into_iter().filter_map(|(_, l)| Some((l.due, l.label.clone(), Some(plan::study_share(&l, day)).filter(|m| *m > 0)?))).collect();
-        v.sort_by_key(|(due, _, _)| *due);
-        v.into_iter().map(|(_, l, m)| (l, m)).collect()
+        self.study_rows(&self.outlook(), day).into_iter().map(|r| (r.what, r.min)).collect()
+    }
+
+    fn study_rows(&self, outlook: &Outlook, day: i64) -> Vec<StudyRow> {
+        let Ok(offset) = usize::try_from(day - self.today_day()) else { return vec![] };
+        let planned = outlook.plan.days.get(offset).into_iter().flatten().map(|(l, min)| {
+            let load = &outlook.sources[*l].1;
+            StudyRow { what: load.label.clone(), min: *min, due: load.due, suggested: false }
+        });
+        let suggested = outlook.suggested.get(offset).into_iter().flatten().map(|(e, min)| {
+            let d = &self.deadlines[outlook.weighted[*e]];
+            StudyRow { what: d.text.clone(), min: *min, due: d.day, suggested: true }
+        });
+        let mut rows: Vec<StudyRow> = planned.chain(suggested).collect();
+        rows.sort_by_key(|r| r.due);
+        rows
+    }
+
+    /// The study of the next seven days for each exam, planned or suggested: (name, minutes), most first.
+    fn week_split(&self, outlook: &Outlook) -> Vec<(String, u32)> {
+        let mut by_exam = vec![0u32; self.deadlines.len()];
+        for day in 0..7 {
+            for (l, min) in outlook.plan.days.get(day).into_iter().flatten() {
+                if let Source::Deadline(n) = outlook.sources[*l].0 {
+                    by_exam[n] += min;
+                }
+            }
+            for (e, min) in outlook.suggested.get(day).into_iter().flatten() {
+                by_exam[outlook.weighted[*e]] += min;
+            }
+        }
+        let mut split: Vec<(String, u32)> = by_exam.into_iter().enumerate().filter(|(_, m)| *m > 0).map(|(n, m)| (self.deadlines[n].text.clone(), m)).collect();
+        split.sort_by_key(|(_, m)| std::cmp::Reverse(*m));
+        split
+    }
+
+    /// Everything the Plan page shows, worked out once.
+    pub(crate) fn plan_view(&self) -> PlanView {
+        let today = self.today_day();
+        let outlook = self.outlook();
+        let deadlines = self
+            .deadlines
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.day >= today)
+            .map(|(index, d)| {
+                let planned = outlook.sources.iter().position(|(s, _)| *s == Source::Deadline(index));
+                DeadlineRow { index, name: d.text.clone(), day: d.day, est_min: d.est_min, done_min: d.done_min, left_min: d.est_min.saturating_sub(d.done_min), short_min: planned.map_or(0, |l| outlook.plan.short[l]), cfu: d.cfu }
+            })
+            .collect();
+        PlanView {
+            today: self.study_rows(&outlook, today),
+            split: self.week_split(&outlook),
+            studied_today: self.study_log.iter().filter(|(d, _, _)| *d == today).map(|(_, _, m)| m).sum(),
+            room_today: outlook.room_today,
+            week: self.week_of(&outlook),
+            deadlines,
+            studied: self.studied_this_week(),
+        }
+    }
+
+    /// Adds an exam or a hand-in, or moves the one it names: one by the same name, or the one the line was opened to
+    /// change (`replaces`).
+    pub(super) fn set_deadline(&mut self, mut new: Deadline, replaces: Option<String>) {
+        new.text = new.text.chars().take(80).collect();
+        let (day, text) = (new.day, new.text.clone());
+        // "Exam" is what a line without a name makes: two of those are two exams
+        let named = replaces.as_deref().or((text != "Exam").then_some(text.as_str())).map(str::to_lowercase);
+        let old = named.and_then(|n| self.deadlines.iter().position(|d| d.text.to_lowercase() == n)).map(|i| self.deadlines.remove(i));
+        new.done_min = old.as_ref().map_or(0, |o| o.done_min);
+        // typed again from scratch: what is not said stays. A line opened to change it says everything.
+        if let (Some(o), None) = (&old, &replaces) {
+            if new.course.is_empty() {
+                new.course = o.course.clone();
+            }
+            if new.est_min == 0 {
+                new.est_min = o.est_min;
+            }
+            if new.cfu == 0 {
+                new.cfu = o.cfu;
+            }
+        }
+        self.deadlines.push(new);
+        self.deadlines.sort_by_key(|d| d.day);
+        self.deadlines.truncate(20);
+        // a new one may have been studied for before it was written down
+        if old.is_none() {
+            if let Some(n) = self.deadlines.iter().position(|d| d.day == day && d.text == text) {
+                self.deadlines[n].done_min = self.logged_for(n);
+            }
+        }
+        let left = day - self.today_day();
+        let head = match &old {
+            None => "Deadline added",
+            Some(o) if o.day != day => "Deadline moved",
+            Some(_) => "Deadline updated",
+        };
+        self.say(head, &format!("{text} · {}", if left <= 0 { "today".to_string() } else { format!("in {left} day{}", if left == 1 { "" } else { "s" }) }));
+    }
+
+    /// Opens the bar on the line that makes this deadline, the cursor after its day.
+    pub(super) fn edit_deadline(&mut self, n: usize) {
+        let Some(d) = self.deadlines.get(n) else { return };
+        let (y, m, day) = island_core::calendar::civil_from_days(d.day);
+        let start = format!("exam {y:04}-{m:02}-{day:02}");
+        let mut text = format!("{start} {}", d.text);
+        if !d.course.is_empty() {
+            text.push_str(&format!(" #{}", d.course.replace(' ', "_")));
+        }
+        if d.cfu > 0 {
+            text.push_str(&format!(" {}cfu", d.cfu));
+        }
+        if d.est_min > 0 {
+            text.push_str(&format!(" ~{}", task::fmt_minutes(d.est_min)));
+        }
+        self.bar = Some(Bar { until: self.now + BAR_IDLE_MS, cursor: start.chars().count(), text, replaces: Some(d.text.clone()), ..Default::default() });
     }
 
     /// "Study 1h20: Algoritmi exam 45m, Report 35m", or None when there is nothing to study.
@@ -387,31 +602,55 @@ impl Island {
         (total > 0).then(|| format!("Study {}: {}", task::fmt_minutes(total), plan.iter().map(|(l, m)| format!("{l} {}", task::fmt_minutes(*m))).collect::<Vec<_>>().join(", ")))
     }
 
-    /// Study time done: kept in the log and taken off the work still to do for that course.
+    /// The deadline a study of `course` counts for: the nearest one of it that had not passed on `day`.
+    fn deadline_for(&self, course: &str, day: i64) -> Option<usize> {
+        self.deadlines.iter().enumerate().filter(|(_, d)| d.day >= day && plan::course_matches(course, &d.course, &d.text)).min_by_key(|(_, d)| d.day).map(|(i, _)| i)
+    }
+
+    /// The minutes in the study log that count for the deadline at this position.
+    fn logged_for(&self, n: usize) -> u32 {
+        self.study_log.iter().filter(|(day, course, _)| self.deadline_for(course, *day) == Some(n)).map(|(_, _, m)| m).sum()
+    }
+
+    /// A deadline with no hours and nothing counted takes what the log holds for it (earlier versions counted nothing for
+    /// one without hours). One with hours is left alone: they were already reduced by what was studied.
+    pub(super) fn catch_up_study(&mut self) {
+        for n in 0..self.deadlines.len() {
+            if self.deadlines[n].est_min == 0 && self.deadlines[n].done_min == 0 {
+                self.deadlines[n].done_min = self.logged_for(n);
+            }
+        }
+    }
+
+    /// Study time done: kept in the log and counted for the nearest task or deadline of that course that has work left,
+    /// else for the nearest deadline of it.
     pub(super) fn log_study(&mut self, minutes: u32, course: &str) {
         let today = self.today_day();
         self.study_log.push((today, course.trim().to_string(), minutes));
         self.study_log.retain(|(d, _, _)| *d > today - LOG_DAYS);
         let loads = self.load_sources();
         let all: Vec<Load> = loads.iter().map(|(_, l)| l.clone()).collect();
-        let left = plan::load_for_course(&all, course).map(|i| {
-            match loads[i].0 {
-                Source::Task(n) => {
-                    self.todos[n].est_min = self.todos[n].est_min.saturating_sub(minutes);
-                    (self.todos[n].text.clone(), self.todos[n].est_min)
-                }
-                Source::Deadline(n) => {
-                    self.deadlines[n].est_min = self.deadlines[n].est_min.saturating_sub(minutes);
-                    (self.deadlines[n].text.clone(), self.deadlines[n].est_min)
+        let to = plan::load_for_course(&all, course).map(|i| loads[i].0).or_else(|| self.deadline_for(course, today).map(Source::Deadline));
+        let name = if course.trim().is_empty() { "Study time".to_string() } else { course.trim().to_string() };
+        let body = match to {
+            Some(Source::Task(n)) => {
+                self.todos[n].est_min = self.todos[n].est_min.saturating_sub(minutes);
+                left_line(&self.todos[n].text, self.todos[n].est_min)
+            }
+            Some(Source::Deadline(n)) => {
+                let d = &mut self.deadlines[n];
+                d.done_min += minutes;
+                if d.est_min > 0 {
+                    left_line(&d.text, d.est_min.saturating_sub(d.done_min))
+                } else {
+                    let hint = if d.cfu > 0 { "" } else { " · add its CFU for a plan" };
+                    format!("{}: {} studied{hint}", d.text, task::fmt_minutes(d.done_min))
                 }
             }
-        });
-        let name = if course.trim().is_empty() { "Study time".to_string() } else { course.trim().to_string() };
-        match left {
-            Some((what, 0)) => self.say(&format!("Logged {} · {name}", task::fmt_minutes(minutes)), &format!("{what}: all the work is done")),
-            Some((what, m)) => self.say(&format!("Logged {} · {name}", task::fmt_minutes(minutes)), &format!("{what}: {} left", task::fmt_minutes(m))),
-            None => self.say(&format!("Logged {} · {name}", task::fmt_minutes(minutes)), ""),
-        }
+            None if course.trim().is_empty() => String::new(),
+            None => "No exam or task by that name".to_string(),
+        };
+        self.say(&format!("Logged {} · {name}", task::fmt_minutes(minutes)), &body);
     }
 
     pub fn study_log(&self) -> &[(i64, String, u32)] {
@@ -420,6 +659,7 @@ impl Island {
 
     pub fn restore_study_log(&mut self, log: Vec<(i64, String, u32)>) {
         self.study_log = log;
+        self.catch_up_study();
     }
 
     /// Minutes studied this week (from Monday), per course, most first.
@@ -432,18 +672,22 @@ impl Island {
 
     /// The seven days from today, each with its load.
     pub(crate) fn week_loads(&self) -> Vec<DayLoad> {
+        self.week_of(&self.outlook())
+    }
+
+    fn week_of(&self, outlook: &Outlook) -> Vec<DayLoad> {
         let today = self.today_day();
         let ranges: Vec<(i64, i64)> = (0..7).map(|i| (self.day_start_ms(today + i), self.day_start_ms(today + i + 1))).collect();
-        let mut loads: Vec<Load> = self.load_sources().into_iter().map(|(_, l)| l).collect();
+        let mut loads: Vec<Load> = outlook.sources.iter().map(|(_, l)| l.clone()).collect();
         // what is due without an estimate still counts as "due" on its day
         loads.extend(self.todos.iter().filter(|t| t.est_min == 0 && t.repeat == Repeat::Never).filter_map(|t| Some(Load { label: t.text.clone(), course: t.course.clone(), due: t.due?, est_min: 0 })));
         loads.extend(self.deadlines.iter().filter(|d| d.est_min == 0).map(|d| Load { label: d.text.clone(), course: d.course.clone(), due: d.day, est_min: 0 }));
-        plan::week(&self.data.events, &ranges, today, &loads)
-    }
-
-    pub(crate) fn plan_height(&self) -> f64 {
-        let studied = self.studied_this_week().len().min(4);
-        14.0 + 34.0 + 7.0 * 28.0 + 8.0 + if self.study_line(self.today_day()).is_some() { 24.0 } else { 0.0 } + if studied > 0 { 22.0 + studied as f64 * 24.0 } else { 0.0 } + 10.0
+        let study: Vec<u32> = (0..7).map(|i| outlook.plan.minutes_on(i)).collect();
+        let mut week = plan::week(&self.data.events, &ranges, today, &loads, &study);
+        for (i, day) in week.iter_mut().enumerate() {
+            day.suggested_min = outlook.suggested.get(i).map_or(0, |d| d.iter().map(|(_, m)| m).sum());
+        }
+        week
     }
 
     // ---- search
@@ -495,6 +739,15 @@ impl Island {
                 self.say("Copied", &h.title);
             }
         }
+    }
+}
+
+/// "Report: 2h left", or that it is all done.
+fn left_line(what: &str, minutes: u32) -> String {
+    if minutes == 0 {
+        format!("{what}: all the work is done")
+    } else {
+        format!("{what}: {} left", task::fmt_minutes(minutes))
     }
 }
 

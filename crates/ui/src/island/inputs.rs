@@ -721,7 +721,7 @@ impl Island {
                 // nothing understood: the bar stays, its preview line says so
                 if let Some(c) = self.bar_cmd() {
                     let line = self.bar.as_ref().map(|b| b.text.trim().to_string()).unwrap_or_default();
-                    self.bar = None;
+                    let replaces = self.bar.take().and_then(|b| b.replaces);
                     // a line that made a password is not kept
                     if !matches!(c, island_core::bar::Cmd::Gen(island_core::quick::Gen::Password(_))) {
                         self.bar_history.retain(|h| *h != line);
@@ -729,7 +729,10 @@ impl Island {
                         let extra = self.bar_history.len().saturating_sub(30);
                         self.bar_history.drain(..extra);
                     }
-                    self.run_bar(c);
+                    match c {
+                        island_core::bar::Cmd::Deadline { day, text, course, est_min, cfu } => self.set_deadline(Deadline { day, text, course, est_min, cfu, ..Default::default() }, replaces),
+                        c => self.run_bar(c),
+                    }
                 }
             }
             _ => {}
@@ -788,13 +791,7 @@ impl Island {
             Cmd::Unbring(what) => self.remove_bring(&what),
             Cmd::Pin(text) => self.pin(&text),
             Cmd::Unpin(what) => self.unpin(&what),
-            Cmd::Deadline { day, text, course, est_min } => {
-                self.deadlines.push(Deadline { day, text: text.chars().take(80).collect(), course, est_min });
-                self.deadlines.sort_by_key(|d| d.day);
-                self.deadlines.truncate(20);
-                let left = day - self.day_number(now);
-                self.say("Deadline added", &format!("{text} · {}", if left <= 0 { "today".to_string() } else { format!("in {left} day{}", if left == 1 { "" } else { "s" }) }));
-            }
+            Cmd::Deadline { day, text, course, est_min, cfu } => self.set_deadline(Deadline { day, text, course, est_min, cfu, ..Default::default() }, None),
             Cmd::Train(q) => {
                 self.say("Looking for the train", "Asking Trenitalia");
                 self.pending.push(Command::PinTrain(q));
@@ -875,6 +872,7 @@ impl Island {
     pub fn restore_deadlines(&mut self, d: Vec<Deadline>) {
         self.deadlines = d;
         self.deadlines.sort_by_key(|d| d.day);
+        self.catch_up_study();
     }
 
     /// Drops what is more than a day behind.

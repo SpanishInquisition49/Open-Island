@@ -29,7 +29,7 @@ pub enum Cmd {
     Today,
     /// A date to count down to (an exam, a project): `deadline 3 feb Reti exam`. `day` counts days since 1970-01-01.
     /// `course` and `est_min` come from `#course` and `~20h`: what to study and how long it will take.
-    Deadline { day: i64, text: String, course: String, est_min: u32 },
+    Deadline { day: i64, text: String, course: String, est_min: u32, cfu: u32 },
     /// Pin the usual train (`train pisa centrale 17:12 verso lucca`), unpin it (`train off`), set home (`home 43.7, 10.4` or an address).
     Train(String),
     TrainOff,
@@ -131,8 +131,8 @@ pub fn preview(cmd: &Cmd) -> String {
         Cmd::UntilNext => "Timer until 5 min before your next event".into(),
         Cmd::Tomorrow => "Show tomorrow".into(),
         Cmd::Today => "Show today".into(),
-        Cmd::Deadline { day, text, course, est_min } => {
-            let extra: String = [(!course.is_empty()).then(|| format!(" · #{course}")), (*est_min > 0).then(|| format!(" · {} to prepare", crate::task::fmt_minutes(*est_min)))].into_iter().flatten().collect();
+        Cmd::Deadline { day, text, course, est_min, cfu } => {
+            let extra: String = [(!course.is_empty()).then(|| format!(" · #{course}")), (*cfu > 0).then(|| format!(" · {cfu} CFU")), (*est_min > 0).then(|| format!(" · {} to prepare", crate::task::fmt_minutes(*est_min)))].into_iter().flatten().collect();
             format!("Deadline · {} · {text}{extra}", crate::quick::fmt_date(crate::calendar::civil_from_days(*day)))
         }
         Cmd::Train(q) => format!("Pin the train · {q}"),
@@ -192,6 +192,27 @@ pub fn parse_on(line: &str, local_secs: i64, weekday: Option<u8>) -> Option<Cmd>
     parse_ctx(line, &Ctx { local_secs, weekday, today: None, rates: &[] })
 }
 
+/// Takes the credits of an exam (`9cfu`, `9 cfu`) out of its words; 0 when none are said.
+fn take_cfu<'a>(words: &[&'a str]) -> (Vec<&'a str>, u32) {
+    let credits = |w: &str| w.parse::<u32>().ok().filter(|n| (1..=60).contains(n));
+    let (mut rest, mut cfu) = (Vec::with_capacity(words.len()), 0);
+    for w in words {
+        let low = w.to_lowercase();
+        if low == "cfu" {
+            if let Some(n) = rest.last().and_then(|n: &&str| credits(n)) {
+                rest.pop();
+                cfu = n;
+                continue;
+            }
+        } else if let Some(n) = low.strip_suffix("cfu").and_then(credits) {
+            cfu = n;
+            continue;
+        }
+        rest.push(*w);
+    }
+    (rest, cfu)
+}
+
 /// What the parser may need to know about now: the time of day, the weekday, the date, the currency rates.
 pub struct Ctx<'a> {
     pub local_secs: i64,
@@ -223,10 +244,11 @@ pub fn parse_ctx(line: &str, ctx: &Ctx) -> Option<Cmd> {
             let today = ctx.today?;
             let (date, used) = crate::quick::parse_date(&words[1..], today)?;
             let orig: Vec<&str> = line.split_whitespace().collect();
-            let spec = crate::task::parse_spec(&orig[(1 + used).min(orig.len())..], None);
+            let (rest, cfu) = take_cfu(&orig[(1 + used).min(orig.len())..]);
+            let spec = crate::task::parse_spec(&rest, None);
             // an exam is called by what it is, even when only the word was typed
             let text = if spec.text.is_empty() { if first == "esame" || first == "exam" { "Exam".to_string() } else { return None } } else { spec.text };
-            return Some(Cmd::Deadline { day: crate::calendar::days_from_civil(date.0, date.1, date.2), text, course: spec.course, est_min: spec.est_min });
+            return Some(Cmd::Deadline { day: crate::calendar::days_from_civil(date.0, date.1, date.2), text, course: spec.course, est_min: spec.est_min, cfu });
         }
         "train" | "treno" => {
             let rest = line.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
@@ -991,16 +1013,21 @@ mod tests {
         let ctx = Ctx { local_secs: NOON, weekday: Some(4), today: Some((2027, 1, 15)), rates: &[] };
         let d = |l: &str| parse_ctx(l, &ctx);
         let feb3 = crate::calendar::days_from_civil(2027, 2, 3);
-        assert_eq!(d("deadline 3 feb Reti exam"), Some(Cmd::Deadline { day: feb3, text: "Reti exam".into(), course: String::new(), est_min: 0 }));
-        assert_eq!(d("esame 2027-02-03 Algoritmi e Strutture"), Some(Cmd::Deadline { day: feb3, text: "Algoritmi e Strutture".into(), course: String::new(), est_min: 0 }));
-        assert_eq!(d("scadenza 3/2 consegna progetto"), Some(Cmd::Deadline { day: feb3, text: "consegna progetto".into(), course: String::new(), est_min: 0 }));
-        assert_eq!(d("exam 3 feb"), Some(Cmd::Deadline { day: feb3, text: "Exam".into(), course: String::new(), est_min: 0 }));
+        assert_eq!(d("deadline 3 feb Reti exam"), Some(Cmd::Deadline { day: feb3, text: "Reti exam".into(), course: String::new(), est_min: 0, cfu: 0 }));
+        assert_eq!(d("esame 2027-02-03 Algoritmi e Strutture"), Some(Cmd::Deadline { day: feb3, text: "Algoritmi e Strutture".into(), course: String::new(), est_min: 0, cfu: 0 }));
+        assert_eq!(d("scadenza 3/2 consegna progetto"), Some(Cmd::Deadline { day: feb3, text: "consegna progetto".into(), course: String::new(), est_min: 0, cfu: 0 }));
+        assert_eq!(d("exam 3 feb"), Some(Cmd::Deadline { day: feb3, text: "Exam".into(), course: String::new(), est_min: 0, cfu: 0 }));
         assert_eq!(d("deadline 3 feb"), None, "a deadline needs a name");
         assert_eq!(d("deadline banana x"), None);
         assert_eq!(parse("deadline 3 feb x", NOON), None, "no date known: no deadline");
-        assert_eq!(preview(&Cmd::Deadline { day: feb3, text: "x".into(), course: String::new(), est_min: 0 }), "Deadline · Wed 3 Feb 2027 · x");
-        assert_eq!(d("esame 3 feb Algoritmi #algoritmi ~20h"), Some(Cmd::Deadline { day: feb3, text: "Algoritmi".into(), course: "algoritmi".into(), est_min: 1200 }), "the course and the work to do ride along");
+        assert_eq!(preview(&Cmd::Deadline { day: feb3, text: "x".into(), course: String::new(), est_min: 0, cfu: 0 }), "Deadline · Wed 3 Feb 2027 · x");
+        assert_eq!(d("esame 3 feb Algoritmi #algoritmi ~20h"), Some(Cmd::Deadline { day: feb3, text: "Algoritmi".into(), course: "algoritmi".into(), est_min: 1200, cfu: 0 }), "the course and the work to do ride along");
         assert_eq!(preview(&d("esame 3 feb Algoritmi ~20h").unwrap()), "Deadline · Wed 3 Feb 2027 · Algoritmi · 20h to prepare");
+        let nine = Cmd::Deadline { day: feb3, text: "AE".into(), course: String::new(), est_min: 0, cfu: 9 };
+        assert_eq!(d("exam 3 feb AE 9cfu").as_ref(), Some(&nine));
+        assert_eq!(d("esame 3 feb AE 9 CFU").as_ref(), Some(&nine));
+        assert_eq!(d("exam 3 feb Analisi 2"), Some(Cmd::Deadline { day: feb3, text: "Analisi 2".into(), course: String::new(), est_min: 0, cfu: 0 }), "a number alone is part of the name");
+        assert_eq!(preview(&nine), "Deadline · Wed 3 Feb 2027 · AE · 9 CFU");
     }
 
     #[test]

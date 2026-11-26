@@ -94,6 +94,7 @@ pub const ICONS: &[(&str, u32)] = &[
     ("plus", 0xEB0B),
     ("refresh", 0xEB13),
     ("route", 0xEB17),
+    ("school", 0xECF7),
     ("screen-share", 0xED18),
     ("search", 0xEB1C),
     ("send", 0xEB1E),

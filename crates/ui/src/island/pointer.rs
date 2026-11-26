@@ -439,6 +439,11 @@ impl Island {
                     self.deadlines.remove(n);
                 }
             }
+            Action::DeadlineAdd => {
+                let text = "exam ".to_string();
+                self.bar = Some(Bar { until: self.now + BAR_IDLE_MS, cursor: text.chars().count(), text, ..Default::default() });
+            }
+            Action::DeadlineEdit(n) => self.edit_deadline(n),
             Action::PhoneThread(n) => {
                 if let Some(t) = self.data.phone.as_ref().and_then(|p| p.threads.get(n)).cloned() {
                     self.phone_open = Some(t.key.clone());
