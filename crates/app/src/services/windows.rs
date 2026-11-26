@@ -93,13 +93,20 @@ fn play_default_sound() {
 fn keep_awake(rep: Reporter, rx: Receiver<bool>) {
     use windows::Win32::System::Power::{SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED};
     std::thread::spawn(move || {
-        let mut on = false;
-        for _ in rx {
-            on = !on;
+        let memory = super::awake::memory();
+        let apply = |on: bool| {
             unsafe {
                 SetThreadExecutionState(if on { ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED } else { ES_CONTINUOUS });
             }
             rep.patch(move |d| d.keep_awake = on);
+        };
+        // held again from the start when it was on at the end of the last run
+        let mut on = super::awake::remembered(memory.as_deref());
+        apply(on);
+        for _ in rx {
+            on = !on;
+            super::awake::remember(memory.as_deref(), on);
+            apply(on);
         }
     });
 }

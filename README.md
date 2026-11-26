@@ -127,6 +127,10 @@ And in the command bar `go <page>` (also `vai`, `apri`) opens one by name, in En
 only one page begins so: `go phone`, `go meteo`, `go sett`, `go all`. The control socket takes the same names: `msg open phone`,
 `msg page all`. The swipe order is unchanged. Usage is counted in `page-usage.json` in the state folder.
 
+**What is remembered.** The options are in this file and apply from the start of the next run. "Do not disturb" and "Keep awake" are written to the state folder as
+soon as they are switched, so they come back after a restart or a crash. Whatever keeps the machine awake (`systemd-inhibit`, `caffeinate`) ends with the island, so
+nothing is left holding it while the island is not running.
+
 ## Moving between pages
 
 Every page carries a row of page icons at the bottom (media and timer first when active, then home, calendar, quick settings,

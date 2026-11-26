@@ -7,6 +7,7 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 
 pub mod art;
+pub mod awake;
 pub mod clipboard_history;
 pub mod caldav;
 pub mod cards;

@@ -3,9 +3,10 @@
 //! `cargo check --target aarch64-apple-darwin`.
 
 use super::parse::{mac_volume, now_playing, NowPlaying};
+use super::awake::Holder;
 use super::{art, Reporter};
 use island_ui::model::{Command, Input, Media, OsdKind};
-use std::process::{Child, Command as Proc, Stdio};
+use std::process::{Command as Proc, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -44,7 +45,11 @@ fn track() -> Option<(&'static str, NowPlaying)> {
 }
 
 fn run(rep: Reporter, rx: Receiver<Command>) {
-    let mut keep_awake: Option<Child> = None;
+    // held again from the start when it was on at the end of the last run; `-w` ends it with the island
+    let island = std::process::id().to_string();
+    let mut keep_awake = Holder::restore(super::awake::memory(), "caffeinate", &["-di", "-w", &island]);
+    let on = keep_awake.on();
+    rep.patch(move |d| d.keep_awake = on);
     let (mut last_vol, mut last_track, mut art_url, mut art_cache) = (None::<(f32, bool)>, String::new(), None::<String>, None);
     let mut last_sent: Option<Media> = None;
     loop {
@@ -66,14 +71,8 @@ fn run(rep: Reporter, rx: Receiver<Command>) {
                 }
                 Command::FocusApp { app, .. } => drop(Proc::new("open").args(["-a", &app]).stdin(Stdio::null()).stderr(Stdio::null()).status()),
                 Command::ToggleKeepAwake => {
-                    match keep_awake.take() {
-                        Some(mut k) => {
-                            let _ = k.kill();
-                            let _ = k.wait();
-                        }
-                        None => keep_awake = Proc::new("caffeinate").args(["-di"]).stdin(Stdio::null()).spawn().ok(),
-                    }
-                    let on = keep_awake.is_some();
+                    keep_awake.toggle();
+                    let on = keep_awake.on();
                     rep.patch(move |d| d.keep_awake = on);
                 }
                 _ => {}

@@ -1,6 +1,7 @@
 //! Quick settings (Linux): Wi-Fi, Bluetooth, keep-awake, power profile, audio outputs. Polled every few
 //! seconds while the page is open (see `QUICK_WANTED`) and right after a toggle.
 
+use super::awake::Holder;
 use super::Reporter;
 use island_ui::model::{Command, Sink};
 use std::process::{Child, Command as Proc, Stdio};
@@ -83,7 +84,8 @@ fn next<T: PartialEq + Clone>(list: &[T], current: Option<&T>) -> Option<T> {
 
 pub fn start(rep: Reporter, cmd_rx: Receiver<Command>) {
     std::thread::spawn(move || {
-        let mut inhibitor: Option<Child> = None;
+        // held again from the start when it was on at the end of the last run; `cat` lasts as long as the island does
+        let mut inhibitor = Holder::restore(super::awake::memory(), "systemd-inhibit", &["--what=idle:sleep", "--who=open-island", "--why=Keep awake", "--mode=block", "cat"]);
         let mut night: Option<Child> = None;
         let has_night_light = night_light_installed();
         let mut sinks: Vec<Sink> = vec![];
@@ -110,21 +112,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>) {
                     sample_now = true;
                 }
                 Ok(Command::ToggleKeepAwake) => {
-                    match inhibitor.take() {
-                        Some(mut c) => {
-                            let _ = c.kill();
-                            let _ = c.wait();
-                        }
-                        None => {
-                            inhibitor = Proc::new("systemd-inhibit")
-                                .args(["--what=idle:sleep", "--who=open-island", "--why=Keep awake", "--mode=block", "sleep", "infinity"])
-                                .stdin(Stdio::null())
-                                .stdout(Stdio::null())
-                                .stderr(Stdio::null())
-                                .spawn()
-                                .ok();
-                        }
-                    }
+                    inhibitor.toggle();
                     sample_now = true;
                 }
                 Ok(Command::ToggleNightLight) => {
@@ -172,14 +160,8 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>) {
             sinks = parse_sinks(&out("pactl", &["-f", "json", "list", "sinks"]).unwrap_or_default());
             sink = out("pactl", &["get-default-sink"]).map(|s| s.trim().to_string());
             profile = std::fs::read_to_string("/sys/firmware/acpi/platform_profile").ok().map(|s| profile_name(&s));
-            // a keep-awake process that died (killed from outside) is no longer holding the inhibitor
-            if let Some(c) = inhibitor.as_mut() {
-                if c.try_wait().ok().flatten().is_some() {
-                    inhibitor = None;
-                }
-            }
             let night_now = has_night_light.then(|| night_light_running(&mut night));
-            let (keep, p, s, k) = (inhibitor.is_some(), profile.clone(), sinks.clone(), sink.clone());
+            let (keep, p, s, k) = (inhibitor.on(), profile.clone(), sinks.clone(), sink.clone());
             rep.patch(move |d| {
                 d.wifi = wifi;
                 d.bluetooth = bt;
