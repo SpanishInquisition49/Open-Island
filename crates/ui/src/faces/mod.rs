@@ -44,7 +44,7 @@ impl Island {
     /// Draws the island into `scene`, in surface coordinates scaled by `scale`.
     pub fn draw(&mut self, scene: &mut Scene, fonts: &Fonts, surface: (f64, f64), scale: f64) {
         let (w, h) = (self.spring.w.pos.max(1.0), self.spring.h.pos.max(1.0));
-        let slot = self.side_slot(self.shown_side.is_some(), self.shown_more.len()) * self.bubble_k;
+        let slot = self.bubble_slot();
         let origin = (((surface.0 - (w + slot)) / 2.0).round(), TOP_MARGIN);
         self.pill_origin = origin;
         let base = Affine::scale(scale) * Affine::translate(origin);
@@ -56,6 +56,8 @@ impl Island {
         // the notification card under it, and the neck that joins them: the pill covers where they meet
         self.measure_cards(fonts);
         self.draw_card_shapes(scene, base, w, h, radius);
+        self.draw_bubble_shapes(scene, fonts, base, w, h, radius);
+        self.draw_fill_shape(scene, base, w, h, radius);
 
         // the pill
         scene.fill(Fill::NonZero, base, theme::BG, None, &RoundedRect::new(0.0, 0.0, w, h, radius));
@@ -103,20 +105,8 @@ impl Island {
             scene.pop_layer();
         }
 
-        // the side bubble
-        for (n, side) in self.sides_shown().into_iter().enumerate().filter(|_| self.bubble_k > 0.01) {
-            let kk = self.bubble_k;
-            let bx = w + BUBBLE_GAP + n as f64 * (BUBBLE_W + BUBBLE_GAP);
-            let bt = base
-                * Affine::translate((bx + BUBBLE_W / 2.0, h / 2.0))
-                * Affine::scale(0.6 + 0.4 * kk)
-                * Affine::translate((-BUBBLE_W / 2.0, -h / 2.0));
-            scene.fill(Fill::NonZero, bt, with_alpha(theme::BG, kk as f32), None, &RoundedRect::new(0.0, 0.0, BUBBLE_W, h, (h / 2.0).min(30.0)));
-            let mut p = Painter { scene, fonts, hits: &mut hits, opacity: kk as f32, pointer: None, transform: bt, base: (kk as f32, bt), since_enter: 10_000 };
-            self.draw_bubble(&mut p, side, BUBBLE_W, h);
-            // the bubble's hit region is in the pill's coordinates (its own drawing is shifted and scaled)
-            hits.push(Hit { rect: rect(bx, 0.0, BUBBLE_W, h), action: Action::Open(side_to_page(side)) });
-        }
+        self.draw_bubble_contents(scene, fonts, &mut hits, base, w, h);
+        self.draw_fill(scene, &mut hits, base, w);
         self.hits = hits;
     }
 
@@ -157,9 +147,7 @@ impl Island {
             Face::MediaFull | Face::MediaLyric => self.face_media_full(p, w, h, face == Face::MediaLyric),
             Face::TimerMini => self.face_timer_mini(p, w, h),
             Face::TimerFull => self.face_timer_full(p, w, h),
-            Face::TimerDone => self.face_simple(p, w, h, "bell-ringing", theme::ACCENT, &self.timer_done_text.0, &self.timer_done_text.1),
             Face::Reply => self.face_reply(p, w, h),
-            Face::Device => self.face_device(p, w, h),
             Face::Weather => self.face_weather(p, w, h),
             Face::Phone => self.face_phone(p, w, h),
             Face::Grid => self.face_grid(p, w, h),
@@ -173,12 +161,7 @@ impl Island {
             Face::Map => self.face_map(p, w, h),
             Face::Bar => self.face_bar(p, w, h),
             Face::Osd => self.face_osd(p, w, h),
-            Face::Power => self.face_power(p, w, h),
             Face::Progress => self.face_progress(p, w, h),
-            Face::Rain => {
-                let t = format!("Rain in about {} min", self.rain_in.unwrap_or(0));
-                self.face_simple(p, w, h, "umbrella", theme::ACCENT, &t, "Click to dismiss")
-            }
             Face::MeetMini => self.face_meet_mini(p, w, h),
             Face::Meeting => self.face_meeting(p, w, h),
             Face::Cal => self.face_cal(p, w, h),
@@ -468,12 +451,6 @@ impl Island {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn face_simple(&self, p: P, w: f64, h: f64, icon: &str, tint: Color, title: &str, sub: &str) {
-        p.icon(icon, 36.0, h / 2.0, 24.0, tint);
-        p.text(title, 60.0, h / 2.0 - 9.0, 14.0, SEMI, theme::FG, Align::Left, (w - 78.0) as f32);
-        p.text(sub, 60.0, h / 2.0 + 10.0, 11.0, REG, theme::DIM, Align::Left, (w - 78.0) as f32);
-    }
-
     fn face_reply(&self, p: P, w: f64, h: f64) {
         let Some(r) = &self.reply else { return };
         p.icon("message-reply", 30.0, 26.0, 18.0, theme::ACCENT);
@@ -540,20 +517,6 @@ impl Island {
         p.bar(bar, self.osd_shown, theme::FG, theme::TRACK);
         let pct = format!("{}%", (o.level * 100.0).round() as i32);
         p.text(&pct, w - 16.0, h / 2.0, 13.0, SEMI, theme::FG, Align::Right, 44.0);
-    }
-
-    fn face_power(&self, p: P, w: f64, h: f64) {
-        let Some(ev) = self.power else { return };
-        let cap = self.data.battery.map_or(0.0, |b| b.percent as f64);
-        let (label, icon, tint) = match ev {
-            PowerEvent::Plugged => ("Charging", "battery-charging", theme::GREEN),
-            PowerEvent::Unplugged => ("On battery", "battery", theme::FG),
-            PowerEvent::Low => ("Low battery", "battery-1", theme::RED),
-        };
-        p.icon(icon, 30.0, h / 2.0, 20.0, tint);
-        p.text(label, 50.0, h / 2.0, 13.0, SEMI, if ev == PowerEvent::Low { theme::RED } else { theme::FG }, Align::Left, 110.0);
-        p.bar(rect(170.0, h / 2.0 - 3.0, w - 170.0 - 56.0, 6.0), cap / 100.0, tint, theme::TRACK);
-        p.text(&format!("{}%", cap.round() as i32), w - 16.0, h / 2.0, 13.0, SEMI, theme::FG, Align::Right, 44.0);
     }
 
     /// "25 min", "3 h", "3 h 20 min".
@@ -659,24 +622,6 @@ impl Island {
         }
     }
 
-    fn face_device(&self, p: P, w: f64, h: f64) {
-        let Some((d, low)) = &self.device_ev else { return };
-        let tint = if *low { theme::RED } else { theme::FG };
-        p.icon(d.kind.icon(), 30.0, h / 2.0, 20.0, tint);
-        let label = d.name.clone();
-        match d.battery {
-            Some(b) => {
-                p.text(&label, 50.0, h / 2.0, 13.0, SEMI, if *low { theme::RED } else { theme::FG }, Align::Left, (w - 50.0 - 160.0) as f32);
-                p.bar(rect(w - 150.0, h / 2.0 - 3.0, 90.0, 6.0), b as f64 / 100.0, if b <= 20 { theme::RED } else { theme::GREEN }, theme::TRACK);
-                p.text(&format!("{b}%"), w - 16.0, h / 2.0, 13.0, SEMI, theme::FG, Align::Right, 44.0);
-            }
-            None => {
-                p.text(&label, 50.0, h / 2.0, 13.0, SEMI, theme::FG, Align::Left, (w - 130.0) as f32);
-                p.text("Connected", w - 16.0, h / 2.0, 12.0, REG, theme::DIM, Align::Right, 80.0);
-            }
-        }
-    }
-
     fn face_progress(&self, p: P, w: f64, h: f64) {
         let Some(op) = &self.ops.op else { return };
         let failed = op.state == OpState::Fail;
@@ -709,7 +654,7 @@ impl Island {
         p.text(&pct, w - pad, cy, 13.0, SEMI, if failed { theme::RED } else if done { theme::GREEN } else { theme::FG }, Align::Right, col as f32);
     }
 
-    fn until_text(&self, e: &calendar::Event) -> String {
+    pub(crate) fn until_text(&self, e: &calendar::Event) -> String {
         if let Some(c) = duration::countdown(e.start_ms - self.now) {
             return c;
         }
@@ -736,7 +681,7 @@ impl Island {
     }
 
     fn face_meeting(&self, p: P, w: f64, h: f64) {
-        let e = self.meeting.as_ref().or_else(|| self.next_event());
+        let e = self.next_event();
         let Some(e) = e else { return };
         let join = e.url.as_deref().filter(|u| !u.is_empty());
         let right = if join.is_some() { 78.0 } else { 18.0 };
@@ -815,6 +760,7 @@ impl Island {
 }
 
 mod card;
+mod liquid;
 mod organizer;
 mod pages_a;
 mod pages_b;

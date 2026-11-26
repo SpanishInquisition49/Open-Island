@@ -1,9 +1,9 @@
 # open-island
 
 A macOS-style **dynamic island** for any desktop, in Rust. A black pill at the top of the screen that
-morphs between the clock, music (cover, progress, synced lyrics), notifications (with actions), volume and
-brightness, charging, timers (countdown, Pomodoro, stopwatch), weather and rain heads-up, calendar meetings,
-long-running operations (a progress bar your scripts can drive) and privacy indicators. Around that it grew pages of its own: a map
+morphs between the clock, music (cover, progress, synced lyrics), volume and brightness, timers (countdown,
+Pomodoro, stopwatch), long-running operations (a progress bar your scripts can drive) and privacy indicators, while
+what happens (notifications with actions, charging, rain and meeting heads-ups, a job that ended) drops under it as cards. Around that it grew pages of its own: a map
 that knows where you are, a day timeline with the way to your events, a sound mixer, a clipboard with pins, an activity
 ledger, file sending to other devices, and cards for what needs attention (a one-time code, a program hogging the CPU, a
 network that broke, rain before you leave).
@@ -180,6 +180,21 @@ then `open-island notify --preset deploy "Shipped"`.
 one asking for a permission or an answer stays until the agent goes on (`PostToolUse` is what clears it as soon as an approved tool has run). `open-island agent --done`
 in the `Stop` hook also says when a turn ends. The card only tells: permissions are answered in the terminal.
 
+## Liquid: events, small pills and the filling drop
+
+The pill shows how things are; **what happens drops from it as a card**, stacked with the notifications:
+
+- a countdown or a Pomodoro phase that ran out ("+1 min" gives a countdown another minute), a meeting about to start ("Join"), rain on the way,
+  a Bluetooth device connecting or running low, plugging, unplugging and a low battery (with the charge);
+- the end of a long job (`progress`, an activity, a long shell command, a download with "Open" and "Show in folder", a file sent);
+- what the command bar worked out (`12*7`, a conversion): already on the clipboard, a click copies it again;
+- a copied link, e-mail or address, with a button that opens it (`link_cards`, needs the clipboard history; not while quiet).
+
+The **small pills** beside the pill leave it on a liquid neck and go back into it. While a job with a percentage or a countdown runs, a **drop hangs
+at the left of the pill**: it fills up with the job (blue or the job's colour) and drains with a countdown (orange: full at the start). A click opens
+its page; it gives way to open pages.
+Switch it off with `progress_drop` (Options > Island > "Progress drop"). Volume and brightness still change the pill itself.
+
 ## Conversations, not piles of cards
 
 Notifications are grouped by conversation (the same app and the same title: a chat or a sender, a site).
@@ -206,8 +221,8 @@ claiming notifications (undo with `... true`). Any other owner is left alone and
 activates, Tab / Shift+Tab change page, Escape closes), `page next|prev`, `page <home|today|map|cal|qs|sys|activity|audio|send|notifs|media|timer|clip|focus|settings>`, `dnd on|off`, `timer 25m`,
 `pomodoro`, `stopwatch`, `timer-cancel`, `reply` (reply to the notification on screen: bind it to a key), `send <file>...` (see LocalSend below), and for long operations `open-island progress run [-l label] -- command...` (runs the command on a pseudo-terminal, so rsync, curl, pacman... still draw
 their own progress, and shows the last `NN%` they print; not for commands that ask questions: `sudo -v` first), or by hand `progress <percent|?> <label>`,
-`progress-done [label]`, `progress-fail [label]`, `progress-clear`: a card for 3 s, then a `64%` bubble
-beside the pill, then a card again when it ends (red when it failed).
+`progress-done [label]`, `progress-fail [label]`, `progress-clear`: a `64%` small pill beside the pill while it runs,
+and a card under it when it ends (red when it failed).
 
 ## Design notes
 
@@ -297,8 +312,8 @@ screenshot.
 
 ### Downloads
 
-A browser download shows as an activity with what has arrived and how fast ("48 MB · 2.1 MB/s"), and turns green with the size and
-the time when the file is complete. No extension: the island looks at the download folder (the XDG one, else `~/Downloads`) for
+A browser download shows as an activity with what has arrived and how fast ("48 MB · 2.1 MB/s"); when the file is complete a card
+says its size and the time, with "Open" and "Show in folder". No extension: the island looks at the download folder (the XDG one, else `~/Downloads`) for
 the files a browser writes meanwhile (`.part` Firefox, `.crdownload` Chrome / Edge / Brave, `.download` Safari, `.opdownload`
 Opera). The total size is not known, so there is no percentage; a download that stops growing for 20 s says "stalled", one that
 disappears without its file is dropped quietly. Only names and sizes are read. Off with `watch_downloads` (Options > Island > "Show
@@ -323,8 +338,8 @@ pill, and since the exit code of a process that is not its child cannot be read,
 eval "$(open-island hook zsh)"      # in ~/.zshrc  (bash: ~/.bashrc, fish: `open-island hook fish | source` in config.fish)  # PowerShell: open-island hook powershell | Out-String | Invoke-Expression  (in $PROFILE)
 ```
 
-A command that runs longer than 10 seconds becomes a progress pill with its name; when it ends it turns green with how
-long it took, or red with its exit code. Editors, pagers, `ssh`, `top`, REPLs and similar are skipped. Set
+A command that runs longer than 10 seconds becomes a progress pill with its name; when it ends a green card says how
+long it took, or a red one its exit code. Editors, pagers, `ssh`, `top`, REPLs and similar are skipped. Set
 `OPEN_ISLAND_HOOK_SECONDS=30` to change the threshold and `OPEN_ISLAND_HOOK_IGNORE="make,go"` to skip more programs.
 A shell that is closed mid-command takes its pill with it.
 
@@ -332,7 +347,7 @@ A shell that is closed mid-command takes its pill with it.
 
 An agent (or any script) can use the island as its dashboard without a plugin: its turns show as activities, it can start
 timers, and it can call you. Several sessions run side by side, each under its own id; the pill shows one, the Today page
-lists all of them with their status line, and an activity that ends (or fails) is shown for a moment before the next takes over.
+lists all of them with their status line, and an activity that ends (or fails) leaves with a card.
 
 ```sh
 open-island agent setup claude        # prints the hooks block for ~/.claude/settings.json (merge it in yourself)
@@ -340,7 +355,7 @@ open-island agent setup claude        # prints the hooks block for ~/.claude/set
 
 With those hooks Claude Code needs nothing else: a prompt starts a turn ("Claude · repo: thinking"), each tool call updates
 the status line ("Edit lib.rs", "Bash cargo test"), `Stop` ends the turn, a `Notification` (a permission question, a wait for
-input) becomes a card, `SessionEnd` forgets the session. The hook always exits 0 and never waits for the island, so it cannot
+input) becomes a card (and only a card: the pill does not open for it too), `SessionEnd` forgets the session. The hook always exits 0 and never waits for the island, so it cannot
 slow the agent down or break it when the island is not running. For any other agent:
 
 ```sh
@@ -537,13 +552,12 @@ opens the list. The focus mode of `~/.local/bin/focus` counts as quiet too.
 ```sh
 open-island activity run  "CI main" --detail "building 3/5" --icon git-branch --color orange
 open-island activity run  "CI main" --progress 60 --detail "tests"       # a bar instead of the status line
-open-island activity done "CI main" --detail "all green"                  # green card
+open-island activity done "CI main" --detail "all green"                  # green card, and the small pill goes
 open-island activity fail "CI main" --detail "2 tests failed"             # red card
 open-island activity clear
 ```
 
-Like `progress`, one activity is on show at a time (the latest): a card for three seconds when it starts, then a bubble
-beside the pill with its icon and status. Colours: red orange yellow green teal blue purple pink white gray or `#rrggbb`;
+Like `progress`, an activity is a small pill beside the pill with its icon and status. Colours: red orange yellow green teal blue purple pink white gray or `#rrggbb`;
 icons are the ones bundled (Tabler names such as `git-branch`, `bolt`, `cloud`, `download`, `music`, `mail-forward`...).
 
 ## Bluetooth devices (Linux)
@@ -592,13 +606,14 @@ a script with `open-island msg set <option> <value>`:
 
 | tab | option | default |
 |---|---|---|
-| Island | `clock_in_pill`, `status_icons`, `hide_on_fullscreen`, `clipboard_history`, `timer_sound`, `auto_audio_output` | on |
+| Island | `clock_in_pill`, `status_icons`, `hide_on_fullscreen`, `clipboard_history`, `timer_sound`, `auto_audio_output`, `progress_drop` | on |
 | Island | `mini_pills` (1-4, 2): how many small pills may sit beside the main one; a timer, focus, an event and each running activity (an agent's turn, a build) get their own, in that order; 1 is a single pill beside it | 2 |
 | Island | `dock_icons` (4-12, 7): how many page icons the bottom bar shows (Home, what is live, the pages used most, the page you are on); the rest are on the All pages grid | 7 |
 | Island | `timer_presets` (["5m","10m","25m"]), `screen` (`focused` or a name such as `eDP-1`; pinning by connector name, on Wayland too; an unknown name is logged and the compositor chooses), `timer_sound_file` (the sound file the timer plays) | |
 | Alerts | `show_notifications`, `show_osd`, `battery_alerts`, `meeting_alerts`, `rain_alerts`, `culprit_alerts` | on |
 | Alerts | `notification_seconds` (2-30, 5), `osd_seconds` (0.5-5, 1.6), `low_battery_percent` (5-50, 15), `meeting_lead_minutes` (1-60, 10: the card), `meeting_pill_minutes` (1-120, 10: the pill on the side) | |
 | Quiet | `quiet_in_meetings`, `quiet_on_mic`, `quiet_on_screen_share`, `away_recap` | on |
+| Day | `link_cards` (a copied link offers to open it) | on |
 | Quiet | `deep_work_minutes` (0-120, 20: auto focus), `break_minutes` (0-240, 0: off), `deep_work_apps` (a list in `config.json`) | |
 | Day | `travel_times` | on |
 | Day | `evening_weekends` (both cards on Saturday and Sunday) | off |

@@ -26,17 +26,13 @@ pub enum Face {
     Clip,
     MeetMini,
     Meeting,
-    Rain,
     Progress,
     MediaMini,
     MediaFull,
     MediaLyric,
     Osd,
-    Power,
-    Device,
     TimerMini,
     TimerFull,
-    TimerDone,
     Reply,
     Bar,
 }
@@ -70,17 +66,13 @@ impl Face {
             Clip => (400.0, 236.0),
             MeetMini => (270.0, 28.0),
             Meeting => (410.0, 66.0),
-            Rain => (330.0, 64.0),
             Progress => (360.0, 64.0),
             MediaMini => (290.0, 28.0),
             MediaFull => (420.0, 160.0),
             MediaLyric => (420.0, 234.0),
             Osd => (270.0, 46.0),
-            Power => (300.0, 46.0),
-            Device => (330.0, 46.0),
             TimerMini => (210.0, 28.0),
             TimerFull => (320.0, 112.0),
-            TimerDone => (330.0, 64.0),
             Reply => (430.0, 168.0),
             Bar => (430.0, 92.0),
         }
@@ -141,13 +133,7 @@ pub struct Snapshot {
     pub barring: bool,
     pub replying: bool,
     pub osd: bool,
-    pub timer_done: bool,
-    pub power: bool,
-    pub device: bool,
     pub op: bool,
-    pub op_flash: bool,
-    pub meeting: bool,
-    pub rain: bool,
     pub update: bool,
     pub big: bool,
     pub page: Option<Page>,
@@ -172,24 +158,6 @@ pub fn choose(s: &Snapshot) -> (Face, Option<Side>) {
     // on the quick settings page the sliders change volume/brightness: their OSD would replace the page
     if s.osd && !(s.big && s.page == Some(Page::Qs)) {
         return (Osd, None);
-    }
-    if s.timer_done {
-        return (TimerDone, None);
-    }
-    if s.power {
-        return (Power, None);
-    }
-    if s.device {
-        return (Device, None);
-    }
-    if s.op_flash && s.op {
-        return (Progress, None);
-    }
-    if s.meeting {
-        return (Meeting, None);
-    }
-    if s.rain {
-        return (Rain, None);
     }
     if s.update {
         return (Update, None);
@@ -489,9 +457,6 @@ mod tests {
     fn priorities() {
         assert_eq!(face(Snapshot { replying: true, osd: true, ..snap() }), Face::Reply);
         assert_eq!(face(Snapshot { big: true, page: Some(Page::Qs), osd: true, ..snap() }), Face::Qs);
-        assert_eq!(face(Snapshot { power: true, meeting: true, ..snap() }), Face::Power);
-        assert_eq!(face(Snapshot { device: true, meeting: true, ..snap() }), Face::Device);
-        assert_eq!(face(Snapshot { meeting: true, rain: true, ..snap() }), Face::Meeting);
     }
 
     #[test]
@@ -505,8 +470,7 @@ mod tests {
 
     #[test]
     fn long_operations() {
-        assert_eq!(face(Snapshot { op: true, op_flash: true, ..snap() }), Face::Progress);
-        assert_eq!(face(Snapshot { op_flash: true, ..snap() }), Face::Idle);
+        // what is running sits beside the pill; its end is a card, not a face
         assert_eq!(choose(&Snapshot { op: true, ..snap() }), (Face::Idle, Some(Side::Op)));
         assert_eq!(choose(&Snapshot { op: true, media: true, timer: true, ..snap() }).1, Some(Side::Timer));
         assert_eq!(choose(&Snapshot { op: true, media: true, ..snap() }), (Face::MediaMini, Some(Side::Op)));

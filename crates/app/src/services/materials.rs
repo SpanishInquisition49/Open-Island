@@ -87,9 +87,9 @@ pub fn command(rep: &Reporter, c: &Command) {
             });
         }
         Command::OpenFile(path) => {
-            // only a real file the island itself offered (an absolute path), opened by the system's own handler
+            // only a real file or folder the island itself offered (an absolute path), opened by the system's own handler
             let p = Path::new(&path);
-            if p.is_absolute() && p.is_file() {
+            if p.is_absolute() && (p.is_file() || p.is_dir()) {
                 open_path(&path);
             }
         }

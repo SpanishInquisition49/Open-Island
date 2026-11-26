@@ -356,6 +356,14 @@ pub fn neck(anchor: &Blob, s: &Shape, cell: f64) -> Option<Vec<Vec<(f64, f64)>>>
     Some(loops(&values, columns, rows).into_iter().map(|l| l.into_iter().map(|(x, y)| (x0 + x * cell, top + y * cell)).collect()).collect())
 }
 
+/// The same melt sideways: a drop leaving the right end of `anchor`. Both are in coordinates with y = 0 at their
+/// common middle line, and `s` runs along x: `s.top` is its left edge, `s.h` its width, `s.w` its height.
+pub fn neck_sideways(anchor: &Blob, s: &Shape, cell: f64) -> Option<Vec<Vec<(f64, f64)>>> {
+    // the same problem lying down: swap the axes, solve it upright, swap them back
+    let upright = Blob { cx: anchor.cy, cy: anchor.cx, half_w: anchor.half_h, half_h: anchor.half_w, radius: anchor.radius };
+    Some(neck(&upright, s, cell)?.into_iter().map(|l| l.into_iter().map(|(x, y)| (y, x)).collect()).collect())
+}
+
 /// A grid edge: its first corner and its direction.
 type Edge = (usize, usize, bool); // (row, column, vertical)
 
@@ -429,6 +437,20 @@ fn loops(values: &[f64], columns: usize, rows: usize) -> Vec<Vec<(f64, f64)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drop_leaving_sideways_melts_into_the_end_it_leaves() {
+        // a pill 150 x 28 from x = 0, a drop just past its right end
+        let pill = Blob { cx: 75.0, cy: 0.0, half_w: 75.0, half_h: 14.0, radius: 14.0 };
+        let drop = Shape { top: 154.0, w: 28.0, h: 28.0, radius: 14.0, opened: 0.0, blend: 18.0, content_w: 28.0 };
+        let loops = neck_sideways(&pill, &drop, 0.7).expect("close enough to melt");
+        let points: Vec<(f64, f64)> = loops.concat();
+        let right = points.iter().map(|p| p.0).fold(f64::MIN, f64::max);
+        assert!(right > 178.0 && right < 190.0, "it reaches round the drop: {right}");
+        assert!(points.iter().all(|p| p.1.abs() < 24.0), "and stays about the pill's height");
+        assert!(loops.len() == 1, "one body while joined");
+        assert!(neck_sideways(&pill, &Shape { top: 200.0, ..drop }, 0.7).is_none(), "too far to pull on each other");
+    }
 
     const SIZE: Size = Size { w: 300.0, h: 52.0, corner: f64::INFINITY };
     const PILL: Blob = Blob { cx: 0.0, cy: -14.0, half_w: 75.0, half_h: 14.0, radius: 14.0 };

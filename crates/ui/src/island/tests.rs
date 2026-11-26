@@ -90,9 +90,9 @@ fn a_timer_counts_down_ends_and_announces() {
     assert!(i.timer.is_none(), "a one-second timer is over");
     assert!(i.pending.contains(&Command::PlaySound));
     run(&mut i, 100);
-    assert_eq!(i.current_face(), Face::TimerDone);
-    run(&mut i, 7000);
-    assert_eq!(i.current_face(), Face::Idle, "the card goes away on its own");
+    assert_eq!((i.current_face(), up(&i)), (Face::Idle, vec!["Time's up"]), "a card drops, the pill stays");
+    run(&mut i, 11_000);
+    assert!(up(&i).is_empty(), "the card goes away on its own");
 }
 
 #[test]
@@ -107,19 +107,17 @@ fn pomodoro_goes_on_to_the_break() {
 }
 
 #[test]
-fn progress_flashes_once_then_becomes_a_bubble() {
+fn progress_is_a_small_pill_and_its_end_is_a_card() {
     let mut i = Island::new(Config::default());
     i.push(T0, Input::Progress("20 Backup".into()));
     run(&mut i, 600);
-    assert_eq!(i.current_face(), Face::Progress);
-    run(&mut i, 4000);
-    assert_eq!(i.current_face(), Face::Idle);
-    assert_eq!(i.shown_side, Some(Side::Op));
-    i.push(i.now, Input::ProgressDone("done".into()));
+    assert_eq!((i.current_face(), i.shown_side), (Face::Idle, Some(Side::Op)), "no card to say it began");
+    assert!(up(&i).is_empty());
+    i.push(i.now, Input::ProgressDone("Backup done".into()));
     run(&mut i, 600);
-    assert_eq!(i.current_face(), Face::Progress);
-    run(&mut i, 6000);
-    assert!(i.ops.op.is_none());
+    assert_eq!(up(&i), ["Backup done"]);
+    assert!(i.ops.op.is_none(), "the card says it: the small pill goes at once");
+    assert_eq!(i.shown_side, None);
 }
 
 #[test]
@@ -140,18 +138,19 @@ fn a_shell_command_becomes_a_pill_only_after_its_threshold_and_ends_green_or_red
     run(&mut i, 100_000);
     assert!(matches!(&i.ops.op, Some(o) if o.state == progress::State::Run), "refreshed, not dropped as stale after two minutes");
     i.push(i.now, Input::CommandEnd { id: "2".into(), code: 0 });
-    let op = i.ops.op.clone().unwrap();
-    assert_eq!(op.state, progress::State::Done);
-    assert!(op.label.starts_with("cargo build · 1m 5"), "{}", op.label);
+    let card = i.notif.clone().expect("how it ended");
+    assert_eq!(card.kind, Some(island_core::notify::Kind::Ok));
+    assert!(card.summary.starts_with("cargo build · 1m 5"), "{}", card.summary);
+    assert!(i.ops.op.is_none());
 
     i.push(i.now, Input::ProgressClear);
     let t = i.now;
     i.push(t, Input::CommandStart { id: "3".into(), label: "pytest".into(), after_secs: 2 });
     run(&mut i, 3000);
     i.push(i.now, Input::CommandEnd { id: "3".into(), code: 2 });
-    let op = i.ops.op.clone().unwrap();
-    assert_eq!(op.state, progress::State::Fail);
-    assert!(op.label.starts_with("pytest · exit 2 · "), "{}", op.label);
+    let card = i.below.last().map(|b| b.n.clone()).or(i.notif.clone()).unwrap();
+    assert_eq!(card.kind, Some(island_core::notify::Kind::Fail));
+    assert!(card.summary.starts_with("pytest · exit 2 · "), "{}", card.summary);
 }
 
 #[test]
@@ -191,36 +190,38 @@ fn notifications_queue_and_do_not_disturb() {
 
 #[test]
 fn the_meeting_heads_up_fires_once_even_across_a_restart() {
-    let ev = Event { id: "m".into(), title: "Class".into(), start_ms: T0 + 8 * 60_000, end_ms: T0 + 3_600_000, ..Default::default() };
+    let ev = Event { id: "m".into(), title: "Class".into(), start_ms: T0 + 8 * 60_000, end_ms: T0 + 3_600_000, url: Some("https://meet.example/x".into()), ..Default::default() };
     let mut i = Island::new(Config::default());
     i.data.events = vec![ev.clone()];
     i.tick(T0, 8.0);
-    assert!(i.meeting.is_some() && i.meeting_until > T0);
-    i.meeting_until = 0;
+    let card = i.notif.clone().expect("a card");
+    assert_eq!((card.summary.as_str(), card.actions[0].label.as_str()), ("Class", "Join"));
+    i.pending.clear();
+    i.activate(Action::OnCard(card.id, Box::new(Action::NotifOpen)));
+    assert!(!i.pending.iter().any(|c| matches!(c, Command::OpenUrl(_))), "a click on the card does not join a call");
     run(&mut i, 3000);
-    assert!(i.meeting_until == 0, "not announced twice");
+    assert!(i.notif.is_none(), "not announced twice");
     let mut j = Island::new(Config::default());
     j.restore_announced(i.announced_keys());
     j.data.events = vec![ev];
     j.tick(T0 + 100, 8.0);
-    assert!(j.meeting.is_none(), "a restart does not announce it again");
+    assert!(j.notif.is_none(), "a restart does not announce it again");
 }
 
 #[test]
-fn low_battery_and_plugging_raise_one_event_each() {
+fn low_battery_and_plugging_raise_one_card_each_and_the_newer_takes_the_older_ones_place() {
     let mut i = Island::new(Config::default());
     i.data.battery = Some(Battery { percent: 80.0, charging: false, on_ac: true });
     i.tick(T0, 8.0);
     i.data.battery = Some(Battery { percent: 80.0, charging: false, on_ac: false });
     i.tick(T0 + 8, 8.0);
-    assert_eq!(i.power, Some(PowerEvent::Unplugged));
-    i.power_until = 0;
+    assert_eq!(up(&i), ["On battery"]);
+    assert_eq!(i.notif.as_ref().unwrap().progress, Some(80));
     i.data.battery = Some(Battery { percent: 10.0, charging: false, on_ac: false });
     i.tick(T0 + 16, 8.0);
-    assert_eq!(i.power, Some(PowerEvent::Low));
-    i.power = None;
-    i.tick(T0 + 24, 8.0);
-    assert_eq!(i.power, None, "low battery is announced once");
+    assert_eq!(up(&i), ["Low battery"], "one card for the power");
+    run(&mut i, 10_000);
+    assert!(up(&i).is_empty(), "low battery is announced once");
 }
 
 #[test]
@@ -587,16 +588,14 @@ fn a_study_focus_holds_notifications_too() {
 #[test]
 fn a_script_activity_shows_with_its_own_icon_colour_and_words() {
     let mut i = Island::new(Config::default());
-    let a = island_core::progress::Activity { id: String::new(), label: "CI main".into(), detail: "building".into(), icon: Some("git-branch".into()), tint: Some((255, 159, 10)), frac: None };
+    let a = island_core::progress::Activity { id: String::new(), label: "CI main".into(), detail: "building".into(), icon: Some("git-branch".into()), tint: Some((255, 159, 10)), frac: None, file: None };
     i.push(T0, Input::Activity(progress::State::Run, a.clone()));
     run(&mut i, 600);
-    assert_eq!(i.current_face(), Face::Progress);
-    run(&mut i, 4000);
-    assert_eq!(i.shown_side, Some(Side::Op), "then a bubble");
+    assert_eq!((i.current_face(), i.shown_side), (Face::Idle, Some(Side::Op)), "a small pill");
     i.push(i.now, Input::Activity(progress::State::Fail, island_core::progress::Activity { id: String::new(), label: "CI main".into(), detail: "2 tests failed".into(), ..Default::default() }));
     run(&mut i, 600);
-    let o = i.ops.op.clone().unwrap();
-    assert_eq!((o.state, o.detail.as_str(), o.icon.as_deref()), (progress::State::Fail, "2 tests failed", Some("git-branch")));
+    let o = i.notif.clone().expect("how it ended");
+    assert_eq!((o.kind, o.summary.as_str(), o.body.as_str(), o.icon.as_deref()), (Some(island_core::notify::Kind::Fail), "CI main", "2 tests failed", Some("git-branch")));
     // it draws without trouble in every state
     let f = fonts();
     let mut scene = Scene::new();
@@ -613,24 +612,24 @@ fn a_connecting_device_gets_a_card_and_a_low_battery_warns_once_until_it_recover
     let mut i = Island::new(Config::default());
     i.push(T0, Input::DeviceConnected(headphones(Some(80))));
     run(&mut i, 600);
-    assert_eq!(i.current_face(), Face::Device);
+    assert_eq!((i.current_face(), up(&i)), (Face::Idle, vec!["Sony XM5"]));
+    assert_eq!(i.notif.as_ref().unwrap().body, "Connected · 80%");
     run(&mut i, 4000);
-    assert_ne!(i.current_face(), Face::Device, "it goes away by itself");
+    assert!(up(&i).is_empty(), "it goes away by itself");
     i.data.devices = vec![headphones(Some(12))];
     i.push(i.now, Input::DeviceLow(headphones(Some(12))));
     run(&mut i, 600);
-    assert_eq!(i.current_face(), Face::Device);
-    assert!(i.device_ev.as_ref().is_some_and(|(_, low)| *low));
-    run(&mut i, 7000);
+    assert_eq!(i.notif.as_ref().unwrap().body, "Low battery · 12%");
+    run(&mut i, 9000);
     i.push(i.now, Input::DeviceLow(headphones(Some(11))));
     run(&mut i, 600);
-    assert_ne!(i.current_face(), Face::Device, "told once");
+    assert!(up(&i).is_empty(), "told once");
     // charged again, then low again: a new warning
     i.data.devices = vec![headphones(Some(90))];
     run(&mut i, 1000);
     i.push(i.now, Input::DeviceLow(headphones(Some(10))));
     run(&mut i, 600);
-    assert_eq!(i.current_face(), Face::Device);
+    assert_eq!(up(&i), ["Sony XM5"]);
 }
 
 #[test]
@@ -1541,6 +1540,7 @@ fn the_outline_follows_the_pill_and_its_bubble() {
     assert_eq!(r.len(), 1);
     assert_eq!((r[0].2, r[0].3, r[0].4), (150.0, 28.0, 14.0), "a 150 x 28 pill with full-round ends");
     i.data = data();
+    i.cfg.progress_drop = false;
     i.push(T0, Input::StartTimer(60));
     draw_frames(&mut i, 300);
     let r = i.shape_rects();
@@ -2445,7 +2445,7 @@ fn the_time_option_steps_from_off_to_the_evening() {
 
 fn morning_island() -> Island {
     // 07:30, from 07:00 on; Friday 2027-01-15, events today at 09:00 and 13:00 (T0 is 08:00 UTC)
-    let mut i = Island::new(Config { morning_recap_min: 7 * 60, ..Config::default() });
+    let mut i = Island::new(Config { morning_recap_min: 7 * 60, meeting_alerts: false, ..Config::default() });
     let ev = |id: &str, h: i64| Event { id: id.into(), title: id.into(), start_ms: T0 + h * 3_600_000, end_ms: T0 + (h + 1) * 3_600_000, ..Default::default() };
     i.data.events = vec![ev("Reti", 1), ev("Lab", 5)];
     i
@@ -2566,7 +2566,7 @@ fn up_and_down_recall_earlier_lines_of_the_bar_and_a_password_is_not_kept() {
 
 fn commuter() -> Island {
     // T0 is Friday 08:00 UTC; lectures: Reti 09:30-11:00 today, a video call, and Reti again tomorrow at 09:30
-    let mut i = Island::new(Config { commute_minutes: 60, travel_margin_ms: 0, ..Config::default() });
+    let mut i = Island::new(Config { commute_minutes: 60, travel_margin_ms: 0, meeting_alerts: false, ..Config::default() });
     let ev = |id: &str, at_min: i64, len: i64| Event { id: id.into(), title: id.into(), start_ms: T0 + at_min * 60_000, end_ms: T0 + (at_min + len) * 60_000, location: "Aula 3".into(), ..Default::default() };
     let call = Event { url: Some("https://meet.example/x".into()), ..ev("Call", 30, 30) };
     i.data.events = vec![call, ev("Reti", 90, 90), ev("Lab", 300, 120), ev("Reti domani", 24 * 60 + 90, 90)];
@@ -3021,7 +3021,8 @@ fn several_small_pills_sit_beside_the_main_one_up_to_the_option() {
     let fr = i.tick(i.now + 8, 8.0);
     i.draw(&mut Scene::new(), &fonts(), fr.surface, 1.0);
     let hits: Vec<Action> = i.hits.iter().map(|h| h.action.clone()).collect();
-    assert_eq!(hits.iter().filter(|a| matches!(a, Action::Open(Page::Timer | Page::Focus | Page::Op))).count(), 4, "{hits:?}");
+    // (and the drop under the pill, which the countdown fills)
+    assert_eq!(hits.iter().filter(|a| matches!(a, Action::Open(Page::Timer | Page::Focus | Page::Op))).count(), 5, "{hits:?}");
     let _ = px;
     // fewer room again: the extra ones go
     let mut i = build(4);
@@ -3223,7 +3224,7 @@ fn the_drain_is_learned_while_on_battery_and_forgotten_when_plugged_in() {
 #[test]
 fn the_day_says_whether_the_battery_will_do_and_the_card_comes_once() {
     // T0 = Friday 08:00 UTC; lectures at 09:00 and 15:00 (an hour each), a 60 minute way home: back at 17:00
-    let mut i = Island::new(Config { commute_minutes: 60, battery_alerts: true, ..Config::default() });
+    let mut i = Island::new(Config { commute_minutes: 60, battery_alerts: true, meeting_alerts: false, ..Config::default() });
     let ev = |id: &str, h: i64| Event { id: id.into(), title: id.into(), start_ms: T0 + (1 + h) * 3_600_000, end_ms: T0 + (2 + h) * 3_600_000, ..Default::default() };
     i.data.events = vec![ev("Reti", 0), ev("Lab", 6)];
     i.restore_drain(Some(10.0));
@@ -3240,14 +3241,14 @@ fn the_day_says_whether_the_battery_will_do_and_the_card_comes_once() {
     i.tick(T0 + 3_600_000 + 5_000, 8.0);
     assert!(i.notif.is_none(), "once a day");
     // plenty of charge: no card, no line
-    let mut j = Island::new(Config { commute_minutes: 60, ..Config::default() });
+    let mut j = Island::new(Config { commute_minutes: 60, meeting_alerts: false, ..Config::default() });
     j.data.events = i.data.events.clone();
     j.restore_drain(Some(3.0));
     on_battery(&mut j, 90.0);
     j.tick(T0 + 3_600_000, 8.0);
     assert!(j.power_line(false, &j.today_left()).is_none() && j.notif.is_none());
     // nothing learned yet: nothing said
-    let mut k = Island::new(Config::default());
+    let mut k = Island::new(Config { meeting_alerts: false, ..Config::default() });
     k.data.events = i.data.events.clone();
     on_battery(&mut k, 10.0);
     k.tick(T0 + 3_600_000, 8.0);
@@ -3982,4 +3983,197 @@ fn the_days_agenda_is_shown_whole() {
     assert!(h > 150.0, "the card grew to fit its lines: {h}");
     assert!(frame.surface.1 >= y + h, "and the surface has room for it: {} < {}", frame.surface.1, y + h);
     assert_eq!(i.notif_until - c.born, 45_000);
+}
+
+/// The titles of the cards that have a place on screen, top to bottom.
+fn up(i: &Island) -> Vec<&str> {
+    i.notif.iter().chain(i.below.iter().map(|b| &b.n)).map(|n| n.summary.as_str()).collect()
+}
+
+#[test]
+fn a_finished_download_offers_the_file_and_its_folder() {
+    let mut i = Island::new(Config::default());
+    let a = island_core::progress::Activity { id: "dl:x.part".into(), label: "x".into(), detail: "12 MB".into(), file: Some("/home/u/Downloads/x".into()), ..Default::default() };
+    i.push(T0, Input::Activity(progress::State::Done, a));
+    let card = i.notif.clone().expect("a card");
+    let labels: Vec<&str> = card.actions.iter().map(|a| a.label.as_str()).collect();
+    assert_eq!(labels, ["Open", "Show in folder"]);
+    i.pending.clear();
+    i.activate(Action::OnCard(card.id, Box::new(Action::NotifAction(card.actions[1].key.clone()))));
+    assert!(i.pending.contains(&Command::OpenFile("/home/u/Downloads".into())), "{:?}", i.pending);
+    assert!(up(&i).is_empty());
+}
+
+#[test]
+fn only_the_islands_own_cards_can_have_it_open_something() {
+    let mut i = Island::new(Config::default());
+    let key = "open-island:file:/etc/passwd".to_string();
+    i.push(T0, Input::Notification(Incoming { id: 7, app: "open-island".into(), summary: "x".into(), actions: vec![NotifAction { key: key.clone(), label: "Open".into() }], ..Default::default() }));
+    let mut cmds = i.activate(Action::OnCard(7, Box::new(Action::NotifAction(key))));
+    cmds.extend(i.pending.clone());
+    assert!(!cmds.iter().any(|c| matches!(c, Command::OpenFile(_))), "{cmds:?}");
+    i.push(i.now, Input::Notification(Incoming { id: 8, app: "x".into(), summary: "y".into(), actions: vec![NotifAction { key: "open-island:open:https://example.org".into(), label: "Open".into() }], ..Default::default() }));
+    let mut cmds = i.activate(Action::OnCard(8, Box::new(Action::NotifOpen)));
+    cmds.extend(i.pending.clone());
+    assert!(!cmds.iter().any(|c| matches!(c, Command::OpenUrl(_))), "nor by a click on its body: {cmds:?}");
+}
+
+#[test]
+fn a_countdown_that_ran_out_can_have_another_minute() {
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::StartNamedTimer(1, "tea".into()));
+    run(&mut i, 2200);
+    let card = i.notif.clone().expect("time's up");
+    assert_eq!((card.body.as_str(), card.actions[0].label.as_str()), ("tea", "+1 min"));
+    i.activate(Action::OnCard(card.id, Box::new(Action::NotifAction(card.actions[0].key.clone()))));
+    let t = i.timer.as_ref().expect("a minute more");
+    assert_eq!((t.total_ms, t.label.as_str()), (60_000, "tea"));
+}
+
+#[test]
+fn a_value_of_the_bar_drops_as_a_card_that_copies_it_again() {
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::RunLine("12*7".into()));
+    let card = i.notif.clone().expect("the result");
+    assert!(card.summary.contains("84"), "{}", card.summary);
+    i.pending.clear();
+    i.activate(Action::OnCard(card.id, Box::new(Action::NotifOpen)));
+    assert!(i.pending.contains(&Command::RestoreClipboard("84".into())), "{:?}", i.pending);
+}
+
+#[test]
+fn a_copied_link_drops_a_card_that_opens_it() {
+    let mut i = Island::new(Config::default());
+    i.data.clipboard = vec!["hello".into()];
+    i.tick(T0, 8.0);
+    i.data.clipboard.insert(0, "just words".into());
+    i.tick(T0 + 8, 8.0);
+    assert!(up(&i).is_empty(), "nothing to open");
+    i.data.clipboard.insert(0, "https://example.org/a".into());
+    i.tick(T0 + 16, 8.0);
+    assert_eq!(up(&i), ["Link copied"]);
+    let card = i.notif.clone().unwrap();
+    i.pending.clear();
+    i.activate(Action::OnCard(card.id, Box::new(Action::NotifOpen)));
+    assert!(i.pending.contains(&Command::OpenUrl("https://example.org/a".into())), "{:?}", i.pending);
+    // not while quiet, nor when switched off
+    i.data.dnd = true;
+    i.data.clipboard.insert(0, "https://example.org/b".into());
+    i.tick(T0 + 24, 8.0);
+    assert!(up(&i).is_empty());
+    i.data.dnd = false;
+    i.cfg.link_cards = false;
+    i.data.clipboard.insert(0, "https://example.org/c".into());
+    i.tick(T0 + 32, 8.0);
+    assert!(up(&i).is_empty());
+}
+
+#[test]
+fn a_small_pill_comes_out_of_the_pill_and_goes_back_in() {
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::Progress("20 Backup".into()));
+    run(&mut i, 120);
+    let early = i.bubble_slot();
+    assert!(early > 0.0 && early < BUBBLE_W, "on its way out: {early}");
+    run(&mut i, 1200);
+    assert!((i.bubble_slot() - (BUBBLE_W + BUBBLE_GAP)).abs() < 1.0);
+    i.push(i.now, Input::ProgressClear);
+    let fr = run_frame(&mut i, 80);
+    let back = i.bubble_slot();
+    assert!(back > 0.0 && back < BUBBLE_W + BUBBLE_GAP, "on its way back: {back}");
+    assert!(fr.animating && fr.surface.0 > i.spring.w.pos + BUBBLE_W, "with frames and room for it");
+    run(&mut i, 1000);
+    assert_eq!((i.bubble_slot(), i.bubbles.len()), (0.0, 0));
+}
+
+fn run_frame(i: &mut Island, ms: i64) -> crate::island::Frame {
+    let mut f = i.tick(i.now, 0.0);
+    for _ in 0..(ms / 8).max(1) {
+        f = i.tick(i.now + 8, 8.0);
+    }
+    f
+}
+
+#[test]
+fn a_drop_hangs_beside_the_pill_and_fills_with_the_progress() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::Progress("20 Backup".into()));
+    card_frames(&mut i, &f, 1600);
+    let fill = i.fill.as_ref().expect("a drop");
+    assert!((fill.level(i.now) - 0.2).abs() < 0.01);
+    let (x, y, w, h) = fill.rect.expect("hanging");
+    let (px, py, _, ph) = i.pill_rect();
+    assert!(x + w <= px && y >= py && y + h <= py + ph, "at the left, level with the pill: {x} {y} {w} {h} beside {px} {py}");
+    assert!(x >= 0.0 && i.input_rects().contains(&(x, y, w, h)), "inside the surface, taking the pointer");
+    i.push(i.now, Input::Progress("70 Backup".into()));
+    let fr = card_frames(&mut i, &f, 1600);
+    assert!((i.fill.as_ref().unwrap().level(i.now) - 0.7).abs() < 0.01);
+    assert!(fr.surface.0 >= i.spring.w.pos + 2.0 * w && !fr.animating, "room for it, and no frames once it is still");
+    // a click opens the job's page
+    i.pointer_moved(i.now, x + w / 2.0, y + h / 2.0);
+    assert_eq!(i.hit_at(x + w / 2.0, y + h / 2.0).map(|h| h.action.clone()), Some(Action::Open(Page::Op)));
+    // a card drops under the pill and the drop, at the side, stays
+    i.push(i.now, Input::Notification(incoming(1)));
+    card_frames(&mut i, &f, 600);
+    assert!(i.fill.as_ref().is_some_and(|d| d.rect.is_some()) && i.has_card());
+    i.cfg.progress_drop = false;
+    card_frames(&mut i, &f, 1000);
+    assert!(i.fill.is_none());
+}
+
+#[test]
+fn a_countdown_drains_the_drop() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::StartTimer(100));
+    card_frames(&mut i, &f, 1000);
+    let level = |i: &Island| i.fill.as_ref().expect("a drop").level(i.now);
+    assert!(level(&i) > 0.96, "full at the start: {}", level(&i));
+    run(&mut i, 69_000);
+    card_frames(&mut i, &f, 1000);
+    assert!((level(&i) - 0.29).abs() < 0.03, "what is left: {}", level(&i));
+}
+
+/// Opening over a small pill and the drop: neither rides the edge that moves away, so nothing ever stands further out
+/// than it did at rest, until the open shape itself is there.
+#[test]
+fn the_pill_opens_over_what_is_beside_it_without_pushing_it_out() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::Progress("20 Backup".into()));
+    card_frames(&mut i, &f, 2000);
+    let (w, slot) = (i.spring.w.pos, i.bubble_slot());
+    // from the middle of the surface: the small pill's right end, the drop's left end
+    let right = i.bubble_place(0, w).0 + BUBBLE_W - (w + slot) / 2.0;
+    let drop = i.fill.as_ref().and_then(|d| d.rect).expect("hanging");
+    let left = drop.0 - i.pill_origin.0 - (w + slot) / 2.0;
+    let (px, py, _, ph) = i.pill_rect();
+    i.pointer_moved(i.now, px + 40.0, py + ph / 2.0);
+    let mut grown = false;
+    for _ in 0..120 {
+        let fr = i.tick(i.now + 8, 8.0);
+        i.draw(&mut Scene::new(), &f, fr.surface, 1.0);
+        let (w, slot) = (i.spring.w.pos, i.bubble_slot());
+        let edge = (w - slot) / 2.0;
+        for n in 0..i.bubbles.len() {
+            let (x, width) = i.bubble_place(n, w);
+            let r = x + width - (w + slot) / 2.0;
+            assert!(r <= right.max(edge) + 0.5, "the small pill stands out: {r} past {right} and {edge}");
+        }
+        if let Some(held) = i.fill.as_ref().and_then(|d| d.held) {
+            assert!(held >= left - 0.5, "the drop stays where it hung: {held} against {left}");
+        }
+        grown |= i.spring.h.pos > 60.0;
+    }
+    assert!(grown, "it did open");
+    assert!(i.bubbles.is_empty() && i.fill.is_none(), "both swallowed");
+    // and back: they come out once the pill is at rest again
+    i.pointer_left(i.now);
+    for _ in 0..300 {
+        let fr = i.tick(i.now + 8, 8.0);
+        i.draw(&mut Scene::new(), &f, fr.surface, 1.0);
+        assert!(i.spring.h.pos < 34.5 || (i.bubbles.is_empty() && i.fill.is_none()), "nothing beside a pill still open");
+    }
+    assert!(!i.bubbles.is_empty() && i.fill.is_some());
 }

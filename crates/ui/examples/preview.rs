@@ -244,8 +244,23 @@ fn main() {
         ("device-low", Box::new(|i, _| i.push(NOW, Input::DeviceLow(island_ui::model::Device { id: "x".into(), name: "Nothing Ear".into(), kind: island_core::bluetooth::Kind::Earbuds, battery: Some(12) })))),
         ("qs-devices", Box::new(|i, d| { d.devices = vec![island_ui::model::Device { id: "x".into(), name: "Sony XM5".into(), kind: island_core::bluetooth::Kind::Headphones, battery: Some(85) }, island_ui::model::Device { id: "y".into(), name: "Nothing Ear".into(), kind: island_core::bluetooth::Kind::Earbuds, battery: Some(12) }, island_ui::model::Device { id: "z".into(), name: "MX Master".into(), kind: island_core::bluetooth::Kind::Mouse, battery: None }]; i.push(NOW, Input::OpenPage(island_core::face::Page::Qs)) })),
         ("progress-done", Box::new(|i, _| { i.push(NOW, Input::Progress("64 rsync backup".into())); i.push(NOW, Input::ProgressDone("rsync backup".into())) })),
-        ("activity-run", Box::new(|i, _| i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { id: String::new(), label: "CI main".into(), detail: "building 3/5".into(), icon: Some("git-branch".into()), tint: Some((255, 159, 10)), frac: None })))),
+        ("activity-run", Box::new(|i, _| i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { id: String::new(), label: "CI main".into(), detail: "building 3/5".into(), icon: Some("git-branch".into()), tint: Some((255, 159, 10)), frac: None, file: None })))),
         ("activity-fail", Box::new(|i, _| { i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { id: String::new(), label: "CI main".into(), icon: Some("git-branch".into()), ..Default::default() })); i.push(NOW, Input::Activity(island_core::progress::State::Fail, island_core::progress::Activity { id: String::new(), label: "CI main".into(), detail: "2 tests failed".into(), ..Default::default() })) })),
+        // the small pill on its way out of the main one, and the drop that fills at the other side
+        ("liquid-bubble-a", Box::new(|i, _| i.push(NOW, Input::Progress("62 rsync backup".into())))),
+        ("liquid-bubble-b", Box::new(|i, _| i.push(NOW, Input::Progress("62 rsync backup".into())))),
+        ("liquid-bubble-c", Box::new(|i, _| i.push(NOW, Input::Progress("62 rsync backup".into())))),
+        // the pill opening over the small pill and the drop
+        ("liquid-open-a", Box::new(|i, _| i.push(NOW, Input::Progress("62 rsync backup".into())))),
+        ("liquid-open-b", Box::new(|i, _| i.push(NOW, Input::Progress("62 rsync backup".into())))),
+        ("liquid-open-c", Box::new(|i, _| i.push(NOW, Input::Progress("62 rsync backup".into())))),
+        ("liquid-fill", Box::new(|i, _| i.push(NOW, Input::Progress("62 rsync backup".into())))),
+        ("liquid-fill-timer", Box::new(|i, d| { media(d, true); i.push(NOW - 900_000, Input::StartTimer(1500)); })),
+        ("event-cards", Box::new(|i, _| {
+            i.push(NOW, Input::StartNamedTimer(0, "tea".into()));
+            i.push(NOW, Input::Power(PowerEvent::Low));
+            i.push(NOW, Input::Activity(island_core::progress::State::Done, island_core::progress::Activity { id: "dl:x".into(), label: "slides-03.pdf".into(), detail: "12 MB · 8s".into(), icon: Some("download".into()), file: Some("/home/u/Downloads/slides-03.pdf".into()), ..Default::default() }));
+        })),
         ("osd", Box::new(|i, _| i.push(NOW, Input::Osd { kind: OsdKind::Volume, level: 0.62, muted: false }))),
         ("power-low", Box::new(|i, _| i.push(NOW, Input::Power(PowerEvent::Low)))),
         ("notif", Box::new(|i, _| i.push(NOW, Input::Notification(Incoming { id: 1, app: "Telegram".into(), summary: "Marco".into(), body: "Ci vediamo alle 18 in aula?".into(), ..Default::default() })))),
@@ -557,8 +572,19 @@ fn main() {
         // pages need a page request; "home" and "meeting" go through the hover-less path
         let hold = name == "lyrics-scroll" || name == "page-sys-opening" || name == "media-transition" || name.contains("full") || name.starts_with("focus-full") || name.contains("lyrics") || name == "home" || name == "home-rain" || name == "qs-devices" || name.starts_with("page-");
         let frames = if name == "media-transition" { 26 } else if name == "page-sys-opening" { 38 } else if name == "lyrics-scroll" { 40 } else { 400 };
-        let frames = match name { "notif-stack-in-a" => 100, "notif-stack-in-b" => 122, "notif-stack-in-c" => 195, "notif-drop-a" => 12, "notif-drop-b" => 24, "notif-drop-c" => 36, "notif-drop-d" => 52, _ => frames };
+        let frames = match name { "liquid-bubble-a" => 14, "liquid-bubble-b" => 24, "liquid-bubble-c" => 40, "liquid-open-a" | "liquid-open-b" | "liquid-open-c" => 300, "event-cards" => 330, "liquid-fill" => 220, "notif-stack-in-a" => 100, "notif-stack-in-b" => 122, "notif-stack-in-c" => 195, "notif-drop-a" => 12, "notif-drop-b" => 24, "notif-drop-c" => 36, "notif-drop-d" => 52, _ => frames };
         let mut f = settle(&mut i, &d, frames, hold);
+        if let Some(after) = match name { "liquid-open-a" => Some(8), "liquid-open-b" => Some(16), "liquid-open-c" => Some(26), _ => None } {
+            let mut t = NOW + frames as i64 * 8;
+            let size = (f.surface.0.ceil().max(520.0), f.surface.1.ceil());
+            i.draw(&mut Scene::new(), &fonts, size, scale);
+            i.push(t, Input::Peek);
+            for _ in 0..after {
+                t += 8;
+                f = i.tick(t, 8.0);
+                i.draw(&mut Scene::new(), &fonts, size, scale);
+            }
+        }
         // these need the card to have been on screen before something happens to it
         if name.starts_with("notif-leave") || name.starts_with("notif-stack-leave") || name == "notif-hover" {
             let size = (f.surface.0.ceil().max(520.0), f.surface.1.ceil());

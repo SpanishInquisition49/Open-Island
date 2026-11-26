@@ -98,28 +98,30 @@ impl Island {
                 self.osd = Some(Osd { kind, level, muted });
                 self.osd_until = now + self.cfg.osd_ms;
             }
-            Input::Power(p) => {
-                self.power = Some(p);
-                self.power_until = now + 3500;
-            }
+            Input::Power(p) => self.power_event_card(p),
             Input::Progress(p) => self.ops.report(now, &p),
-            Input::ProgressDone(l) => self.ops.finish(now, progress::State::Done, &l),
-            Input::ProgressFail(l) => self.ops.finish(now, progress::State::Fail, &l),
-            Input::ProgressClear => self.ops.clear(),
-            Input::DeviceConnected(d) => {
-                self.device_ev = Some((d, false));
-                self.device_until = now + 3500;
+            Input::ProgressDone(l) => {
+                self.ops.finish(now, progress::State::Done, &l);
+                self.announce_finished();
             }
+            Input::ProgressFail(l) => {
+                self.ops.finish(now, progress::State::Fail, &l);
+                self.announce_finished();
+            }
+            Input::ProgressClear => self.ops.clear(),
+            Input::DeviceConnected(d) => self.device_card(&d, false),
             Input::DeviceLow(d) => {
                 if !self.device_low_told.contains(&d.id) {
                     self.device_low_told.push(d.id.clone());
-                    self.device_ev = Some((d, true));
-                    self.device_until = now + 6000;
+                    self.device_card(&d, true);
                 }
             }
             Input::Activity(state, a) => match state {
                 progress::State::Run => self.ops.run_activity(now, &a),
-                s => self.ops.finish_activity(now, s, &a),
+                s => {
+                    self.ops.finish_activity(now, s, &a);
+                    self.announce_finished();
+                }
             },
             Input::CommandStart { id, label, after_secs } => {
                 self.cmds.retain(|c| c.id != id);
@@ -137,6 +139,7 @@ impl Island {
                         } else {
                             self.ops.finish(now, progress::State::Fail, &format!("{} · exit {code} · {took}", c.label));
                         }
+                        self.announce_finished();
                     }
                 }
             }
@@ -246,7 +249,7 @@ impl Island {
         // a place in the stack, unless others are already waiting for one
         if self.waiting.is_empty() && self.cards_shown() < STACK_MAX {
             self.put_on_screen(n);
-        } else if is_script(&n) {
+        } else if is_script(&n) || is_own(&n) {
             self.waiting.push_back(n);
         } else {
             let folded = notify::enqueue(
@@ -255,7 +258,7 @@ impl Island {
                 8,
             );
             if folded {
-                self.waiting.retain(|w| is_script(w) || w.app != n.app);
+                self.waiting.retain(|w| is_script(w) || is_own(w) || w.app != n.app);
             }
             self.waiting.push_back(n);
         }
@@ -851,7 +854,7 @@ impl Island {
             Cmd::Value(v) => {
                 let copy = v.rsplit_once(" = ").map_or(v.clone(), |(_, r)| r.to_string());
                 self.pending.push(Command::RestoreClipboard(copy.clone()));
-                self.say("Copied", &copy);
+                self.value_card(&v, &copy);
             }
         }
     }
@@ -1372,8 +1375,8 @@ impl Island {
         self.extra_timers = running;
         for t in done {
             self.pending.push(Command::PlaySound);
-            self.timer_done_text = ("Time's up".into(), if t.label.is_empty() { duration::preset_label((t.total_ms / 1000) as u64) } else { t.label });
-            self.timer_done_until = now + 6000;
+            let name = if t.label.is_empty() { duration::preset_label((t.total_ms / 1000) as u64) } else { t.label.clone() };
+            self.timer_card("Time's up", name, Some(t.label));
         }
     }
 
@@ -1390,19 +1393,19 @@ impl Island {
                 if t.phase == Phase::Focus {
                     self.log_study((pomodoro::FOCUS / 60) as u32, &t.label);
                 }
-                self.timer_done_text = match t.phase {
-                    Phase::Focus => ("Focus done".into(), format!("Break: {}", duration::preset_label(secs))),
-                    Phase::Break => ("Break over".into(), format!("Round {round}: back to focus")),
-                };
+                match t.phase {
+                    Phase::Focus => self.timer_card("Focus done", format!("Break: {}", duration::preset_label(secs)), None),
+                    Phase::Break => self.timer_card("Break over", format!("Round {round}: back to focus"), None),
+                }
                 let total = secs as i64 * 1000;
                 self.timer = Some(Timer { phase, round, start_ms: self.now, end_ms: Some(self.now + total), total_ms: total, ..t });
             }
             _ => {
-                self.timer_done_text = ("Time's up".into(), if t.label.is_empty() { duration::preset_label((t.total_ms / 1000) as u64) } else { t.label.clone() });
+                let name = if t.label.is_empty() { duration::preset_label((t.total_ms / 1000) as u64) } else { t.label.clone() };
                 self.cancel_timer();
+                self.timer_card("Time's up", name, Some(t.label));
             }
         }
-        self.timer_done_until = self.now + 6000;
     }
 
 }

@@ -410,6 +410,8 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     u.status_icons = b("status_icons", u.status_icons);
     u.lyrics = b("lyrics", u.lyrics);
     u.clipboard_history = b("clipboard_history", u.clipboard_history);
+    u.link_cards = b("link_cards", u.link_cards);
+    u.progress_drop = b("progress_drop", u.progress_drop);
     u.lyrics_in_pill = b("lyrics_in_pill", u.lyrics_in_pill);
     u.show_notifications = b("show_notifications", u.show_notifications);
     u.show_osd = b("show_osd", u.show_osd);
@@ -453,7 +455,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
 /// The options of the options page: the keys that are on or off.
 pub const BOOL_OPTIONS: &[&str] = &[
     "show_notifications", "show_osd", "media_auto_expand", "timer_sound", "battery_alerts", "weather", "rain_alerts", "meeting_alerts", "lyrics", "lyrics_in_pill", "art_tint", "status_icons",
-    "clipboard_history", "clock_in_pill", "hide_on_fullscreen", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "away_recap", "culprit_alerts", "travel_times", "map_dark", "follow_position", "wifi_position", "quiet_on_screen_share", "evening_weekends", "currency_rates", "watch_downloads", "ocr_screenshots",
+    "clipboard_history", "link_cards", "progress_drop", "clock_in_pill", "hide_on_fullscreen", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "away_recap", "culprit_alerts", "travel_times", "map_dark", "follow_position", "wifi_position", "quiet_on_screen_share", "evening_weekends", "currency_rates", "watch_downloads", "ocr_screenshots",
 ];
 
 /// The numeric options: key, smallest, largest, and whether it is a whole number.

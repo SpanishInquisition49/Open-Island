@@ -86,6 +86,10 @@ pub struct Config {
     pub status_icons: bool,
     pub lyrics: bool,
     pub clipboard_history: bool,
+    /// A copied link, address or e-mail drops a card that opens it.
+    pub link_cards: bool,
+    /// A drop beside the pill fills with the progress of a long job, or drains with a countdown.
+    pub progress_drop: bool,
     /// The current lyric line in the small pill instead of the title.
     pub lyrics_in_pill: bool,
     pub timer_presets: Vec<u64>,
@@ -154,6 +158,8 @@ impl Default for Config {
             status_icons: true,
             lyrics: true,
             clipboard_history: true,
+            link_cards: true,
+            progress_drop: true,
             lyrics_in_pill: false,
             timer_presets: vec![300, 600, 1500],
             quiet_in_meetings: true,
@@ -570,6 +576,10 @@ pub(crate) struct ShellCmd {
 }
 
 pub struct Island {
+    /// The small pills on their way out, resting or on their way back.
+    pub(crate) bubbles: Vec<liquid::Bubble>,
+    /// The drop beside the pill that shows a progress or a countdown.
+    pub(crate) fill: Option<liquid::Fill>,
     pub cfg: Config,
     pub data: Data,
     pub now: i64,
@@ -583,7 +593,6 @@ pub struct Island {
     want_side: Option<Side>,
     pub(crate) alpha: f64,
     from_size: (f64, f64),
-    pub(crate) bubble_k: f64,
     anim_box: Option<(f64, f64, f64, f64)>, // target (w,h) it was sized for, box (w,h)
     settled: bool,
     pub(crate) page: Option<Page>,
@@ -639,8 +648,6 @@ pub struct Island {
     pub(crate) deadlines: Vec<Deadline>,
     /// Lines run from the command bar, the latest last (Up recalls them).
     pub(crate) bar_history: Vec<String>,
-    timer_done_until: i64,
-    pub(crate) timer_done_text: (String, String),
     pub(crate) notif: Option<Incoming>,
     notif_until: i64,
     /// The cards on screen besides the first one (`notif`), at most `STACK_MAX` - 1.
@@ -731,18 +738,10 @@ pub struct Island {
     pub(crate) volume_shown: f64,
     pub(crate) brightness_shown: f64,
     osd_until: i64,
-    pub(crate) power: Option<PowerEvent>,
-    power_until: i64,
-    pub(crate) device_ev: Option<(Device, bool)>,
-    device_until: i64,
     /// Devices whose low battery was already announced.
     device_low_told: Vec<String>,
     low_battery_sent: bool,
     last_plugged: Option<bool>,
-    pub(crate) meeting: Option<calendar::Event>,
-    meeting_until: i64,
-    pub(crate) rain_in: Option<i32>,
-    rain_until: i64,
     rain_announced: bool,
     pub(crate) ops: Tracker,
     /// Commands the shell hook reported and that still run.
@@ -791,7 +790,6 @@ impl Island {
             want_side: None,
             alpha: 1.0,
             from_size: (w, h),
-            bubble_k: 0.0,
             anim_box: None,
             settled: true,
             page: None,
@@ -829,8 +827,6 @@ impl Island {
             phone_open: None,
             phone_search: false,
             bar_history: Vec::new(),
-            timer_done_until: 0,
-            timer_done_text: Default::default(),
             notif: None,
             notif_until: 0,
             below: Vec::new(),
@@ -880,6 +876,8 @@ impl Island {
             net_seen: island_core::netstate::Health::Online,
             net_id: 0,
             next_own_id: OWN_ID_BASE,
+            bubbles: Vec::new(),
+            fill: None,
             kb: None,
             page_stack: vec![],
             slide: 0.0,
@@ -897,17 +895,9 @@ impl Island {
             volume_shown: 0.0,
             brightness_shown: 0.0,
             osd_until: 0,
-            power: None,
-            power_until: 0,
-            device_ev: None,
-            device_until: 0,
             device_low_told: vec![],
             low_battery_sent: false,
             last_plugged: None,
-            meeting: None,
-            meeting_until: 0,
-            rain_in: None,
-            rain_until: 0,
             rain_announced: false,
             ops: Tracker::default(),
             cmds: vec![],
@@ -945,6 +935,8 @@ impl Island {
 }
 
 pub(crate) mod card;
+mod events;
+pub(crate) mod liquid;
 use card::{Shown, STACK_MAX};
 mod frame;
 mod inputs;

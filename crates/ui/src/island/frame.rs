@@ -169,13 +169,7 @@ impl Island {
             barring: self.bar.is_some(),
             replying: self.reply.is_some(),
             osd: self.osd.is_some() && now < self.osd_until,
-            timer_done: now < self.timer_done_until,
-            power: self.power.is_some() && now < self.power_until,
-            device: self.device_ev.is_some() && now < self.device_until,
             op: self.ops.op.is_some(),
-            op_flash: self.ops.flashing(now),
-            meeting: self.meeting.is_some() && now < self.meeting_until,
-            rain: self.rain_in.is_some() && now < self.rain_until,
             update: false,
             big,
             page: self.page,
@@ -519,9 +513,8 @@ impl Island {
         let copy = self.data.clipboard.first().cloned().unwrap_or_default();
         if copy != self.last_copy {
             if !copy.is_empty() && !self.last_copy.is_empty() {
-                let one_line: String = copy.split_whitespace().collect::<Vec<_>>().join(" ");
-                let _ = one_line;
                 self.log_event(LogKind::Copy, copy.clone());
+                self.link_card(&copy);
             }
             self.last_copy = copy;
         }
@@ -546,8 +539,7 @@ impl Island {
         // meeting heads-up: once per event
         if self.cfg.meeting_alerts {
             if let Some(e) = self.announcer.new_heads_up(&self.data.events, now, self.cfg.meeting_lead_ms).cloned() {
-                self.meeting = Some(e);
-                self.meeting_until = now + 10_000;
+                self.meeting_card(&e);
             }
         }
         // rain
@@ -555,9 +547,8 @@ impl Island {
             let soon = self.data.weather.as_ref().and_then(|w| weather::rain_soon(&w.rain_slots, 60));
             match soon {
                 Some(m) if !self.rain_announced => {
-                    self.rain_in = Some(m);
-                    self.rain_until = now + 8000;
                     self.rain_announced = true;
+                    self.rain_card(m);
                 }
                 None => self.rain_announced = false,
                 _ => {}
@@ -815,28 +806,22 @@ impl Island {
             (tw, th) = self.face_size(self.shown);
         }
         let at_rest = self.spring.step(tw, th, dt);
-        // bubble split follows the width spring
-        if self.shown_side.is_some() && self.want == self.shown {
-            let base = self.face_size(self.shown).0;
-            self.bubble_k = ((self.spring.w.pos - base) / (BUBBLE_W + BUBBLE_GAP)).clamp(0.0, 1.0);
-            // the bubble keeps its slot while an activity is shown; the width spring is not what drives it here
-            self.bubble_k = if self.want_side.is_some() { 1.0 } else { 0.0 };
-            if self.want_side.is_none() {
-                self.shown_side = None;
-                self.shown_more.clear();
-            }
-        } else if self.shown_side.is_none() {
-            self.bubble_k = 0.0;
+        if self.shown_side.is_some() && self.want == self.shown && self.want_side.is_none() {
+            self.shown_side = None;
+            self.shown_more.clear();
         }
+        // the small pills leave the main one, or go back into it; the drop hangs when there is room for it
+        self.sync_bubbles();
+        self.sync_fill();
         self.settled = at_rest && self.alpha >= 1.0 && self.want == self.shown && self.want_side == self.shown_side && self.want_more == self.shown_more;
         // what needs frames: motion at every vsync, an equalizer at 30 fps, things that expire a few times a second,
         // a timer twice a second, otherwise the clock once a second
         let levels_moving = self.ease_levels(dt_ms) | self.ease_media_button(dt_ms);
         let waiting_for_hover = (self.hovering && now - self.hover_since < HOVER_INTENT_MS + 60) || now < self.hover_left + HOVER_GRACE_MS + 60;
         let marquee = self.marquee_on.replace(false);
-        let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving || marquee || self.card_moving();
+        let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving || marquee || self.card_moving() || self.bubbles_moving() || self.fill_moving();
         let equalizer = self.data.media.as_ref().is_some_and(|m| m.playing) && matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric);
-        let expiring = snap.osd || self.notif.is_some() || snap.timer_done || snap.power || snap.meeting || snap.rain || snap.op_flash || self.edit.is_some() || self.reply.is_some() || self.kb.is_some() || self.bar.is_some();
+        let expiring = snap.osd || self.notif.is_some() || self.edit.is_some() || self.reply.is_some() || self.kb.is_some() || self.bar.is_some();
         let next_ms: u32 = if moving {
             0
         } else if equalizer {
@@ -854,7 +839,9 @@ impl Island {
         };
         let animating = next_ms == 0;
         // the surface: holds both shapes plus room for the overshoot while animating
-        let group_w = self.spring.w.pos + self.side_slot(self.shown_side.is_some(), self.shown_more.len());
+        // (a small pill on its way back still needs its room)
+        let beside = self.side_slot(self.shown_side.is_some(), self.shown_more.len()).max(self.bubbles.len() as f64 * (BUBBLE_W + BUBBLE_GAP));
+        let group_w = self.spring.w.pos + beside;
         let (sw, sh) = if self.settled {
             self.anim_box = None;
             (group_w.ceil(), self.spring.h.pos.ceil())
@@ -871,9 +858,13 @@ impl Island {
         let (mut sw, mut sh) = (sw.max(40.0), sh.max(20.0));
         if self.has_card() {
             // room for the card under the pill, centred on the pill however many small pills sit beside it
-            let slot = self.side_slot(self.shown_side.is_some() || self.want_side.is_some(), self.shown_more.len().max(self.want_more.len()));
+            let slot = self.side_slot(self.shown_side.is_some() || self.want_side.is_some(), self.shown_more.len().max(self.want_more.len())).max(beside);
             sw = sw.max(card::CARD_MAX_W + slot);
             sh += card::zone_height(self.cards_shown().max(self.cards.stack.len()), self.cards.taller());
+        }
+        if self.fill.is_some() {
+            // the drop hangs at the left: as much room on the right keeps the pill where it is
+            sw = sw.max(group_w + 2.0 * liquid::DROP_ROOM);
         }
         Frame { surface: (sw + 8.0, sh + TOP_MARGIN + 4.0), animating, next_ms }
     }
@@ -894,6 +885,7 @@ impl Island {
     pub fn input_rects(&self) -> Vec<(f64, f64, f64, f64)> {
         let mut v = vec![self.pill_rect()];
         v.extend(self.cards.rects().map(|(x, y, w, h, _)| (x, y, w, h)));
+        v.extend(self.fill.as_ref().and_then(|f| f.rect));
         v
     }
 
@@ -903,11 +895,10 @@ impl Island {
         let (w, h) = (self.spring.w.pos, self.spring.h.pos);
         let r = (h / 2.0).min(30.0);
         let mut v = vec![(self.pill_origin.0, self.pill_origin.1, w, h, r)];
-        if self.shown_side.is_some() && self.bubble_k > 0.5 {
-            for n in 0..=self.shown_more.len() {
-                v.push((self.pill_origin.0 + w + BUBBLE_GAP + n as f64 * (BUBBLE_W + BUBBLE_GAP), self.pill_origin.1, BUBBLE_W, h, r));
-            }
+        for (n, _) in self.bubbles.iter().enumerate().filter(|(_, b)| b.out(self.now) > 0.5) {
+            v.push((self.pill_origin.0 + w + BUBBLE_GAP + n as f64 * (BUBBLE_W + BUBBLE_GAP), self.pill_origin.1, BUBBLE_W, h, r));
         }
+        v.extend(self.fill.as_ref().and_then(|f| f.rect).map(|(x, y, w, h)| (x, y, w, h, w / 2.0)));
         v.extend(self.cards.rects());
         v
     }

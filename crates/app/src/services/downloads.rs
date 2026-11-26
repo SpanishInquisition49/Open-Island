@@ -54,7 +54,11 @@ pub fn start(rep: Reporter) {
             for e in events {
                 match e {
                     Event::Running { id, label, detail } => rep.input(Input::Activity(State::Run, Activity { id, label, detail, icon: Some("download".into()), ..Default::default() })),
-                    Event::Done { id, label, detail } => rep.input(Input::Activity(State::Done, Activity { id, label, detail, icon: Some("download".into()), ..Default::default() })),
+                    Event::Done { id, label, detail } => {
+                        // the id names the partial file: the finished one is what its card opens
+                        let file = id.strip_prefix("dl:").and_then(island_core::downloads::final_name).map(|n| dir.join(n).to_string_lossy().into_owned());
+                        rep.input(Input::Activity(State::Done, Activity { id, label, detail, icon: Some("download".into()), file, ..Default::default() }))
+                    }
                     Event::Dropped { id } => rep.input(Input::ActivityClear(id)),
                 }
             }

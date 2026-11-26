@@ -30,7 +30,7 @@ impl Island {
 
     pub(super) fn pill_rect(&self) -> (f64, f64, f64, f64) {
         let (w, h) = (self.spring.w.pos, self.spring.h.pos);
-        let side = (self.side_slot(self.shown_side.is_some(), self.shown_more.len()) * self.bubble_k).round();
+        let side = self.bubble_slot().round();
         (self.pill_origin.0, self.pill_origin.1, w + side, h)
     }
 
@@ -151,17 +151,6 @@ impl Island {
             return vec![];
         }
         match self.shown {
-            Face::TimerDone => self.timer_done_until = 0,
-            Face::Power => self.power_until = 0,
-            Face::Device => self.device_until = 0,
-            Face::Meeting => self.meeting_until = 0,
-            Face::Rain => self.rain_until = 0,
-            Face::Progress => {
-                if self.ops.op.as_ref().is_some_and(|o| o.state != progress::State::Run) {
-                    self.ops.clear();
-                }
-                self.ops.flash_until = 0;
-            }
             f if f.is_compact() => self.expand_until = now + 6000,
             _ => {}
         }
@@ -575,13 +564,16 @@ impl Island {
                     self.close_notif(CloseReason::Dismissed);
                 }
             }
-            Action::NotifAction(key) if key == "open-island:ocr" => {
+            // (only on the island's own cards: another program cannot name a file or an address for the island to open)
+            Action::NotifAction(key) if key == "open-island:ocr" && self.notif.as_ref().is_some_and(is_own) => {
                 self.close_notif(CloseReason::Dismissed);
                 return vec![Command::Ocr];
             }
-            Action::NotifAction(key) if key.starts_with("open-island:") => {
+            Action::NotifAction(key) if key.starts_with("open-island:") && self.notif.as_ref().is_some_and(is_own) => {
                 let summary = self.notif.as_ref().map(|n| n.summary.clone()).unwrap_or_default();
-                self.own_card_action(&key, &summary);
+                if !self.event_action(&key) {
+                    self.own_card_action(&key, &summary);
+                }
                 self.close_notif(CloseReason::Dismissed);
             }
             Action::NotifAction(key) => {
@@ -620,7 +612,6 @@ impl Island {
             }
             Action::CalDay(d) => self.cal.day = d,
             Action::Join(url) => {
-                self.meeting_until = 0;
                 return vec![Command::OpenUrl(url)];
             }
             Action::ClearHistory => self.history.clear(),
@@ -676,6 +667,12 @@ impl Island {
             }
             // a question is answered by its buttons: a stray click on it must not count as "nobody answered"
             Action::NotifOpen if self.notif.as_ref().is_some_and(|n| is_script(n) && n.actions.iter().any(|a| a.key == "yes")) => {}
+            Action::NotifOpen if self.notif.as_ref().and_then(Self::body_action).is_some() => {
+                if let Some(key) = self.notif.as_ref().and_then(Self::body_action) {
+                    self.event_action(&key);
+                }
+                self.close_notif(CloseReason::Dismissed);
+            }
             Action::NotifOpen => {
                 if let Some(n) = self.notif.clone() {
                     self.pending.extend(Self::open_commands(&n, true));

@@ -36,6 +36,9 @@ struct Daemon {
     _settings: Arc<Settings>,
 }
 
+/// The first notification number a program cannot name as the one it replaces.
+const RESERVED_IDS: u32 = 2_000_000;
+
 /// Everything a `Notify` call carries, decoded.
 #[derive(Default, Debug, PartialEq)]
 pub struct Hints {
@@ -139,6 +142,8 @@ impl Daemon {
     fn notify(&mut self, app_name: String, replaces_id: u32, app_icon: String, summary: String, body: String, actions: Vec<String>, hints: HashMap<String, OwnedValue>, timeout: i32) -> u32 {
         let hs = read_hints(&hints);
         let body = strip_markup(&body);
+        // the numbers from here up are the island's own cards and its scripts': a program may not claim one
+        let replaces_id = if replaces_id >= RESERVED_IDS { 0 } else { replaces_id };
         let id = {
             let mut sh = self.shared.lock().unwrap_or_else(|e| e.into_inner());
             let tagged = hs.tag.as_ref().and_then(|t| sh.tags.get(t).copied());
