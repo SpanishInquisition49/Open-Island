@@ -231,6 +231,13 @@ fn main() {
             d.events = vec![ev("Reti di calcolatori", 8, 30, 120, false), ev("Pranzo", 12, 30, 60, false), ev("Ricevimento", 15, 0, 45, true), ev("Studio di gruppo", 17, 0, 90, false)];
             i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
         })),
+        ("page-today-rowmenu", Box::new(|i, d| {
+            d.events = vec![];
+            let t = |u: &str, text: &str, off: i64, est: u32| island_ui::island::Todo { uid: u.into(), text: text.into(), due: Some(NOW / 86_400_000 + off), est_min: est, ..Default::default() };
+            i.restore_todos(vec![t("a", "Relazione Reti", 0, 120), t("b", "Lab report", 1, 0), t("c", "Slides", 3, 60)]);
+            i.row_menu = Some("b".into());
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
+        })),
         ("page-today-running", Box::new(|i, d| {
             let ev = |t: &str, h: i64, m: i64, dur: i64| island_core::calendar::Event { id: t.into(), title: t.into(), start_ms: NOW / 86_400_000 * 86_400_000 + (h * 60 + m) * 60_000, end_ms: NOW / 86_400_000 * 86_400_000 + (h * 60 + m + dur) * 60_000, all_day: false, url: None, color: Some((90, 160, 255)), calendar: "Uni".into(), location: String::new() };
             d.events = vec![ev("Reti di calcolatori", 8, 30, 120), ev("Pranzo", 12, 30, 60)];
@@ -268,8 +275,8 @@ fn main() {
             d.events[0].location = "Aula 3, Polo Fibonacci, Largo Bruno Pontecorvo 3, Pisa".into();
             i.cfg.commute_minutes = 70;
             i.cfg.travel_margin_ms = 10 * 60_000;
-            i.restore_deadlines(vec![island_ui::island::Deadline { day: NOW / 86_400_000 + 2, text: "Esame Algoritmi".into() }, island_ui::island::Deadline { day: NOW / 86_400_000 + 9, text: "Consegna progetto".into() }]);
-            i.restore_todos(vec![island_ui::island::Todo { text: "Portare il caricatore".into(), daily: true, done_day: i64::MIN }, island_ui::island::Todo { text: "Restituire il libro".into(), ..Default::default() }]);
+            i.restore_deadlines(vec![island_ui::island::Deadline { day: NOW / 86_400_000 + 2, text: "Esame Algoritmi".into(), est_min: 600, ..Default::default() }, island_ui::island::Deadline { day: NOW / 86_400_000 + 9, text: "Consegna progetto".into(), ..Default::default() }]);
+            i.restore_todos(vec![island_ui::island::Todo { text: "Portare il caricatore".into(), repeat: island_core::task::Repeat::Daily, due: Some(NOW / 86_400_000), ..Default::default() }, island_ui::island::Todo { text: "Restituire il libro".into(), due: Some(NOW / 86_400_000), est_min: 30, ..Default::default() }, island_ui::island::Todo { text: "Relazione Reti".into(), due: Some(NOW / 86_400_000 + 3), est_min: 120, ..Default::default() }]);
             i.restore_pins(vec!["ssh pi@10.0.0.5 -p 2222".into(), "Aula B3, piano 2".into()]);
             i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
         })),
@@ -300,6 +307,14 @@ fn main() {
             d.phone = Some(Phone { link: Link { present: true, messages: true, contacts: true, battery: Some(80), ..Default::default() }, threads: vec![Thread { name: "Enrica".into(), key: "tel:+39".into(), when: "2026-11-21 18:06".into(), preview: String::new() }], messages: Some(("tel:+39".into(), vec![m(false, "Stasera ci sei?"), m(true, "Sì, arrivo alle 19"), m(false, "Perfetto, porta il pane"), m(true, "Ok")])), at_ms: NOW, ..Default::default() });
             i.push(NOW, Input::OpenPage(island_core::face::Page::Phone));
             i.set_preview_phone_open("tel:+39");
+        })),
+        ("page-today-files", Box::new(|i, d| {
+            let day = NOW / 86_400_000 * 86_400_000;
+            let ev = |t: &str, h: i64, m: i64, dur: i64| island_core::calendar::Event { id: t.into(), title: t.into(), start_ms: day + (h * 60 + m) * 60_000, end_ms: day + (h * 60 + m + dur) * 60_000, all_day: false, url: None, color: Some((90, 160, 255)), calendar: "Uni".into(), location: "Aula 3".into() };
+            d.events = vec![ev("Algorithm Engineering", 15, 30, 120)];
+            let f = |n: &str, days: i64| island_core::materials::Material { path: format!("/home/u/Uni/{n}"), name: n.into(), modified_ms: NOW - days * 86_400_000 };
+            d.materials.insert(island_core::materials::fold("Algorithm Engineering"), (NOW, vec![f("AlgorithmEngineering-2027_c1.pdf", 0), f("Pearls of Algorithm Engineering.pdf", 41), f("AE_250715.pdf", 128)]));
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
         })),
         ("page-today-train", Box::new(|i, d| {
             let day = NOW / 86_400_000 * 86_400_000;
@@ -349,6 +364,25 @@ fn main() {
             let _ = t;
             i.push(NOW - 9 * 60_000, Input::Notification(island_ui::model::Incoming { id: 1, app: "Telegram".into(), summary: "Lunch?".into(), ..Default::default() }));
             i.push(NOW, Input::OpenPage(island_core::face::Page::Activity));
+        })),
+        ("page-plan", Box::new(|i, d| {
+            d.utc_offset_secs = 3600;
+            i.data.utc_offset_secs = 3600;
+            let day = NOW / 86_400_000 * 86_400_000 - 3_600_000;
+            let ev = |t: &str, dd: i64, h: i64, mins: i64| island_core::calendar::Event { id: format!("{t}{dd}{h}"), title: t.into(), start_ms: day + dd * 86_400_000 + h * 3_600_000, end_ms: day + dd * 86_400_000 + h * 3_600_000 + mins * 60_000, color: Some((90, 160, 255)), calendar: "Uni".into(), ..Default::default() };
+            d.events = vec![ev("Reti", 0, 9, 120), ev("Algoritmi", 0, 14, 90), ev("Compilazione", 1, 8, 120), ev("Lab", 1, 10, 120), ev("Algoritmi", 1, 13, 120), ev("Seminario", 1, 16, 90), ev("Reti", 2, 9, 120), ev("Lab", 4, 14, 180)];
+            i.restore_deadlines(vec![island_ui::island::Deadline { day: NOW / 86_400_000 + 1, text: "Consegna progetto".into(), est_min: 180, ..Default::default() }, island_ui::island::Deadline { day: NOW / 86_400_000 + 12, text: "Esame Algoritmi".into(), course: "algoritmi".into(), est_min: 900 }]);
+            i.restore_todos(vec![island_ui::island::Todo { uid: "a".into(), text: "Relazione Reti".into(), due: Some(NOW / 86_400_000 + 1), est_min: 120, ..Default::default() }, island_ui::island::Todo { uid: "b".into(), text: "Lab report".into(), due: Some(NOW / 86_400_000 + 1), ..Default::default() }]);
+            i.restore_study_log(vec![(NOW / 86_400_000 - 1, "algoritmi".into(), 120), (NOW / 86_400_000, "reti".into(), 45), (NOW / 86_400_000, "algoritmi".into(), 60)]);
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Plan));
+        })),
+        ("page-find", Box::new(|i, d| {
+            d.utc_offset_secs = 3600;
+            i.data.utc_offset_secs = 3600;
+            d.events = vec![island_core::calendar::Event { id: "c".into(), title: "Compilation Techniques".into(), start_ms: NOW + 3_600_000, end_ms: NOW + 7_200_000, calendar: "Uni".into(), ..Default::default() }];
+            i.restore_todos(vec![island_ui::island::Todo { uid: "a".into(), text: "Read the compilers book".into(), due: Some(NOW / 86_400_000 + 3), ..Default::default() }]);
+            i.push(NOW, Input::Find("compil".into()));
+            i.push(NOW, Input::FoundMore { query: "compil".into(), hits: vec![island_core::plan::Hit { kind: island_core::plan::HitKind::Note, title: "compilers: ask about LLVM passes".into(), detail: "2026-12-10.md".into(), target: "/n/a.md".into() }, island_core::plan::Hit { kind: island_core::plan::HitKind::File, title: "Compilation Techniques slides 04.pdf".into(), detail: "Uni".into(), target: "/n/b.pdf".into() }] });
         })),
         ("page-rewind", Box::new(|i, _| {
             i.push(NOW - 20 * 60_000, Input::Focused { app: "code".into(), title: "island.rs".into() });

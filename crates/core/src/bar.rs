@@ -28,15 +28,43 @@ pub enum Cmd {
     /// Show what is left of today now (the morning card, on demand).
     Today,
     /// A date to count down to (an exam, a project): `deadline 3 feb Reti exam`. `day` counts days since 1970-01-01.
-    Deadline { day: i64, text: String },
+    /// `course` and `est_min` come from `#course` and `~20h`: what to study and how long it will take.
+    Deadline { day: i64, text: String, course: String, est_min: u32 },
     /// Pin the usual train (`train pisa centrale 17:12 verso lucca`), unpin it (`train off`), set home (`home 43.7, 10.4` or an address).
     Train(String),
     TrainOff,
     Home(String),
-    /// Something to do, for the list on the Today page (`todo buy milk`).
-    Todo(String),
-    /// The same, but it comes back every day (`todo daily bring the charger`).
-    TodoDaily(String),
+    /// Something to do, for the list on the Today page (`todo buy milk`, `todo report due fri #algoritmi ~2h`,
+    /// `todo gym every mon and thu`).
+    Todo(crate::task::Spec),
+    /// A reminder tied to an event (`remind 10m before lab`): it rings that long before the next event with those words.
+    RemindBefore { secs: i64, query: String },
+    /// A reminder that comes back (`remind every monday 9 gym`): `at_secs` is the time of day.
+    RemindEvery { repeat: crate::task::Repeat, at_secs: i64, text: String },
+    /// An event for the calendar (`event fri 15-16:30 office hours`): the day (since 1970), minutes after midnight, length.
+    Event { day: i64, start_min: u32, dur_min: u32, title: String },
+    /// Moves a task's day, or an event (`move report to fri`, `sposta lezione a lunedì 10`): by the words in its title.
+    /// `day` is None when only the hour changes; `dur_min` None keeps the length.
+    Move { query: String, day: Option<i64>, start_min: Option<u32>, dur_min: Option<u32> },
+    /// Changes what a task says (`edit report -> due mon ~3h #algoritmi`): only what the right-hand side names.
+    EditTask { query: String, spec: crate::task::Spec },
+    /// Takes a task off the list (`rm report`, `togli report`).
+    DropTask(String),
+    /// Cancels the next event with these words in its title (`cancel office hours`).
+    CancelEvent(String),
+    /// A line for the notes folder (`note ask about the exam format`).
+    Note(String),
+    /// Look for words across events, tasks, deadlines, pins, notes and files (`find compilers`).
+    Find(String),
+    /// Study time done (`log 90m algoritmi`): it counts against the work still to do for that course.
+    Study { minutes: u32, course: String },
+    /// A Pomodoro that is for a course (`pomodoro algoritmi`): its focus time is logged there.
+    PomodoroFor(String),
+    /// Something to take along (`bring laptop for reti`: only on days with an event whose title has `reti`; without `for`,
+    /// every day the card is made). It stays until `unbring`.
+    Bring { text: String, course: String },
+    /// Takes a bring entry off (`unbring laptop`, `unbring all`).
+    Unbring(String),
     /// Read the text of the image on the clipboard and copy it (`ocr`).
     Ocr,
     /// Open a page by name (`go phone`, `go meteo`).
@@ -52,13 +80,16 @@ pub enum Cmd {
 }
 
 /// Examples shown, one set after the other, while the bar is empty: what it can do.
-pub const HINTS: [&str; 6] = [
+pub const HINTS: [&str; 9] = [
     "10m tea · remind at 9pm call mom · todo buy milk",
     "pw 24 · roll 2d6 · uuid · coin · random 1-100",
     "days until 3 feb · today + 45 days · week",
     "20 usd in eur · 5 km in mi · 20% of 150 · 12*7",
     "recap · agenda · pomodoro · focus 45 · dnd on",
     "go phone · go meteo · ocr (the image on the clipboard)",
+    "todo report due fri #algoritmi ~2h · todo gym every mon",
+    "event fri 15-16:30 office hours · note ask about the exam",
+    "move report to sat · move lab to mon 10 · cancel dentist",
 ];
 
 /// How to write a command whose first word was recognised but whose rest was not.
@@ -69,7 +100,16 @@ pub fn usage(line: &str) -> Option<&'static str> {
         "timer" => "timer 25m [name]  (a bare number is minutes)",
         "focus" | "studio" => "focus 45  (minutes, or 2h)",
         "dnd" | "silenzio" => "dnd on | dnd off",
-        "todo" | "task" | "compito" => "todo <what to do>",
+        "todo" | "task" | "compito" => "todo <what> [due fri] [#course] [~2h] [every mon]",
+        "event" | "evento" | "appuntamento" => "event [fri | 3 feb] 15[-16:30] [for 1h] <title>",
+        "move" | "sposta" | "postpone" | "rinvia" => "move <words> to <day> [15[-16:30]]  (a task's day, or an event)",
+        "edit" | "modifica" => "edit <words> -> [due fri] [#course] [~2h] [every mon]",
+        "rm" | "togli" | "elimina" | "drop" => "rm <words in a task>",
+        "cancel" | "annulla" | "disdici" => "cancel <words in an event title>",
+        "note" | "nota" => "note <a line for your notes folder>",
+        "find" | "cerca" | "search" | "trova" => "find <words>: events, tasks, notes, files",
+        "log" | "studied" | "studiato" => "log 90m [course]  (study time done)",
+        "bring" | "porta" => "bring <thing> [for <course>]  ·  unbring <thing | all>",
         "go" | "vai" | "apri" => "go <page>: phone, today, map, weather, calendar, system, sound, options...",
         "pin" | "appunta" => "pin <text to keep on Today>  ·  unpin [text | all]",
         "split" | "dividi" => "split 84.5 by 3",
@@ -91,12 +131,36 @@ pub fn preview(cmd: &Cmd) -> String {
         Cmd::UntilNext => "Timer until 5 min before your next event".into(),
         Cmd::Tomorrow => "Show tomorrow".into(),
         Cmd::Today => "Show today".into(),
-        Cmd::Deadline { day, text } => format!("Deadline · {} · {text}", crate::quick::fmt_date(crate::calendar::civil_from_days(*day))),
+        Cmd::Deadline { day, text, course, est_min } => {
+            let extra: String = [(!course.is_empty()).then(|| format!(" · #{course}")), (*est_min > 0).then(|| format!(" · {} to prepare", crate::task::fmt_minutes(*est_min)))].into_iter().flatten().collect();
+            format!("Deadline · {} · {text}{extra}", crate::quick::fmt_date(crate::calendar::civil_from_days(*day)))
+        }
         Cmd::Train(q) => format!("Pin the train · {q}"),
         Cmd::TrainOff => "Unpin the train".into(),
         Cmd::Home(h) => format!("Set home · {h}"),
-        Cmd::Todo(t) => format!("Add to your list · {t}"),
-        Cmd::TodoDaily(t) => format!("Add to your list, every day · {t}"),
+        Cmd::Todo(t) => {
+            let sum = t.summary(None);
+            let due = t.due.map(|d| format!(" · {}", crate::quick::fmt_date(crate::calendar::civil_from_days(d)))).unwrap_or_default();
+            format!("Add to your list · {}{due}{}", t.text, if sum.is_empty() { String::new() } else { format!(" · {sum}") })
+        }
+        Cmd::RemindBefore { secs, query } => format!("Remind {} before · {query}", human_delay(*secs)),
+        Cmd::RemindEvery { repeat, at_secs, text } => format!("Remind {} at {:02}:{:02} · {text}", repeat.label(), at_secs / 3600, at_secs % 3600 / 60),
+        Cmd::Move { query, day, start_min, .. } => {
+            let to = [day.map(|d| crate::quick::fmt_date(crate::calendar::civil_from_days(d))), start_min.map(|m| format!("{:02}:{:02}", m / 60, m % 60))].into_iter().flatten().collect::<Vec<_>>().join(" ");
+            format!("Move · {query} → {to}")
+        }
+        Cmd::EditTask { query, spec } => format!("Edit · {query} → {}", spec.summary(None)),
+        Cmd::DropTask(q) => format!("Remove task · {q}"),
+        Cmd::CancelEvent(q) => format!("Cancel event · {q}"),
+        Cmd::Event { day, dur_min: 1440, title, .. } => format!("Event · {} · all day · {title}", crate::quick::fmt_date(crate::calendar::civil_from_days(*day))),
+        Cmd::Event { day, start_min, dur_min, title } => format!("Event · {} {:02}:{:02} · {} · {title}", crate::quick::fmt_date(crate::calendar::civil_from_days(*day)), start_min / 60, start_min % 60, crate::task::fmt_minutes(*dur_min)),
+        Cmd::Note(t) => format!("Note · {t}"),
+        Cmd::Find(q) => format!("Find · {q}"),
+        Cmd::Study { minutes, course } => format!("Studied {}{}", crate::task::fmt_minutes(*minutes), if course.is_empty() { String::new() } else { format!(" · {course}") }),
+        Cmd::PomodoroFor(c) => format!("Start a Pomodoro · {c}"),
+        Cmd::Bring { text, course } if course.is_empty() => format!("Bring · {text}"),
+        Cmd::Bring { text, course } => format!("Bring · {text} · for {course}"),
+        Cmd::Unbring(t) => format!("Stop bringing · {}", if t.is_empty() { "the newest" } else { t }),
         Cmd::Ocr => "Read the text of the image on the clipboard and copy it".into(),
         Cmd::Go(p) => format!("Go to {}", p.label()),
         Cmd::Pin(t) => format!("Pin to Today · {t}"),
@@ -159,10 +223,10 @@ pub fn parse_ctx(line: &str, ctx: &Ctx) -> Option<Cmd> {
             let today = ctx.today?;
             let (date, used) = crate::quick::parse_date(&words[1..], today)?;
             let orig: Vec<&str> = line.split_whitespace().collect();
-            let text = orig[(1 + used).min(orig.len())..].join(" ");
+            let spec = crate::task::parse_spec(&orig[(1 + used).min(orig.len())..], None);
             // an exam is called by what it is, even when only the word was typed
-            let text = if text.is_empty() { if first == "esame" || first == "exam" { "Exam".to_string() } else { return None } } else { text };
-            return Some(Cmd::Deadline { day: crate::calendar::days_from_civil(date.0, date.1, date.2), text });
+            let text = if spec.text.is_empty() { if first == "esame" || first == "exam" { "Exam".to_string() } else { return None } } else { spec.text };
+            return Some(Cmd::Deadline { day: crate::calendar::days_from_civil(date.0, date.1, date.2), text, course: spec.course, est_min: spec.est_min });
         }
         "train" | "treno" => {
             let rest = line.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
@@ -173,21 +237,44 @@ pub fn parse_ctx(line: &str, ctx: &Ctx) -> Option<Cmd> {
         }
         "home" | "casa" if words.len() >= 2 => return Some(Cmd::Home(line.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
         "todo" | "task" | "compito" => {
-            let mut skip = 1;
-            let daily = match words.get(1).copied() {
-                Some("daily" | "giornaliero" | "quotidiano") => { skip = 2; true }
-                Some("every") if words.get(2) == Some(&"day") => { skip = 3; true }
-                Some("ogni") if words.get(2) == Some(&"giorno") => { skip = 3; true }
-                _ => false,
-            };
-            let text = line.split_whitespace().skip(skip).collect::<Vec<_>>().join(" ");
-            return (!text.is_empty()).then_some(if daily { Cmd::TodoDaily(text.clone()) } else { Cmd::Todo(text) });
+            let orig: Vec<&str> = line.split_whitespace().collect();
+            let spec = crate::task::parse_spec(&orig[1..], ctx.today);
+            return (!spec.text.is_empty()).then_some(Cmd::Todo(spec));
         }
+        "move" | "sposta" | "postpone" | "rinvia" if words.len() >= 3 && ctx.today.is_some() => return parse_move(line, &words, ctx.today?),
+        "edit" | "modifica" if words.len() >= 3 && ctx.today.is_some() => {
+            let orig: Vec<&str> = line.split_whitespace().skip(1).collect();
+            let at = orig.iter().position(|w| matches!(*w, "->" | "=>" | "→"))?;
+            let query = orig[..at].join(" ");
+            let spec = crate::task::parse_spec(&orig[at + 1..], ctx.today);
+            return (!query.is_empty() && spec != crate::task::Spec::default()).then_some(Cmd::EditTask { query, spec });
+        }
+        "rm" | "togli" | "elimina" | "drop" if words.len() >= 2 => return Some(Cmd::DropTask(line.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
+        "cancel" | "annulla" | "disdici" if words.len() >= 2 => return Some(Cmd::CancelEvent(line.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
+        "event" | "evento" | "appuntamento" if ctx.today.is_some() => return parse_event(line, &words, ctx.today?),
+        "note" | "nota" if words.len() >= 2 => return Some(Cmd::Note(line.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
+        "find" | "cerca" | "search" | "trova" if words.len() >= 2 => return Some(Cmd::Find(line.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
+        "log" | "studied" | "studiato" if words.len() >= 2 => {
+            let minutes = crate::task::parse_minutes(words[1])?;
+            return Some(Cmd::Study { minutes, course: line.split_whitespace().skip(2).collect::<Vec<_>>().join(" ") });
+        }
+        "bring" | "porta" if words.len() >= 2 => {
+            let rest: Vec<&str> = line.split_whitespace().skip(1).collect();
+            // "for" / "per" before the last word group names the course
+            let at = rest.iter().rposition(|w| matches!(w.to_lowercase().as_str(), "for" | "per"));
+            let (text, course) = match at {
+                Some(i) if i > 0 && i + 1 < rest.len() => (rest[..i].join(" "), rest[i + 1..].join(" ")),
+                _ => (rest.join(" "), String::new()),
+            };
+            return Some(Cmd::Bring { text, course });
+        }
+        "unbring" | "nonportare" => return Some(Cmd::Unbring(line.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
         "ocr" | "leggi" if words.len() == 1 || words.get(1) == Some(&"testo") => return Some(Cmd::Ocr),
         "go" | "vai" | "apri" if words.len() >= 2 => return crate::face::page_by_name(&words[1..].join(" ")).map(Cmd::Go),
         "pin" | "appunta" if words.len() >= 2 => return Some(Cmd::Pin(line.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
         "unpin" | "stacca" => return Some(Cmd::Unpin(line.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
-        "pomodoro" | "pomo" => return Some(Cmd::Pomodoro),
+        "pomodoro" | "pomo" if words.len() == 1 => return Some(Cmd::Pomodoro),
+        "pomodoro" | "pomo" => return Some(Cmd::PomodoroFor(line.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
         "stopwatch" | "cronometro" | "sw" => return Some(Cmd::Stopwatch),
         "dnd" | "silenzio" => {
             return match words.get(1).copied() {
@@ -214,6 +301,32 @@ pub fn parse_ctx(line: &str, ctx: &Ctx) -> Option<Cmd> {
                 if matches!(rest.first(), Some(&("in" | "tra" | "fra" | "to" | "di"))) && rest.get(1).is_some_and(|_| delay_or_clock(&rest[1..], local_secs, weekday).is_some()) {
                     rest = &rest[1..];
                 }
+            }
+            // "10m before lab", "30 minuti prima di lezione": tied to an event, not to the clock
+            if let Some((secs, used)) = take_duration(rest).filter(|(s, _)| *s > 0) {
+                if matches!(rest.get(used), Some(&("before" | "prima"))) {
+                    let mut at = used + 1;
+                    while matches!(rest.get(at), Some(&("of" | "the" | "di" | "del" | "della" | "dello" | "dell'" | "la" | "il" | "lo"))) {
+                        at += 1;
+                    }
+                    let orig: Vec<&str> = line.split_whitespace().collect();
+                    let query = orig[(words.len() - rest.len() + at).min(orig.len())..].join(" ");
+                    return (!query.is_empty()).then_some(Cmd::RemindBefore { secs, query });
+                }
+            }
+            // "every monday 9 gym", "ogni giorno alle 8:30 vitamine": a reminder that comes back
+            if let Some((repeat, used)) = crate::task::parse_repeat(rest) {
+                let mut i = used;
+                if matches!(rest.get(i), Some(&("at" | "alle" | "@"))) {
+                    i += 1;
+                }
+                let (at_secs, took) = match rest.get(i).and_then(|w| clock_secs(w, true)) {
+                    Some(a) => (a, 1),
+                    None => (9 * 3600, 0),
+                };
+                let orig: Vec<&str> = line.split_whitespace().collect();
+                let text = orig[(words.len() - rest.len() + i + took).min(orig.len())..].join(" ");
+                return Some(Cmd::RemindEvery { repeat, at_secs, text: if text.is_empty() { "Reminder".into() } else { text } });
             }
             // "at 9", "alle 21", "at 9pm": the number is a time of day, not minutes
             let at_clock = matches!(rest.first(), Some(&("at" | "alle" | "@"))).then(|| clock_delay(rest.get(1)?, local_secs, true)).flatten();
@@ -261,8 +374,85 @@ pub fn parse_ctx(line: &str, ctx: &Ctx) -> Option<Cmd> {
     eval(expr).map(|v| Cmd::Value(format_number(v)))
 }
 
+/// `event fri 15-16:30 office hours`, `evento domani 10 dentista`, `event 3 feb 14:00 for 2h exam prep`: [day] time[-time]
+/// [for length] title. A time is needed; the length is one hour when neither an end nor `for` is given.
+fn parse_event(line: &str, words: &[&str], today: crate::quick::Ymd) -> Option<Cmd> {
+    let orig: Vec<&str> = line.split_whitespace().collect();
+    let t0 = crate::calendar::days_from_civil(today.0, today.1, today.2);
+    let (mut i, mut day) = (1, t0);
+    if let Some((d, used)) = crate::task::parse_day(&words[1..], today) {
+        day = d;
+        i += used;
+    }
+    // the whole day: one entry without hours (start 0, length of a day)
+    let whole = match (words.get(i).copied(), words.get(i + 1).copied(), words.get(i + 2).copied()) {
+        (Some("all"), Some("day"), _) => Some(2),
+        (Some("all-day" | "allday" | "giornata"), _, _) => Some(1),
+        (Some("tutto"), Some("il"), Some("giorno")) => Some(3),
+        _ => None,
+    };
+    if let Some(n) = whole {
+        let title = orig[(i + n).min(orig.len())..].join(" ");
+        return (!title.is_empty()).then_some(Cmd::Event { day, start_min: 0, dur_min: 1440, title });
+    }
+    if matches!(words.get(i), Some(&("at" | "alle" | "@" | "dalle" | "from"))) {
+        i += 1;
+    }
+    let range = words.get(i)?;
+    let (a, b) = match range.split_once('-') {
+        Some((a, b)) => (a, Some(b)),
+        None => (*range, None),
+    };
+    let start = clock_secs(a, true)?;
+    let mut dur = match b {
+        Some(b) => {
+            let end = clock_secs(b, true)?;
+            // 10-11 is an hour; an end at or before the start makes no event
+            (end > start).then_some((end - start) / 60)?
+        }
+        None => 60,
+    };
+    i += 1;
+    if matches!(words.get(i), Some(&("for" | "per" | "durata"))) {
+        if let Some(m) = words.get(i + 1).and_then(|w| crate::task::parse_minutes(w)) {
+            dur = m as i64;
+            i += 2;
+        }
+    }
+    let title = orig[i.min(orig.len())..].join(" ");
+    (!title.is_empty()).then_some(Cmd::Event { day, start_min: (start / 60) as u32, dur_min: dur as u32, title })
+}
+
+/// `move <words> to <day> [at] [15[-16:30]]`: the day, the hour, or both.
+fn parse_move(line: &str, words: &[&str], today: crate::quick::Ymd) -> Option<Cmd> {
+    let orig: Vec<&str> = line.split_whitespace().collect();
+    let sep = (2..words.len()).rev().find(|&i| matches!(words[i], "to" | "a" | "al" | "su" | "->" | "→" | "alle" | "at"))?;
+    let query = orig[1..sep].join(" ");
+    let rest = &words[sep + 1..];
+    let (day, used) = match crate::task::parse_day(rest, today) {
+        Some((d, n)) => (Some(d), n),
+        None => (None, 0),
+    };
+    let mut i = used;
+    if matches!(rest.get(i), Some(&("at" | "alle" | "@" | "dalle"))) {
+        i += 1;
+    }
+    let mut times = (None, None);
+    if let Some(range) = rest.get(i) {
+        let (a, b) = range.split_once('-').map_or((*range, None), |(a, b)| (a, Some(b)));
+        let start = clock_secs(a, true)?;
+        let dur = match b {
+            Some(b) => Some(((clock_secs(b, true)? - start) / 60).try_into().ok().filter(|m: &u32| *m > 0)?),
+            None => None,
+        };
+        times = (Some((start / 60) as u32), dur);
+        i += 1;
+    }
+    (!query.is_empty() && i == rest.len() && (day.is_some() || times.0.is_some())).then_some(Cmd::Move { query, day, start_min: times.0, dur_min: times.1 })
+}
+
 /// 0 Monday .. 6 Sunday, from the English or Italian name (full or three letters).
-fn weekday_of(w: &str) -> Option<u8> {
+pub(crate) fn weekday_of(w: &str) -> Option<u8> {
     const DAYS: [&[&str]; 7] = [
         &["monday", "mon", "lunedi", "lunedì", "lun"],
         &["tuesday", "tue", "martedi", "martedì", "mar"],
@@ -801,14 +991,16 @@ mod tests {
         let ctx = Ctx { local_secs: NOON, weekday: Some(4), today: Some((2027, 1, 15)), rates: &[] };
         let d = |l: &str| parse_ctx(l, &ctx);
         let feb3 = crate::calendar::days_from_civil(2027, 2, 3);
-        assert_eq!(d("deadline 3 feb Reti exam"), Some(Cmd::Deadline { day: feb3, text: "Reti exam".into() }));
-        assert_eq!(d("esame 2027-02-03 Algoritmi e Strutture"), Some(Cmd::Deadline { day: feb3, text: "Algoritmi e Strutture".into() }));
-        assert_eq!(d("scadenza 3/2 consegna progetto"), Some(Cmd::Deadline { day: feb3, text: "consegna progetto".into() }));
-        assert_eq!(d("exam 3 feb"), Some(Cmd::Deadline { day: feb3, text: "Exam".into() }));
+        assert_eq!(d("deadline 3 feb Reti exam"), Some(Cmd::Deadline { day: feb3, text: "Reti exam".into(), course: String::new(), est_min: 0 }));
+        assert_eq!(d("esame 2027-02-03 Algoritmi e Strutture"), Some(Cmd::Deadline { day: feb3, text: "Algoritmi e Strutture".into(), course: String::new(), est_min: 0 }));
+        assert_eq!(d("scadenza 3/2 consegna progetto"), Some(Cmd::Deadline { day: feb3, text: "consegna progetto".into(), course: String::new(), est_min: 0 }));
+        assert_eq!(d("exam 3 feb"), Some(Cmd::Deadline { day: feb3, text: "Exam".into(), course: String::new(), est_min: 0 }));
         assert_eq!(d("deadline 3 feb"), None, "a deadline needs a name");
         assert_eq!(d("deadline banana x"), None);
         assert_eq!(parse("deadline 3 feb x", NOON), None, "no date known: no deadline");
-        assert_eq!(preview(&Cmd::Deadline { day: feb3, text: "x".into() }), "Deadline · Wed 3 Feb 2027 · x");
+        assert_eq!(preview(&Cmd::Deadline { day: feb3, text: "x".into(), course: String::new(), est_min: 0 }), "Deadline · Wed 3 Feb 2027 · x");
+        assert_eq!(d("esame 3 feb Algoritmi #algoritmi ~20h"), Some(Cmd::Deadline { day: feb3, text: "Algoritmi".into(), course: "algoritmi".into(), est_min: 1200 }), "the course and the work to do ride along");
+        assert_eq!(preview(&d("esame 3 feb Algoritmi ~20h").unwrap()), "Deadline · Wed 3 Feb 2027 · Algoritmi · 20h to prepare");
     }
 
     #[test]
@@ -822,16 +1014,96 @@ mod tests {
         assert_eq!(preview(&Cmd::Pin("x".into())), "Pin to Today · x");
     }
 
+    fn todo(text: &str) -> crate::task::Spec {
+        crate::task::Spec { text: text.into(), ..Default::default() }
+    }
+
     #[test]
     fn a_todo_keeps_its_capitals() {
-        assert_eq!(p("todo Buy milk"), Some(Cmd::Todo("Buy milk".into())));
-        assert_eq!(p("compito  chiamare   Anna"), Some(Cmd::Todo("chiamare Anna".into())));
+        assert_eq!(p("todo Buy milk"), Some(Cmd::Todo(todo("Buy milk"))));
+        assert_eq!(p("compito  chiamare   Anna"), Some(Cmd::Todo(todo("chiamare Anna"))));
         assert_eq!(p("todo"), None);
-        assert_eq!(p("todo daily Bring the charger"), Some(Cmd::TodoDaily("Bring the charger".into())));
-        assert_eq!(p("todo ogni giorno portare il caricatore"), Some(Cmd::TodoDaily("portare il caricatore".into())));
-        assert_eq!(p("todo every day lunch"), Some(Cmd::TodoDaily("lunch".into())));
-        assert_eq!(p("todo daily"), None);
-        assert_eq!(preview(&Cmd::Todo("x".into())), "Add to your list · x");
+        assert_eq!(p("todo daily"), None, "only a repetition is no task");
+        assert_eq!(preview(&Cmd::Todo(todo("x"))), "Add to your list · x");
+    }
+
+    #[test]
+    fn a_todo_carries_its_day_course_estimate_and_repetition() {
+        use crate::task::Repeat;
+        // Sunday 22 November 2026
+        let ctx = Ctx { local_secs: NOON, weekday: Some(6), today: Some((2026, 11, 22)), rates: &[] };
+        let t = |l: &str| match parse_ctx(l, &ctx) {
+            Some(Cmd::Todo(s)) => s,
+            other => panic!("{l}: {other:?}"),
+        };
+        let fri = crate::calendar::days_from_civil(2026, 11, 27);
+        let s = t("todo Report due fri #algoritmi ~2h");
+        assert_eq!((s.text.as_str(), s.due, s.course.as_str(), s.est_min), ("Report", Some(fri), "algoritmi", 120));
+        let daily = t("todo daily Bring the charger");
+        assert_eq!((daily.repeat, daily.text.as_str()), (Repeat::Daily, "Bring the charger"), "the old daily form still works");
+        assert_eq!(t("todo ogni giorno portare il caricatore").repeat, Repeat::Daily);
+        assert_eq!(t("todo every day lunch").text, "lunch");
+        assert_eq!(t("todo gym every mon and thu").repeat, Repeat::Weekly(0b0001001));
+        assert_eq!(preview(&parse_ctx("todo Report due fri ~2h", &ctx).unwrap()), "Add to your list · Report · Fri 27 Nov 2026 · 2h");
+    }
+
+    #[test]
+    fn a_reminder_can_come_back() {
+        use crate::task::Repeat;
+        let r = |l: &str| p(l);
+        assert_eq!(r("remind every monday 9 gym"), Some(Cmd::RemindEvery { repeat: Repeat::Weekly(1), at_secs: 9 * 3600, text: "gym".into() }));
+        assert_eq!(r("ricordami ogni giorno alle 8:30 prendere le vitamine"), Some(Cmd::RemindEvery { repeat: Repeat::Daily, at_secs: 8 * 3600 + 1800, text: "prendere le vitamine".into() }));
+        assert_eq!(r("remind every month on the 27th pay rent"), Some(Cmd::RemindEvery { repeat: Repeat::Monthly(27), at_secs: 9 * 3600, text: "pay rent".into() }), "nine o'clock when no time is given");
+        assert_eq!(r("remind every tue and thu at 18 lab"), Some(Cmd::RemindEvery { repeat: Repeat::Weekly(0b0001010), at_secs: 18 * 3600, text: "lab".into() }));
+        assert!(matches!(r("remind 20m call mom"), Some(Cmd::Remind { .. })), "one-off reminders are unchanged");
+        assert_eq!(r("remind 10m before lab"), Some(Cmd::RemindBefore { secs: 600, query: "lab".into() }));
+        assert_eq!(r("ricordami 30 minuti prima della lezione di reti"), Some(Cmd::RemindBefore { secs: 1800, query: "lezione di reti".into() }));
+        assert_eq!(r("remind 10m before"), None, "an event is needed");
+        assert_eq!(preview(&r("remind every monday 9 gym").unwrap()), "Remind every Mon at 09:00 · gym");
+    }
+
+    #[test]
+    fn an_event_has_a_day_a_time_and_a_length() {
+        // Sunday 22 November 2026
+        let ctx = Ctx { local_secs: NOON, weekday: Some(6), today: Some((2026, 11, 22)), rates: &[] };
+        let e = |l: &str| parse_ctx(l, &ctx);
+        let day = |d: i64| crate::calendar::days_from_civil(2026, 11, d);
+        assert_eq!(e("event fri 15-16:30 Office hours"), Some(Cmd::Event { day: day(27), start_min: 900, dur_min: 90, title: "Office hours".into() }));
+        assert_eq!(e("evento domani 10 dentista"), Some(Cmd::Event { day: day(23), start_min: 600, dur_min: 60, title: "dentista".into() }), "an hour when no end is given");
+        assert_eq!(e("event 3 feb 14:00 for 2h exam prep"), Some(Cmd::Event { day: crate::calendar::days_from_civil(2027, 2, 3), start_min: 840, dur_min: 120, title: "exam prep".into() }));
+        assert_eq!(e("event fri all day conference"), Some(Cmd::Event { day: day(27), start_min: 0, dur_min: 1440, title: "conference".into() }));
+        assert_eq!(e("evento domani tutto il giorno gita"), Some(Cmd::Event { day: day(23), start_min: 0, dur_min: 1440, title: "gita".into() }));
+        let m = |l: &str| parse_ctx(l, &ctx);
+        assert_eq!(m("move report to fri"), Some(Cmd::Move { query: "report".into(), day: Some(day(27)), start_min: None, dur_min: None }));
+        assert_eq!(m("sposta office hours a domani 10-11:30"), Some(Cmd::Move { query: "office hours".into(), day: Some(day(23)), start_min: Some(600), dur_min: Some(90) }));
+        assert_eq!(m("move standup to 10"), Some(Cmd::Move { query: "standup".into(), day: None, start_min: Some(600), dur_min: None }));
+        assert_eq!(m("move report"), None);
+        assert_eq!(m("cancel dentist"), Some(Cmd::CancelEvent("dentist".into())));
+        assert_eq!(m("rm buy milk"), Some(Cmd::DropTask("buy milk".into())));
+        let ed = m("edit report -> due mon ~3h").unwrap();
+        assert!(matches!(ed, Cmd::EditTask { ref query, ref spec } if query == "report" && spec.est_min == 180 && spec.due.is_some()));
+        assert_eq!(m("edit report -> "), None);
+        assert_eq!(e("event 9:30 standup"), Some(Cmd::Event { day: day(22), start_min: 570, dur_min: 60, title: "standup".into() }), "today when no day is given");
+        assert_eq!(e("event fri 15 "), None, "a title is needed");
+        assert_eq!(e("event fri 16-15 backwards"), None, "an end before the start is no event");
+        assert_eq!(e("event fri lunch"), None, "a time is needed");
+        assert_eq!(parse("event fri 15 x", NOON), None, "no date known: no event");
+        assert_eq!(preview(&e("event fri 15-16:30 Office hours").unwrap()), "Event · Fri 27 Nov 2026 15:00 · 1h30 · Office hours");
+    }
+
+    #[test]
+    fn notes_searches_and_study_time() {
+        assert_eq!(p("note ask about the exam format"), Some(Cmd::Note("ask about the exam format".into())));
+        assert_eq!(p("nota Chiedere del Progetto"), Some(Cmd::Note("Chiedere del Progetto".into())));
+        assert_eq!(p("note"), None);
+        assert_eq!(p("find compilers"), Some(Cmd::Find("compilers".into())));
+        assert_eq!(p("cerca reti di calcolatori"), Some(Cmd::Find("reti di calcolatori".into())));
+        assert_eq!(p("log 90m algoritmi"), Some(Cmd::Study { minutes: 90, course: "algoritmi".into() }));
+        assert_eq!(p("studiato 1h30"), Some(Cmd::Study { minutes: 90, course: String::new() }));
+        assert_eq!(p("log banana"), None);
+        assert_eq!(p("pomodoro"), Some(Cmd::Pomodoro));
+        assert_eq!(p("pomodoro Algoritmi"), Some(Cmd::PomodoroFor("Algoritmi".into())));
+        assert_eq!(preview(&p("log 90m algoritmi").unwrap()), "Studied 1h30 · algoritmi");
     }
 
     #[test]
@@ -946,5 +1218,17 @@ mod tests {
         assert_eq!(p("leggi testo"), Some(Cmd::Ocr));
         assert_eq!(p("ocr something"), None);
         assert!(preview(&Cmd::Ocr).contains("clipboard"));
+    }
+
+    #[test]
+    fn bring_names_a_thing_and_maybe_a_course() {
+        assert_eq!(p("bring laptop and charger for Reti di calcolatori"), Some(Cmd::Bring { text: "laptop and charger".into(), course: "Reti di calcolatori".into() }));
+        assert_eq!(p("porta il libro per analisi"), Some(Cmd::Bring { text: "il libro".into(), course: "analisi".into() }));
+        assert_eq!(p("bring umbrella"), Some(Cmd::Bring { text: "umbrella".into(), course: String::new() }));
+        assert_eq!(p("bring for reti"), Some(Cmd::Bring { text: "for reti".into(), course: String::new() }), "nothing before for: all of it is the thing");
+        assert_eq!(p("bring"), None);
+        assert_eq!(p("unbring"), Some(Cmd::Unbring(String::new())));
+        assert_eq!(p("unbring all"), Some(Cmd::Unbring("all".into())));
+        assert_eq!(preview(&Cmd::Bring { text: "x".into(), course: "reti".into() }), "Bring · x · for reti");
     }
 }

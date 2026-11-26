@@ -21,6 +21,8 @@ static SEEN: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 /// Calls already announced (state and number), so a ringing call is one card.
 static RANG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static CALLS_ON: AtomicBool = AtomicBool::new(false);
+/// The battery warning was given and the charge has not come back up since.
+static LOW_TOLD: AtomicBool = AtomicBool::new(false);
 static CARD: AtomicU32 = AtomicU32::new(3_100_000);
 
 /// Where `tether` is, if it is installed.
@@ -123,10 +125,19 @@ fn refresh(rep: &Reporter, quiet: bool) {
     announce_messages(rep, &threads, quiet);
     let calls = if link.calls { run(&["--bt-calls"]).map(|t| phone::parse_calls(&t)).unwrap_or_default() } else { vec![] };
     announce_calls(rep, &calls);
+    // the phone's battery: one card at 20%, again only after it has been above 30% (the island's battery alerts switch applies)
+    if let Some(b) = link.battery {
+        if b > 30 {
+            LOW_TOLD.store(false, Ordering::Relaxed);
+        } else if b <= 20 && crate::config::load().ui.battery_alerts && !LOW_TOLD.swap(true, Ordering::Relaxed) {
+            card(rep, format!("iPhone battery low · {b}%"), "Plug it in soon".into(), 8);
+        }
+    }
+    let audio_here = run(&["--bt-phone-audio"]).and_then(|t| phone::parse_audio(&t));
     let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
     rep.patch(move |d| {
         let (messages, contacts) = d.phone.as_ref().map_or((None, None), |p| (p.messages.clone(), p.contacts.clone()));
-        d.phone = Some(Phone { link, threads, messages, calls, contacts, at_ms });
+        d.phone = Some(Phone { link, threads, messages, calls, contacts, audio_here, at_ms });
     });
 }
 
@@ -189,6 +200,15 @@ pub fn command(rep: &Reporter, c: &Command) {
                         p.contacts = Some(found);
                     }
                 });
+            });
+        }
+        Command::PhoneAudio(here) => {
+            std::thread::spawn(move || {
+                if run(&["--bt-phone-audio", if here { "here" } else { "phone" }]).is_none() {
+                    card(&rep, "Could not change where the audio plays".into(), "tether refused or could not be reached".into(), 5);
+                }
+                std::thread::sleep(Duration::from_millis(600));
+                refresh(&rep, true);
             });
         }
         Command::PhoneCall(call) => {

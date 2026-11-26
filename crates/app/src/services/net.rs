@@ -62,7 +62,9 @@ pub fn start(rep: Reporter) {
             });
         }
         loop {
-            let s = crate::config::load();
+            let mut s = crate::config::load();
+            // events made with `event` and kept here (no account to hold them) are a calendar like any other
+            s.calendars.extend(super::organizer::local_calendar());
             let mut retry = false;
             if s.calendars.is_empty() {
                 cache.clear();
@@ -305,13 +307,77 @@ fn dav(method: &str, url: &str, auth: &str, depth: &str, body: &str) -> Result<S
     }
 }
 
-fn caldav_password(password: &str, cmd: &str) -> Result<String, String> {
+pub(super) fn caldav_password(password: &str, cmd: &str) -> Result<String, String> {
     if cmd.trim().is_empty() {
         return if password.is_empty() { Err("no password set".into()) } else { Ok(password.to_string()) };
     }
     let out = std::process::Command::new("sh").arg("-c").arg(cmd).stderr(std::process::Stdio::null()).output().map_err(|e| e.to_string())?;
     let pw = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if out.status.success() && !pw.is_empty() { Ok(pw) } else { Err("password_cmd printed nothing".into()) }
+}
+
+/// A signed-in CalDAV account: what is needed to ask it for more.
+pub(super) struct DavAccount {
+    pub auth: String,
+    pub home_url: String,
+}
+
+/// Signs in and finds the calendar home of an account.
+pub(super) fn discover(src: &crate::config::CalendarSource) -> Result<DavAccount, String> {
+    use super::caldav as cd;
+    let CalendarKind::CalDav { server, user, password, password_cmd } = &src.kind else { return Err("not a CalDAV account".into()) };
+    let auth = cd::basic_auth(user, &caldav_password(password, password_cmd)?);
+    let principal = cd::parse_principal(&dav("PROPFIND", server, &auth, "0", cd::PRINCIPAL_BODY)?).ok_or("no account found on the server")?;
+    let principal_url = cd::resolve(server, &principal);
+    let home = cd::parse_home(&dav("PROPFIND", &principal_url, &auth, "0", cd::HOME_BODY)?).ok_or("no calendars found on the server")?;
+    Ok(DavAccount { auth, home_url: cd::resolve(&principal_url, &home) })
+}
+
+/// The calendars of an account that hold `comp` entries (`VEVENT` or `VTODO`).
+pub(super) fn dav_calendars(acct: &DavAccount, comp: &str) -> Result<Vec<super::caldav::Found>, String> {
+    use super::caldav as cd;
+    Ok(cd::parse_calendars_for(&dav("PROPFIND", &acct.home_url, &acct.auth, "1", cd::LIST_BODY)?, comp))
+}
+
+/// A REPORT on a calendar (its absolute address).
+pub(super) fn dav_report(url: &str, auth: &str, body: &str) -> Result<String, String> {
+    dav("REPORT", url, auth, "1", body)
+}
+
+/// Writes one iCalendar document at an address (a new entry, or the same one again).
+pub(super) fn dav_put(url: &str, auth: &str, ics: &str) -> Result<(), String> {
+    init_tls();
+    let resp = attohttpc::RequestBuilder::try_new(attohttpc::Method::PUT, url)
+        .map_err(|e| short(&e.to_string()))?
+        .header("Authorization", auth)
+        .header("Content-Type", "text/calendar; charset=utf-8")
+        .header("User-Agent", "open-island")
+        .timeout(Duration::from_secs(20))
+        .bytes(ics.as_bytes().to_vec())
+        .send()
+        .map_err(|e| short(&e.to_string()))?;
+    match resp.status().as_u16() {
+        200..=299 => Ok(()),
+        401 | 403 => Err("sign-in failed, or the calendar is read-only".into()),
+        c => Err(format!("the server answered {c}")),
+    }
+}
+
+/// Deletes the resource at an address; one that is already gone counts as deleted.
+pub(super) fn dav_delete(url: &str, auth: &str) -> Result<(), String> {
+    init_tls();
+    let resp = attohttpc::RequestBuilder::try_new(attohttpc::Method::DELETE, url)
+        .map_err(|e| short(&e.to_string()))?
+        .header("Authorization", auth)
+        .header("User-Agent", "open-island")
+        .timeout(Duration::from_secs(20))
+        .send()
+        .map_err(|e| short(&e.to_string()))?;
+    match resp.status().as_u16() {
+        200..=299 | 404 | 410 => Ok(()),
+        401 | 403 => Err("sign-in failed, or the calendar is read-only".into()),
+        c => Err(format!("the server answered {c}")),
+    }
 }
 
 fn fetch_caldav(src: &crate::config::CalendarSource, from: i64, to: i64, default_color: (u8, u8, u8)) -> Result<Vec<Event>, String> {

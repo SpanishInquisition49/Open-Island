@@ -66,6 +66,12 @@ pub fn parse_color(s: &str) -> Option<(u8, u8, u8)> {
 
 /// The event calendars of a home-set listing (not the inbox, outbox, reminders lists or address books).
 pub fn parse_calendars(xml: &str) -> Vec<Found> {
+    parse_calendars_for(xml, "VEVENT")
+}
+
+/// The calendars of a listing that hold `comp` entries (`VEVENT` for events, `VTODO` for to-dos); one that does not say
+/// what it holds is taken for both.
+pub fn parse_calendars_for(xml: &str, comp: &str) -> Vec<Found> {
     let Ok(doc) = Document::parse(xml) else { return vec![] };
     let mut out = vec![];
     for resp in doc.descendants().filter(|n| named(*n, DAV, "response")) {
@@ -77,7 +83,7 @@ pub fn parse_calendars(xml: &str) -> Vec<Found> {
         // a calendar that holds only reminders lists VTODO and no VEVENT
         if let Some(set) = first(resp, CALDAV, "supported-calendar-component-set") {
             let comps: Vec<_> = set.descendants().filter(|n| named(*n, CALDAV, "comp")).collect();
-            if !comps.is_empty() && !comps.iter().any(|c| c.attribute("name") == Some("VEVENT")) {
+            if !comps.is_empty() && !comps.iter().any(|c| c.attribute("name") == Some(comp)) {
                 continue;
             }
         }
@@ -86,6 +92,35 @@ pub fn parse_calendars(xml: &str) -> Vec<Found> {
         out.push(Found { href, name, color });
     }
     out
+}
+
+/// The REPORT body asking for every to-do of a calendar.
+pub fn todo_query_body() -> String {
+    r#"<?xml version="1.0" encoding="utf-8"?><c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data/></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VTODO"/></c:comp-filter></c:filter></c:calendar-query>"#.to_string()
+}
+
+/// The to-dos of a calendar-query answer: (the `href` of the entry, its iCalendar document).
+pub fn parse_todo_report(xml: &str) -> Vec<(String, String)> {
+    let Ok(doc) = Document::parse(xml) else { return vec![] };
+    doc.descendants()
+        .filter(|n| named(*n, DAV, "response"))
+        .filter_map(|resp| {
+            let data = first(resp, CALDAV, "calendar-data").map(|n| n.text().unwrap_or("").to_string()).filter(|t| t.contains("BEGIN:VTODO"))?;
+            Some((first(resp, DAV, "href").map(text_of).unwrap_or_default(), data))
+        })
+        .collect()
+}
+
+/// (address, iCalendar document) of each event resource in a calendar-query answer.
+pub fn parse_event_report(xml: &str) -> Vec<(String, String)> {
+    let Ok(doc) = Document::parse(xml) else { return vec![] };
+    doc.descendants()
+        .filter(|n| named(*n, DAV, "response"))
+        .filter_map(|resp| {
+            let data = first(resp, CALDAV, "calendar-data").map(|n| n.text().unwrap_or("").to_string()).filter(|t| t.contains("BEGIN:VEVENT"))?;
+            Some((first(resp, DAV, "href").map(text_of).unwrap_or_default(), data))
+        })
+        .collect()
 }
 
 /// The iCalendar documents (one per event) inside a calendar-query answer.
@@ -135,6 +170,7 @@ END:VCALENDAR
       <d:response><d:href>/x/2.ics</d:href><d:propstat><d:prop><c:calendar-data>BEGIN:VCALENDAR
 BEGIN:VTODO
 UID:t
+SUMMARY:Do it
 END:VTODO
 END:VCALENDAR</c:calendar-data></d:prop></d:propstat></d:response></d:multistatus>"#;
 
@@ -154,6 +190,22 @@ END:VCALENDAR</c:calendar-data></d:prop></d:propstat></d:response></d:multistatu
         assert_eq!(l[1].name, "work", "the folder name stands in for a missing display name");
         assert_eq!(l[1].color, None);
         assert!(parse_calendars("garbage").is_empty());
+    }
+
+    #[test]
+    fn lists_the_calendars_that_hold_to_dos() {
+        let l = parse_calendars_for(LIST, "VTODO");
+        assert_eq!(l.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Personal", "Reminders", "work"], "a list that does not say what it holds counts too");
+        assert_eq!(parse_calendars(LIST).len(), 2, "events: unchanged");
+    }
+
+    #[test]
+    fn extracts_the_to_dos_of_a_report_with_where_they_live() {
+        let t = parse_todo_report(REPORT);
+        assert_eq!(t.len(), 1, "the event is not a to-do");
+        assert_eq!(t[0].0, "/x/2.ics");
+        assert_eq!(island_core::task::from_vtodo(&t[0].1)[0].0.uid, "t");
+        assert!(todo_query_body().contains(r#"comp-filter name="VTODO""#));
     }
 
     #[test]

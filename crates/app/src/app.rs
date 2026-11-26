@@ -107,8 +107,11 @@ impl App {
         island.restore_reminders(services::load_reminders());
         island.restore_todos(services::load_todos());
         island.restore_pins(services::load_pins());
+        island.restore_bring(services::load_bring());
+        island.restore_drain(services::load_drain());
         island.restore_page_usage(services::load_page_usage());
         island.restore_deadlines(services::load_deadlines());
+        island.restore_study_log(services::load_study_log());
         island.restore_bar_history(services::load_bar_history());
         if let Some(d) = services::load_recap_day("evening-recap") {
             island.restore_evening_day(d);
@@ -197,8 +200,11 @@ impl App {
         services::save_reminders_if_changed(self.island.reminders());
         services::save_todos_if_changed(self.island.todos());
         services::save_pins_if_changed(self.island.pins());
+        services::save_bring_if_changed(self.island.bring_list());
+        services::save_drain_if_changed(self.island.drain_saved());
         services::save_page_usage_if_changed(&self.island.page_usage());
         services::save_deadlines_if_changed(self.island.deadlines());
+        services::save_study_log_if_changed(self.island.study_log());
         services::save_bar_history_if_changed(self.island.bar_history());
         services::save_recap_day_if_changed("evening-recap", self.island.evening_day());
         services::save_recap_day_if_changed("morning-recap", self.island.morning_day());

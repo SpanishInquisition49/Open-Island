@@ -67,8 +67,12 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                 }
                 Command::PauseProcs { .. } | Command::ResumeProcs(_) | Command::QuitProcs(_) => super::culprit::command(&rep, &c),
                 Command::PinTrain(_) | Command::UnpinTrain | Command::SetHome(_) => super::trains::command(&rep, &c),
-                Command::PhoneOpen(_) | Command::PhoneSend { .. } | Command::PhoneSearch(_) | Command::PhoneCall(_) => super::phone::command(&rep, &c),
+                Command::PhoneOpen(_) | Command::PhoneSend { .. } | Command::PhoneSearch(_) | Command::PhoneCall(_) | Command::PhoneAudio(_) => super::phone::command(&rep, &c),
                 Command::Ocr => super::ocr::start(rep.clone()),
+                Command::FindMaterials(_) | Command::OpenFile(_) => super::materials::command(&rep, &c),
+                Command::SaveNote(_) | Command::Find(_) | Command::CreateEvent { .. } | Command::PushTask { .. } | Command::SyncTasks | Command::DeleteTask { .. } | Command::MoveEvent { .. } | Command::CancelEvent { .. } => {
+                    super::organizer::command(&rep, &c);
+                }
                 Command::ScanPeers => super::send::scan(rep.clone()),
                 Command::SendFiles { peer, paths } => super::send::send(rep.clone(), peer, paths),
                 Command::SetSink(_) | Command::SetSource(_) | Command::SetStreamVolume { .. } | Command::ToggleStreamMute(_) => {

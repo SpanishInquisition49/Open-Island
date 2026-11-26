@@ -14,6 +14,8 @@ pub enum Face {
     Options,
     Audio,
     Today,
+    Plan,
+    Find,
     Send,
     Activity,
     Map,
@@ -58,6 +60,8 @@ impl Face {
             Options => (440.0, 300.0),
             Audio => (410.0, 300.0),
             Today => (410.0, 200.0),
+            Plan => (410.0, 300.0),
+            Find => (410.0, 240.0),
             Send => (410.0, 220.0),
             Activity => (410.0, 260.0),
             Map => (420.0, 290.0),
@@ -118,6 +122,10 @@ pub enum Page {
     Options,
     Audio,
     Today,
+    /// The week ahead, and the study to do.
+    Plan,
+    /// What a search found.
+    Find,
     Send,
     Activity,
     Map,
@@ -218,6 +226,8 @@ pub fn choose(s: &Snapshot) -> (Face, Option<Side>) {
             Some(Page::Options) => Some(Options),
             Some(Page::Audio) => Some(Audio),
             Some(Page::Today) => Some(Today),
+            Some(Page::Plan) => Some(Plan),
+            Some(Page::Find) => Some(Find),
             Some(Page::Send) => Some(Send),
             Some(Page::Activity) => Some(Activity),
             Some(Page::Map) => Some(Map),
@@ -318,6 +328,8 @@ impl Page {
             Page::Options => "options",
             Page::Audio => "sound",
             Page::Today => "today",
+            Page::Plan => "plan",
+            Page::Find => "find",
             Page::Send => "send",
             Page::Activity => "activity",
             Page::Map => "map",
@@ -345,6 +357,8 @@ impl Page {
             Page::Options => "Options",
             Page::Audio => "Sound",
             Page::Today => "Today",
+            Page::Plan => "Plan",
+            Page::Find => "Find",
             Page::Send => "Send",
             Page::Activity => "Activity",
             Page::Map => "Map",
@@ -361,7 +375,7 @@ impl Page {
     /// Which group of the grid the page belongs to.
     pub fn group(self) -> &'static str {
         match self {
-            Page::Today | Page::Cal | Page::Weather | Page::Map => "Day",
+            Page::Today | Page::Plan | Page::Find | Page::Cal | Page::Weather | Page::Map => "Day",
             Page::Qs | Page::Sys | Page::Activity | Page::Audio | Page::Send => "Device",
             Page::Notifs | Page::Phone | Page::Clip => "Messages",
             Page::Media | Page::Timer | Page::Focus | Page::Meeting | Page::Op => "Now",
@@ -374,8 +388,8 @@ impl Page {
 pub const GROUPS: [&str; 5] = ["Day", "Now", "Messages", "Device", "Island"];
 
 /// Every page, in one list.
-pub const ALL_PAGES: [Page; 21] = [
-    Page::Home, Page::Today, Page::Cal, Page::Weather, Page::Map, Page::Media, Page::Timer, Page::Focus, Page::Meeting, Page::Op, Page::Notifs, Page::Phone, Page::Clip, Page::Qs, Page::Sys,
+pub const ALL_PAGES: [Page; 23] = [
+    Page::Home, Page::Today, Page::Plan, Page::Find, Page::Cal, Page::Weather, Page::Map, Page::Media, Page::Timer, Page::Focus, Page::Meeting, Page::Op, Page::Notifs, Page::Phone, Page::Clip, Page::Qs, Page::Sys,
     Page::Activity, Page::Audio, Page::Send, Page::Options, Page::Settings, Page::Grid,
 ];
 
@@ -387,6 +401,8 @@ pub fn page_by_name(name: &str) -> Option<Page> {
     }
     let alias = match n.as_str() {
         "oggi" | "day" => Some(Page::Today),
+        "settimana" | "week" | "pianifica" | "studio" | "study" => Some(Page::Plan),
+        "cerca" | "search" | "trova" => Some(Page::Find),
         "calendario" | "cal" => Some(Page::Cal),
         "meteo" => Some(Page::Weather),
         "mappa" | "where" | "position" => Some(Page::Map),

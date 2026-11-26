@@ -569,7 +569,7 @@ fn nothing_held_means_no_recap_and_a_reminder_gets_through_a_meeting() {
     run(&mut i, 1000);
     assert!(i.notif.is_none(), "quiet but nothing came: no card");
     i.push(i.now, Input::SetDnd(true));
-    i.restore_reminders(vec![Reminder { due_ms: i.now + 2000, text: "Call".into() }]);
+    i.restore_reminders(vec![Reminder { due_ms: i.now + 2000, text: "Call".into(), ..Default::default() }]);
     run(&mut i, 3000);
     assert_eq!(i.notif.as_ref().map(|n| n.summary.as_str()), Some("Call"), "a reminder is not held back");
 }
@@ -1663,7 +1663,7 @@ fn the_today_page_lists_events_and_reminders_with_a_now_line() {
     let now = at(10);
     let ev = |title: &str, s: i64, e: i64| Event { id: title.into(), title: title.into(), start_ms: at(s), end_ms: at(e), all_day: false, url: None, color: None, calendar: "c".into(), location: String::new() };
     i.data.events = vec![ev("early", 1, 2), ev("later", 16, 17)];
-    i.reminders = vec![Reminder { due_ms: at(14), text: "call".into() }];
+    i.reminders = vec![Reminder { due_ms: at(14), text: "call".into(), ..Default::default() }];
     i.push(now, Input::OpenPage(Page::Today));
     i.now = now;
     let (items, now_at, _) = i.today_view();
@@ -2630,7 +2630,7 @@ fn a_deadline_counts_down_on_today_and_in_the_cards_and_goes_away_by_itself() {
     i.activate(Action::DeadlineDone(0));
     assert_eq!(i.deadlines().len(), 1);
     // two days after, an old one is dropped; the far one stays
-    i.restore_deadlines(vec![Deadline { day: i.day_number(T0) - 3, text: "old".into() }, Deadline { day: i.day_number(T0) - 1, text: "yesterday".into() }, Deadline { day: i.day_number(T0) + 40, text: "far".into() }]);
+    i.restore_deadlines(vec![Deadline { day: i.day_number(T0) - 3, text: "old".into(), ..Default::default() }, Deadline { day: i.day_number(T0) - 1, text: "yesterday".into(), ..Default::default() }, Deadline { day: i.day_number(T0) + 40, text: "far".into(), ..Default::default() }]);
     i.tick(T0 + 10, 8.0);
     assert_eq!(i.deadlines().iter().map(|d| d.text.as_str()).collect::<Vec<_>>(), ["yesterday", "far"]);
 }
@@ -3156,4 +3156,467 @@ fn a_screenshot_card_offers_the_text_in_the_picture() {
     let mut k = Island::new(Config::default());
     k.push(T0, Input::Notification(Incoming { id: 9, app: "Telegram".into(), summary: "Enrica".into(), ..Default::default() }));
     assert_eq!(k.notif.as_ref().map(|n| n.app.as_str()), Some("Telegram"));
+}
+
+#[test]
+fn the_phone_page_chooses_where_the_phones_audio_plays() {
+    use island_core::phone::Link;
+    let mut i = Island::new(Config::default());
+    i.data.phone = Some(Phone { link: Link { present: true, messages: true, calls: true, ..Default::default() }, audio_here: Some(false), ..Default::default() });
+    let without = { let mut j = Island::new(Config::default()); j.data.phone = Some(Phone { link: Link { present: true, messages: true, calls: true, ..Default::default() }, ..Default::default() }); j.phone_height() };
+    assert_eq!(i.phone_height(), without + 30.0, "a row for the choice");
+    i.push(T0, Input::OpenPage(Page::Phone));
+    draw_frames(&mut i, 200);
+    assert!(i.hits.iter().any(|h| h.action == Action::PhoneAudioDo(true)), "it offers to play it here");
+    assert_eq!(i.activate(Action::PhoneAudioDo(true)), vec![Command::PhoneAudio(true)]);
+}
+
+#[test]
+fn the_cards_say_what_to_bring_for_the_courses_of_the_day() {
+    let mut i = evening_island(); // tomorrow: events "Reti" and "Lab"
+    i.tick(T0 + 10 * 3_600_000, 8.0); // 18:00 of the day before
+    i.run_bar(island_core::bar::Cmd::Bring { text: "laptop".into(), course: "reti".into() });
+    i.run_bar(island_core::bar::Cmd::Bring { text: "charger".into(), course: "chimica".into() });
+    i.run_bar(island_core::bar::Cmd::Bring { text: "umbrella".into(), course: String::new() });
+    assert_eq!(i.bring_list().len(), 3);
+    let (_, body) = i.evening_card().expect("a card");
+    assert!(body.contains("Bring laptop, umbrella"), "{body}");
+    assert!(!body.contains("charger"), "no chemistry tomorrow: {body}");
+    // without events a thing for no course alone still makes a card
+    let mut j = Island::new(Config::default());
+    assert!(j.evening_card().is_none());
+    j.add_bring("umbrella", "");
+    assert_eq!(j.evening_card().map(|c| c.1), Some("Bring umbrella".to_string()));
+    j.remove_bring("all");
+    assert!(j.bring_list().is_empty());
+    // taking one off by a word of its course
+    i.run_bar(island_core::bar::Cmd::Unbring("chim".into()));
+    assert_eq!(i.bring_list().len(), 2);
+}
+
+fn on_battery(i: &mut Island, percent: f32) {
+    i.data.battery = Some(Battery { percent, charging: false, on_ac: false });
+}
+
+#[test]
+fn the_drain_is_learned_while_on_battery_and_forgotten_when_plugged_in() {
+    let mut i = Island::new(Config::default());
+    on_battery(&mut i, 80.0);
+    i.sample_battery(T0);
+    assert_eq!(i.drain_rate(), None, "one sample says nothing");
+    on_battery(&mut i, 76.0);
+    i.sample_battery(T0 + 20 * 60_000);
+    assert_eq!(i.drain_rate().map(|r| r.round()), Some(12.0), "4 points in 20 minutes");
+    // plugged in: the samples are dropped, what was learned stays
+    i.data.battery = Some(Battery { percent: 77.0, charging: true, on_ac: true });
+    i.sample_battery(T0 + 25 * 60_000);
+    assert!(i.battery_log.is_empty() && i.drain_live.is_none());
+    assert_eq!(i.drain_rate().map(|r| r.round()), Some(12.0));
+    i.restore_drain(Some(f64::NAN));
+    assert_eq!(i.drain_saved(), None, "a bad kept value is ignored");
+}
+
+#[test]
+fn the_day_says_whether_the_battery_will_do_and_the_card_comes_once() {
+    // T0 = Friday 08:00 UTC; lectures at 09:00 and 15:00 (an hour each), a 60 minute way home: back at 17:00
+    let mut i = Island::new(Config { commute_minutes: 60, battery_alerts: true, ..Config::default() });
+    let ev = |id: &str, h: i64| Event { id: id.into(), title: id.into(), start_ms: T0 + (1 + h) * 3_600_000, end_ms: T0 + (2 + h) * 3_600_000, ..Default::default() };
+    i.data.events = vec![ev("Reti", 0), ev("Lab", 6)];
+    i.restore_drain(Some(10.0));
+    on_battery(&mut i, 50.0);
+    i.tick(T0 + 3_600_000, 8.0); // 09:00, the first lecture has started
+    let d = i.power_today().expect("a plan");
+    // from 09:00 to 17:00 is 8 h at 10 %/h with 15 reserve: 95 %
+    assert!(d.plan.short && (d.plan.need_pct - 95.0).abs() < 1.0, "{:?}", d.plan);
+    let line = i.power_line(false, &i.today_left()).expect("a line for the morning card");
+    assert!(line.starts_with("Battery 50%: the day needs ~95%"), "{line}");
+    let card1 = i.notif.as_ref().map(|n| n.summary.clone());
+    assert_eq!(card1.as_deref(), Some("The battery will not last the day"));
+    i.notif = None;
+    i.tick(T0 + 3_600_000 + 5_000, 8.0);
+    assert!(i.notif.is_none(), "once a day");
+    // plenty of charge: no card, no line
+    let mut j = Island::new(Config { commute_minutes: 60, ..Config::default() });
+    j.data.events = i.data.events.clone();
+    j.restore_drain(Some(3.0));
+    on_battery(&mut j, 90.0);
+    j.tick(T0 + 3_600_000, 8.0);
+    assert!(j.power_line(false, &j.today_left()).is_none() && j.notif.is_none());
+    // nothing learned yet: nothing said
+    let mut k = Island::new(Config::default());
+    k.data.events = i.data.events.clone();
+    on_battery(&mut k, 10.0);
+    k.tick(T0 + 3_600_000, 8.0);
+    assert!(k.power_today().is_none());
+}
+
+#[test]
+fn the_files_of_the_next_lecture_are_asked_for_shown_on_today_and_opened() {
+    use island_core::materials::Material;
+    let mut i = Island::new(Config::default());
+    // 09:00 and 15:00 lectures, now 08:00
+    let ev = |id: &str, title: &str, h: i64| Event { id: id.into(), title: title.into(), start_ms: T0 + h * 3_600_000, end_ms: T0 + (h + 1) * 3_600_000, ..Default::default() };
+    i.data.events = vec![ev("a", "Reti di calcolatori", 1), ev("b", "Lab", 7)];
+    i.tick(T0, 8.0);
+    let cmds = i.take_commands();
+    assert!(cmds.contains(&Command::FindMaterials("Reti di calcolatori".into())), "{cmds:?}");
+    assert!(!cmds.iter().any(|c| matches!(c, Command::FindMaterials(t) if t == "Lab")), "a three-letter title has nothing to look for");
+    i.tick(T0 + 60_000, 8.0);
+    assert!(!i.take_commands().iter().any(|c| matches!(c, Command::FindMaterials(_))), "not again within ten minutes");
+    let plain = i.today_height();
+    i.data.materials.insert(island_core::materials::fold("Reti di calcolatori"), (T0, vec![Material { path: "/home/u/Reti/slides-03.pdf".into(), name: "slides-03.pdf".into(), modified_ms: T0 - 86_400_000 }]));
+    assert_eq!(i.today_height(), plain + 22.0 + 28.0, "a heading and a row");
+    i.push(T0, Input::OpenPage(Page::Today));
+    draw_frames(&mut i, 200);
+    assert!(i.hits.iter().any(|h| h.action == Action::OpenFile("/home/u/Reti/slides-03.pdf".into())));
+    assert_eq!(i.activate(Action::OpenFile("/home/u/Reti/slides-03.pdf".into())), vec![Command::OpenFile("/home/u/Reti/slides-03.pdf".into())]);
+    // a card line for the lecture
+    let line = i.files_line(&i.today_left()).unwrap();
+    assert_eq!(line, "Files for Reti: slides-03.pdf");
+    // ten minutes later it is looked up again
+    i.take_commands();
+    i.tick(T0 + 11 * 60_000, 8.0);
+    assert!(i.take_commands().contains(&Command::FindMaterials("Reti di calcolatori".into())));
+}
+
+// ---- the organizer
+
+fn run_bar(i: &mut Island, line: &str) {
+    type_in_bar(i, line);
+    i.push(i.now, Input::Key(KeyInput::Enter));
+    i.notif = None;
+}
+
+#[test]
+fn a_task_keeps_its_day_course_and_estimate_and_the_late_come_first() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    run_bar(&mut i, "todo someday maybe");
+    run_bar(&mut i, "todo Report due fri #algoritmi ~2h");
+    run_bar(&mut i, "todo Old thing due yesterday");
+    let open = i.open_todos();
+    assert_eq!(open.iter().map(|(_, t)| t.text.as_str()).collect::<Vec<_>>(), ["Old thing", "Report", "someday maybe"], "late first, then by day, then those without one");
+    let report = open[1].1;
+    assert_eq!((report.course.as_str(), report.est_min), ("algoritmi", 120));
+    assert_eq!(report.due, Some(i.today_day() + 7), "the next Friday after Friday is a week away");
+    assert!(!report.uid.is_empty());
+    assert!(i.take_commands().iter().any(|c| matches!(c, Command::PushTask { task, done: false } if task.text == "Report")), "the server that keeps tasks is told");
+}
+
+#[test]
+fn ticking_a_weekly_task_rests_it_until_its_day() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0); // a Friday
+    run_bar(&mut i, "todo gym every mon and thu");
+    assert_eq!(i.open_todos().len(), 0, "the next one is Monday, so it is not for today");
+    i.push(T0 + 3 * 86_400_000, Input::OpenBar);
+    i.tick(T0 + 3 * 86_400_000, 8.0); // Monday
+    assert_eq!(i.open_todos().len(), 1);
+    i.take_commands();
+    i.activate(Action::TodoDone(0));
+    assert_eq!(i.todos().len(), 1, "it stays");
+    assert_eq!(i.todos()[0].due, Some(i.today_day() + 3), "the next day is Thursday");
+    assert_eq!(i.open_todos().len(), 0);
+    assert!(i.take_commands().iter().any(|c| matches!(c, Command::PushTask { done: false, .. })), "moved, not finished");
+}
+
+#[test]
+fn finishing_a_task_tells_the_server_and_it_does_not_come_back_from_a_late_answer() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    run_bar(&mut i, "todo Pay the fee");
+    let uid = i.todos()[0].uid.clone();
+    i.take_commands();
+    i.activate(Action::TodoDone(0));
+    assert!(i.take_commands().iter().any(|c| matches!(c, Command::PushTask { done: true, .. })));
+    // the server still shows it open (our update had not arrived when it answered)
+    let stale = Todo { uid: uid.clone(), text: "Pay the fee".into(), synced: true, ..Default::default() };
+    i.push(i.now, Input::TasksRemote(vec![(stale, false)]));
+    assert!(i.todos().is_empty(), "it stays finished");
+}
+
+#[test]
+fn the_server_brings_tasks_in_updates_them_and_takes_finished_ones_out() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    let t = |uid: &str, text: &str| Todo { uid: uid.into(), text: text.into(), synced: true, ..Default::default() };
+    i.push(i.now, Input::TasksRemote(vec![(t("a", "From the phone"), false), (t("b", "Other"), false)]));
+    assert_eq!(i.todos().len(), 2);
+    run_bar(&mut i, "todo Only here");
+    i.push(i.now, Input::TasksRemote(vec![(Todo { due: Some(5), ..t("a", "Renamed on the phone") }, false), (t("b", "Other"), true)]));
+    let texts: Vec<&str> = i.todos().iter().map(|t| t.text.as_str()).collect();
+    assert_eq!(texts, ["Renamed on the phone", "Only here"], "b was finished there; the one made here and not yet sent is kept");
+    assert_eq!(i.todos()[0].due, Some(5));
+    i.take_commands();
+    i.push(i.now, Input::TasksRemote(vec![]));
+    assert_eq!(i.todos().iter().map(|t| t.text.as_str()).collect::<Vec<_>>(), ["Only here"], "one the server no longer has was deleted there");
+    assert!(i.take_commands().iter().any(|c| matches!(c, Command::PushTask { task, done: false } if task.text == "Only here")), "and the one it has never seen is sent");
+}
+
+#[test]
+fn a_reminder_that_repeats_is_set_again_when_it_rings() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0); // Friday 15 January 2027, 08:00
+    run_bar(&mut i, "remind every monday 9 gym");
+    assert_eq!(i.reminders().len(), 1);
+    let first = i.reminders()[0].due_ms;
+    assert_eq!(first, T0 + 3 * 86_400_000 + 3_600_000, "Monday at nine");
+    i.tick(first + 1000, 8.0);
+    assert_eq!(i.reminders().len(), 1, "it rang and is set again");
+    assert_eq!(i.reminders()[0].due_ms, first + 7 * 86_400_000, "the next Monday, same time");
+    run_bar(&mut i, "remind every day 8:30 vitamins");
+    let daily = i.reminders().iter().find(|r| r.text == "vitamins").unwrap().due_ms;
+    assert!(daily > i.now && daily - i.now <= 86_400_000, "today's time is gone, so tomorrow");
+}
+
+#[test]
+fn an_event_from_the_bar_shows_at_once_goes_to_the_calendar_and_flags_an_overlap() {
+    let mut i = Island::new(Config::default());
+    i.data.events = vec![Event { id: "l".into(), title: "Algoritmi".into(), start_ms: T0 + 2 * 3_600_000, end_ms: T0 + 4 * 3_600_000, ..Default::default() }];
+    i.tick(T0, 8.0); // 08:00
+    type_in_bar(&mut i, "event 9-10:30 Office hours");
+    i.push(i.now, Input::Key(KeyInput::Enter));
+    let cmds = i.take_commands();
+    assert!(cmds.iter().any(|c| matches!(c, Command::CreateEvent { title, start_ms, end_ms, .. } if title == "Office hours" && *start_ms == T0 + 3_600_000 && *end_ms == T0 + 3_600_000 + 5_400_000)));
+    assert!(i.data.events.iter().any(|e| e.title == "Office hours"), "shown before the server answers");
+    let n = i.notif.take();
+    assert!(n.is_some_and(|n| n.summary.contains("overlaps") && n.body.contains("Algoritmi")));
+    run_bar(&mut i, "event 15 Dentist");
+    assert!(i.notif.as_ref().is_none_or(|n| !n.summary.contains("overlaps")));
+}
+
+#[test]
+fn studying_takes_time_off_the_work_and_the_plan_spreads_what_is_left() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    run_bar(&mut i, "esame 25 jan Algoritmi #algoritmi ~10h");
+    let today = i.today_day();
+    assert_eq!(i.deadlines()[0].est_min, 600);
+    assert_eq!(i.study_on(today), vec![("Algoritmi".to_string(), 60)], "ten days left: an hour a day");
+    run_bar(&mut i, "log 90m algoritmi");
+    assert_eq!(i.deadlines()[0].est_min, 510);
+    assert_eq!(i.study_log(), [(today, "algoritmi".to_string(), 90)]);
+    assert_eq!(i.studied_this_week(), vec![("algoritmi".to_string(), 90)]);
+    assert!(i.study_line(today).is_some_and(|l| l.starts_with("Study 55m")), "{:?}", i.study_line(today));
+    let (title, body) = i.agenda_card("Today", &[]).expect("the plan alone is worth a card");
+    assert!(title.starts_with("Today") && body.contains("Study"), "{title} · {body}");
+    run_bar(&mut i, "log 30m chemistry");
+    assert_eq!(i.deadlines()[0].est_min, 510, "a course with no work leaves it alone");
+}
+
+#[test]
+fn a_pomodoro_for_a_course_logs_its_focus_time() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    run_bar(&mut i, "pomodoro Reti");
+    assert_eq!(i.timer.as_ref().map(|t| t.label.as_str()), Some("Reti"));
+    i.tick(T0 + island_core::pomodoro::FOCUS as i64 * 1000 + 100, 8.0);
+    assert_eq!(i.study_log().len(), 1);
+    assert_eq!((i.study_log()[0].1.as_str(), i.study_log()[0].2), ("Reti", (island_core::pomodoro::FOCUS / 60) as u32));
+}
+
+#[test]
+fn a_search_shows_what_the_island_knows_then_what_the_notes_and_files_add() {
+    let mut i = Island::new(Config::default());
+    i.data.events = vec![Event { id: "l".into(), title: "Compilation Techniques".into(), start_ms: T0 + 3_600_000, end_ms: T0 + 7_200_000, ..Default::default() }];
+    i.tick(T0, 8.0);
+    run_bar(&mut i, "todo Read the compilers book");
+    i.pin("compilers slides link");
+    i.take_commands();
+    run_bar(&mut i, "find compil");
+    assert!(i.take_commands().iter().any(|c| matches!(c, Command::Find(q) if q == "compil")));
+    assert_eq!(i.found.hits.len(), 3, "the event, the task and the pin");
+    assert!(i.found.searching);
+    let file = island_core::plan::Hit { kind: island_core::plan::HitKind::Note, title: "compilers: ask about LLVM".into(), detail: "2027-01-10.md".into(), target: "/n/2027-01-10.md".into() };
+    i.push(i.now, Input::FoundMore { query: "other".into(), hits: vec![file.clone()] });
+    assert_eq!(i.found.hits.len(), 3, "the answer to an old question is dropped");
+    i.push(i.now, Input::FoundMore { query: "compil".into(), hits: vec![file] });
+    assert_eq!((i.found.hits.len(), i.found.searching), (4, false));
+    i.take_commands();
+    i.open_hit(3);
+    assert!(i.take_commands().iter().any(|c| matches!(c, Command::OpenFile(p) if p == "/n/2027-01-10.md")));
+}
+
+#[test]
+fn a_note_goes_to_the_notes_folder() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    run_bar(&mut i, "note ask about the exam format");
+    assert!(i.take_commands().iter().any(|c| matches!(c, Command::SaveNote(t) if t == "ask about the exam format")));
+}
+
+#[test]
+fn the_plan_and_find_pages_draw_and_the_plan_flags_a_heavy_day() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    i.data = data();
+    i.tick(T0, 8.0);
+    let h = 3_600_000;
+    // tomorrow: seven hours of lectures
+    i.data.events = (0..4).map(|k| Event { id: format!("e{k}"), title: format!("Lecture {k}"), start_ms: T0 + 20 * h + k * 2 * h, end_ms: T0 + 20 * h + k * 2 * h + 3_600_000 * 2 - 600_000, ..Default::default() }).collect();
+    run_bar(&mut i, "esame 25 jan Algoritmi ~10h");
+    let week = i.week_loads();
+    assert_eq!(week.len(), 7);
+    assert!(week[1].heavy(), "{:?}", week[1]);
+    run_bar(&mut i, "log 45m");
+    run_bar(&mut i, "find lecture");
+    for page in [Page::Plan, Page::Find] {
+        for _ in 0..120 {
+            let t = i.now + 8;
+            let fr = i.tick(t, 8.0);
+            i.push(t, Input::OpenPage(page));
+            let mut scene = Scene::new();
+            i.draw(&mut scene, &f, fr.surface, 1.0);
+            assert!(fr.surface.1.is_finite() && fr.surface.1 < 900.0, "{page:?}");
+        }
+    }
+}
+
+#[test]
+fn a_whole_day_event_has_no_hours_and_blocks_nothing() {
+    let mut i = Island::new(Config::default());
+    i.data.events = vec![Event { id: "l".into(), title: "Algoritmi".into(), start_ms: T0 + 2 * 3_600_000, end_ms: T0 + 4 * 3_600_000, ..Default::default() }];
+    i.tick(T0, 8.0);
+    type_in_bar(&mut i, "event today all day Conference");
+    i.push(i.now, Input::Key(KeyInput::Enter));
+    let cmds = i.take_commands();
+    assert!(cmds.iter().any(|c| matches!(c, Command::CreateEvent { title, whole_day: Some(_), .. } if title == "Conference")));
+    assert!(i.data.events.iter().any(|e| e.title == "Conference" && e.all_day));
+    assert!(i.notif.take().is_some_and(|n| n.summary == "Event added" && n.body.contains("all day")));
+}
+
+#[test]
+fn a_line_from_outside_runs_like_one_typed_in_the_bar() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    i.push(i.now, Input::RunLine("todo Report due fri ~2h".into()));
+    assert!(i.todos.iter().any(|t| t.text == "Report" && t.est_min == 120));
+    i.notif = None;
+    i.push(i.now, Input::RunLine("blorp zzz".into()));
+    assert!(i.notif.take().is_some_and(|n| n.summary == "Not understood"));
+}
+
+#[test]
+fn a_task_is_moved_edited_and_removed_and_the_server_is_told() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    run_bar(&mut i, "todo Report due fri ~2h");
+    i.take_commands();
+    run_bar(&mut i, "move report to sat");
+    let sat = i.todos[0].due.unwrap();
+    assert!(matches!(i.take_commands().as_slice(), [Command::PushTask { done: false, .. }]));
+    run_bar(&mut i, "edit report -> due mon ~3h #algoritmi");
+    assert!(i.todos[0].due.unwrap() > sat && i.todos[0].est_min == 180 && i.todos[0].course == "algoritmi" && i.todos[0].text == "Report", "only what was named changes");
+    i.take_commands();
+    run_bar(&mut i, "rm report");
+    assert!(i.todos.is_empty());
+    let uid = i.tasks_done.last().cloned().unwrap();
+    assert!(matches!(i.take_commands().as_slice(), [Command::DeleteTask { uid: u }] if *u == uid));
+    i.merge_tasks(vec![(Todo { uid, text: "Report".into(), synced: true, ..Default::default() }, false)]);
+    assert!(i.todos.is_empty(), "a late answer from the server does not bring it back");
+}
+
+#[test]
+fn an_event_is_moved_keeping_its_length_and_cancelled() {
+    let mut i = Island::new(Config::default());
+    i.data.events = vec![
+        Event { id: "lab-1@x".into(), title: "Lab".into(), start_ms: T0 + 3_600_000, end_ms: T0 + 3 * 3_600_000, ..Default::default() },
+        Event { id: "dent-1@y".into(), title: "Dentist".into(), start_ms: T0 + 5 * 3_600_000, end_ms: T0 + 6 * 3_600_000, ..Default::default() },
+    ];
+    i.tick(T0, 8.0);
+    run_bar(&mut i, "move lab to tomorrow 10");
+    let cmds = i.take_commands();
+    let Some(Command::MoveEvent { id, start_ms, end_ms, .. }) = cmds.first() else { panic!("{cmds:?}") };
+    assert_eq!(id, "lab-1@x");
+    assert_eq!(end_ms - start_ms, 2 * 3_600_000, "the length stays");
+    assert!(*start_ms > T0 + 12 * 3_600_000);
+    run_bar(&mut i, "cancel dentist");
+    assert!(matches!(i.take_commands().as_slice(), [Command::CancelEvent { id, .. }] if id == "dent-1@y"));
+    assert!(!i.data.events.iter().any(|e| e.title == "Dentist"));
+    run_bar(&mut i, "cancel nothing like this");
+    assert!(i.take_commands().is_empty());
+}
+
+#[test]
+fn a_heavy_day_ahead_is_named_with_a_lighter_day_to_do_the_work_on() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    let today = i.today_day();
+    assert!(i.heavy_lines(today).is_empty(), "an empty week is not heavy");
+    for t in ["todo Report due in3 ~2h", "todo Lab sheet due in3", "todo Slides due in3"] {
+        let t = t.replace("in3", "fri");
+        run_bar(&mut i, &t);
+    }
+    // whatever weekday today is, put the three on one day two days out
+    let due = today + 2;
+    for t in i.todos.iter_mut() {
+        t.due = Some(due);
+    }
+    let lines = i.heavy_lines(today);
+    assert!(lines[0].contains("is heavy") && lines[0].contains("3 due"), "{lines:?}");
+    assert!(lines.get(1).is_some_and(|l| l.contains("lighter") && l.contains("Report")), "the one with the most work is the one to move: {lines:?}");
+    let (_, body) = i.agenda_card("Today", &[]).unwrap();
+    assert!(body.contains("heavy"), "{body}");
+}
+
+#[test]
+fn a_reminder_can_be_tied_to_the_next_event() {
+    let mut i = Island::new(Config::default());
+    i.data.events = vec![
+        Event { id: "a".into(), title: "Lab".into(), start_ms: T0 + 3_600_000, end_ms: T0 + 2 * 3_600_000, ..Default::default() },
+        Event { id: "b".into(), title: "Lab".into(), start_ms: T0 + 86_400_000, end_ms: T0 + 86_400_000 + 3_600_000, ..Default::default() },
+    ];
+    i.tick(T0, 8.0);
+    run_bar(&mut i, "remind 10m before lab");
+    assert_eq!(i.reminders.len(), 1);
+    assert_eq!(i.reminders[0].due_ms, T0 + 3_600_000 - 600_000, "the nearest one, ten minutes before");
+    assert!(i.reminders[0].text.contains("Lab"));
+    run_bar(&mut i, "remind 2h before lab");
+    assert_eq!(i.reminders.len(), 2, "too late for the first, so the next day's");
+    assert_eq!(i.reminders[1].due_ms, T0 + 86_400_000 - 7_200_000);
+    i.notif = None;
+    run_bar(&mut i, "remind 5m before chemistry");
+    assert_eq!(i.reminders.len(), 2);
+}
+
+#[test]
+fn a_row_can_be_put_off_edited_or_removed_and_the_evening_carries_the_rest_over() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    let today = i.today_day();
+    run_bar(&mut i, "todo Report due today");
+    run_bar(&mut i, "todo Lab sheet due today");
+    run_bar(&mut i, "todo Later due fri");
+    i.take_commands();
+    i.activate(Action::TodoPostpone(0, 7));
+    assert_eq!(i.todos[0].due, Some(today + 7));
+    assert!(matches!(i.take_commands().as_slice(), [Command::PushTask { .. }]));
+    i.activate(Action::TodoEdit(1));
+    assert!(i.bar.as_ref().is_some_and(|b| b.text.starts_with("edit Lab sheet -> ")));
+    i.bar = None;
+    // what is left of today (the first was put off): one task, offered a move to tomorrow
+    let (card, actions) = i.with_leftovers(None, false);
+    let (summary, body) = card.expect("a card for what is left");
+    assert!(summary.contains("unfinished") && body.contains("Lab sheet"), "{summary} · {body}");
+    assert_eq!(actions[0].key, "open-island:carry");
+    i.own_card_action("open-island:carry", "");
+    assert_eq!(i.todos[1].due, Some(today + 1));
+    assert!(i.with_leftovers(None, false).0.is_none(), "nothing left");
+    i.activate(Action::TodoRemove(1));
+    assert!(!i.todos.iter().any(|t| t.text == "Lab sheet"));
+}
+
+#[test]
+fn a_reminder_card_offers_to_ring_again_later() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0); // 08:00
+    i.reminders = vec![Reminder { due_ms: T0 + 1000, text: "Call mom".into(), ..Default::default() }];
+    i.tick(T0 + 2000, 8.0);
+    let n = i.notif.clone().expect("the reminder rings");
+    let keys: Vec<&str> = n.actions.iter().map(|a| a.key.as_str()).collect();
+    assert_eq!(keys, ["open-island:snooze:1h", "open-island:snooze:tonight", "open-island:snooze:tomorrow"]);
+    i.activate(Action::NotifAction("open-island:snooze:tonight".into()));
+    assert_eq!(i.reminders.len(), 1);
+    assert_eq!(i.reminders[0].text, "Call mom");
+    assert_eq!(i.reminders[0].due_ms, i.day_start_ms(i.today_day()) + 20 * 3_600_000);
 }

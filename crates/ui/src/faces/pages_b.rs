@@ -464,6 +464,7 @@ impl Island {
             + 14.0 + 34.0 + 6.0
             + if items.is_empty() { 40.0 } else { items.len() as f64 * 28.0 + 18.0 + self.today_gaps(&items) as f64 * 18.0 }
             + if tomorrow > 0 { 22.0 + tomorrow as f64 * 28.0 } else { 0.0 }
+            + self.lecture_files().map_or(0.0, |(_, f)| 22.0 + f.len().min(3) as f64 * 28.0)
             + if self.pins.is_empty() { 0.0 } else { 22.0 + self.pins.len().min(PIN_ROWS) as f64 * 28.0 }
             + if self.deadline_rows().is_empty() { 0.0 } else { 22.0 + self.deadline_rows().len() as f64 * 28.0 }
             + if self.todo_rows() > 0 { 22.0 + self.todo_rows() as f64 * 28.0 } else { 0.0 }
@@ -606,6 +607,25 @@ impl Island {
                 y += 28.0;
             }
         }
+        // the files of the next lecture: a click opens one
+        if let Some((title, files)) = self.lecture_files() {
+            p.text(&format!("Files · {}", title), 20.0, y + 8.0, 10.0, SEMI, theme::DIM, Align::Left, (w - 40.0) as f32);
+            y += 22.0;
+            for f in files.iter().take(3) {
+                let row = rect(8.0, y, w - 16.0, 26.0);
+                if p.hovered(row) {
+                    p.rrect(row, 8.0, theme::CHIP);
+                }
+                let cy = y + 13.0;
+                p.icon("file", 26.0, cy, 13.0, theme::ACCENT);
+                p.text(&f.name, 44.0, cy, 12.0, REG, theme::FG, Align::Left, (w - 44.0 - 70.0) as f32);
+                let days = ((self.now - f.modified_ms) / 86_400_000).max(0);
+                let age = match days { 0 => "today".to_string(), 1 => "yesterday".to_string(), d if d < 60 => format!("{d} d"), d => format!("{} mo", d / 30) };
+                p.text(&age, w - 18.0, cy, 10.0, REG, theme::DIM, Align::Right, 60.0);
+                p.hit(row, Action::OpenFile(f.path.clone()));
+                y += 28.0;
+            }
+        }
         // notes kept for later: a click copies, the cross takes it off
         if !self.pins.is_empty() {
             p.text("Pinned", 20.0, y + 8.0, 10.0, SEMI, theme::DIM, Align::Left, 120.0);
@@ -659,11 +679,40 @@ impl Island {
                     p.rrect(row, 8.0, theme::CHIP);
                 }
                 let cy = y + 13.0;
+                // right-clicked: the row gives way to what can be done with it
+                if self.row_menu.as_deref() == Some(t.uid.as_str()) {
+                    p.rrect(row, 8.0, theme::CHIP);
+                    let items: [(&str, Action); 5] = [("Tomorrow", Action::TodoPostpone(n, 1)), ("+1 week", Action::TodoPostpone(n, 7)), ("Edit", Action::TodoEdit(n)), ("Remove", Action::TodoRemove(n)), ("✕", Action::TodoMenuClose)];
+                    let mut x = 14.0;
+                    for (label, action) in items {
+                        let bw = p.button_width(label) - 6.0;
+                        p.button(rect(x, y + 2.0, bw, 22.0), label, action);
+                        x += bw + 6.0;
+                    }
+                    y += 28.0;
+                    continue;
+                }
                 p.circle_stroke(26.0, cy, 7.0, 1.5, if hot { theme::ACCENT } else { theme::DIM });
                 if hot {
                     p.icon("check", 26.0, cy, 10.0, theme::ACCENT);
                 }
-                p.text(&t.text, 44.0, cy, 12.0, REG, theme::FG, Align::Left, (w - 44.0 - 24.0) as f32);
+                // the day it is due on the right (late and today's in orange), then what is known about the work
+                let today = self.today_day();
+                let mut tail = String::new();
+                if t.est_min > 0 {
+                    tail = island_core::task::fmt_minutes(t.est_min);
+                }
+                let (when, urgent) = match (t.due, t.repeat) {
+                    (Some(d), island_core::task::Repeat::Never) => (island_core::task::due_label(d, today), d <= today),
+                    (_, r) if r != island_core::task::Repeat::Never => (r.short(), false),
+                    _ => (String::new(), false),
+                };
+                let right = [when.as_str(), tail.as_str()].iter().filter(|x| !x.is_empty()).copied().collect::<Vec<_>>().join(" · ");
+                let right_w = if right.is_empty() { 0.0 } else { (p.fonts.measure(&right, 10.5, if urgent { SEMI } else { REG }) as f64).min(140.0) };
+                if right_w > 0.0 {
+                    p.text(&right, w - 18.0, cy, 10.5, if urgent { SEMI } else { REG }, if urgent { theme::ORANGE } else { theme::DIM }, Align::Right, right_w as f32 + 2.0);
+                }
+                p.text(&t.text, 44.0, cy, 12.0, REG, theme::FG, Align::Left, (w - 44.0 - 24.0 - right_w).max(60.0) as f32);
                 p.hit(row, Action::TodoDone(n));
                 y += 28.0;
             }

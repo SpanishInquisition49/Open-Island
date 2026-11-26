@@ -83,12 +83,94 @@ fn parse_duration(v: &str) -> Option<i64> {
     Some(total * 1000)
 }
 
-fn unescape(s: &str) -> String {
+pub(crate) fn unescape(s: &str) -> String {
     s.replace("\\n", "\n").replace("\\N", "\n").replace("\\,", ",").replace(r"\;", ";").replace("\\\\", "\\")
 }
 
+/// The iCalendar document of one event (`stamp` is now in UTC, "20261122T101500Z").
+pub fn to_vevent(uid: &str, title: &str, start_ms: i64, end_ms: i64, stamp: &str) -> String {
+    let utc = |ms: i64| {
+        let (y, m, d) = crate::calendar::civil_from_days(ms.div_euclid(86_400_000));
+        let secs = ms.div_euclid(1000).rem_euclid(86_400);
+        format!("{y:04}{m:02}{d:02}T{:02}{:02}{:02}Z", secs / 3600, secs % 3600 / 60, secs % 60)
+    };
+    let esc = |s: &str| s.replace('\\', "\\\\").replace(';', "\\;").replace(',', "\\,").replace('\n', "\\n");
+    ["BEGIN:VCALENDAR".to_string(), "VERSION:2.0".into(), "PRODID:-//open-island//events//EN".into(), "BEGIN:VEVENT".into(), format!("UID:{uid}"), format!("DTSTAMP:{stamp}"), format!("DTSTART:{}", utc(start_ms)), format!("DTEND:{}", utc(end_ms)), format!("SUMMARY:{}", esc(title)), "END:VEVENT".into(), "END:VCALENDAR".into()].join("\r\n") + "\r\n"
+}
+
+/// A whole-day VEVENT on a civil day (`day` counts days since 1970-01-01).
+pub fn to_vevent_all_day(uid: &str, title: &str, day: i64, stamp: &str) -> String {
+    let date = |d: i64| {
+        let (y, m, dd) = crate::calendar::civil_from_days(d);
+        format!("{y:04}{m:02}{dd:02}")
+    };
+    let esc = |s: &str| s.replace('\\', "\\\\").replace(';', "\\;").replace(',', "\\,").replace('\n', "\\n");
+    ["BEGIN:VCALENDAR".to_string(), "VERSION:2.0".into(), "PRODID:-//open-island//events//EN".into(), "BEGIN:VEVENT".into(), format!("UID:{uid}"), format!("DTSTAMP:{stamp}"), format!("DTSTART;VALUE=DATE:{}", date(day)), format!("DTEND;VALUE=DATE:{}", date(day + 1)), format!("SUMMARY:{}", esc(title)), "END:VEVENT".into(), "END:VCALENDAR".into()].join("\r\n") + "\r\n"
+}
+
+/// What to do to one event of a document.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Change {
+    Cancel,
+    /// New hours (UTC milliseconds), or the civil day of an entry without hours.
+    Move { start_ms: i64, end_ms: i64, whole_day: Option<i64> },
+}
+
+/// Applies a change to the event with this UID inside a document. Ok(None): no event is left in it (a server's
+/// resource is then deleted). An event that repeats, or has exceptions, is refused: moving "this one" or "all" is a
+/// choice this does not make for the person.
+pub fn change_event(doc: &str, uid: &str, ch: &Change) -> Result<Option<String>, String> {
+    let lines = unfold(doc);
+    let is_uid = |l: &String| l.strip_prefix("UID").and_then(|r| r.split_once(':')).is_some_and(|(params, v)| (params.is_empty() || params.starts_with(';')) && v.trim() == uid);
+    let (mut start, mut end, mut found) = (0, 0, 0);
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i] == "BEGIN:VEVENT" {
+            let j = (i..lines.len()).find(|&j| lines[j] == "END:VEVENT").unwrap_or(lines.len() - 1);
+            if lines[i..=j].iter().any(is_uid) {
+                found += 1;
+                (start, end) = (i, j);
+            }
+            i = j;
+        }
+        i += 1;
+    }
+    match found {
+        0 => return Err("the event is not in that calendar".into()),
+        1 => {}
+        _ => return Err("it repeats with exceptions; change it in the calendar app".into()),
+    }
+    let block = &lines[start..=end];
+    if block.iter().any(|l| l.starts_with("RRULE") || l.starts_with("RECURRENCE-ID")) {
+        return Err("it repeats; change it in the calendar app".into());
+    }
+    let mut out: Vec<String> = lines[..start].to_vec();
+    if let Change::Move { start_ms, end_ms, whole_day } = ch {
+        let utc = |ms: i64| {
+            let (y, m, d) = crate::calendar::civil_from_days(ms.div_euclid(86_400_000));
+            let secs = ms.div_euclid(1000).rem_euclid(86_400);
+            format!("{y:04}{m:02}{d:02}T{:02}{:02}{:02}Z", secs / 3600, secs % 3600 / 60, secs % 60)
+        };
+        let date = |d: i64| {
+            let (y, m, dd) = crate::calendar::civil_from_days(d);
+            format!("{y:04}{m:02}{dd:02}")
+        };
+        out.extend(block[..block.len() - 1].iter().filter(|l| !(l.starts_with("DTSTART") || l.starts_with("DTEND") || l.starts_with("DURATION"))).cloned());
+        match whole_day {
+            Some(d) => out.extend([format!("DTSTART;VALUE=DATE:{}", date(*d)), format!("DTEND;VALUE=DATE:{}", date(*d + 1))]),
+            None => out.extend([format!("DTSTART:{}", utc(*start_ms)), format!("DTEND:{}", utc(*end_ms))]),
+        }
+        out.push("END:VEVENT".into());
+    }
+    out.extend(lines[end + 1..].iter().cloned());
+    if !out.iter().any(|l| l == "BEGIN:VEVENT") {
+        return Ok(None);
+    }
+    Ok(Some(out.join("\r\n") + "\r\n"))
+}
+
 /// Unfolds continuation lines (a line starting with a space or tab continues the previous one).
-fn unfold(text: &str) -> Vec<String> {
+pub(crate) fn unfold(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for raw in text.lines() {
         let line = raw.trim_end_matches('\r');
@@ -414,6 +496,32 @@ pub fn parse_in(text: &str, off: OffsetFn, from_ms: i64, to_ms: i64) -> Vec<Even
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_event_is_moved_or_cancelled_inside_a_document_and_a_repeating_one_is_refused() {
+        let two = format!("{}{}", to_vevent("a", "One", 1_800_000_000_000, 1_800_003_600_000, "20270115T080000Z").replace("END:VCALENDAR\r\n", ""), to_vevent("b", "Two", 1_800_086_400_000, 1_800_090_000_000, "20270115T080000Z").replace("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//open-island//events//EN\r\n", ""));
+        let moved = change_event(&two, "a", &Change::Move { start_ms: 1_800_010_000_000, end_ms: 1_800_013_600_000, whole_day: None }).unwrap().unwrap();
+        let evs = parse(&moved, 0, 0, i64::MAX);
+        assert_eq!(evs.iter().map(|e| (e.title.as_str(), e.start_ms)).collect::<Vec<_>>(), [("One", 1_800_010_000_000), ("Two", 1_800_086_400_000)]);
+        let gone = change_event(&two, "a", &Change::Cancel).unwrap().unwrap();
+        assert_eq!(parse(&gone, 0, 0, i64::MAX).iter().map(|e| e.title.as_str()).collect::<Vec<_>>(), ["Two"]);
+        let one = to_vevent("a", "One", 1_800_000_000_000, 1_800_003_600_000, "20270115T080000Z");
+        assert_eq!(change_event(&one, "a", &Change::Cancel), Ok(None), "nothing left: the resource goes");
+        assert!(change_event(&one, "zz", &Change::Cancel).is_err());
+        let day = change_event(&one, "a", &Change::Move { start_ms: 0, end_ms: 0, whole_day: Some(20_500) }).unwrap().unwrap();
+        assert!(parse(&day, 0, 0, i64::MAX)[0].all_day);
+        let rep = one.replace("SUMMARY:One", "SUMMARY:One\r\nRRULE:FREQ=WEEKLY");
+        assert!(change_event(&rep, "a", &Change::Cancel).unwrap_err().contains("repeats"));
+    }
+
+    #[test]
+    fn an_event_we_write_is_an_event_we_read() {
+        let doc = to_vevent("oi-1", "Office hours, room 3", 1_800_000_000_000, 1_800_000_000_000 + 5_400_000, "20270115T080000Z");
+        assert!(doc.contains("DTSTART:20270115T080000Z\r\n") && doc.contains("DTEND:20270115T093000Z\r\n") && doc.contains("SUMMARY:Office hours\\, room 3"));
+        let evs = parse(&doc, 0, 0, i64::MAX);
+        assert_eq!(evs.len(), 1);
+        assert_eq!((evs[0].title.as_str(), evs[0].start_ms, evs[0].end_ms), ("Office hours, room 3", 1_800_000_000_000, 1_800_000_000_000 + 5_400_000));
+    }
+
     use super::*;
 
     fn ms(y: i64, m: i64, d: i64, h: i64, mi: i64) -> i64 {

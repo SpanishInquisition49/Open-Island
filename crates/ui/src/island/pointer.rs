@@ -179,6 +179,16 @@ impl Island {
 
     pub fn right_click(&mut self, now: i64) {
         self.now = now;
+        // on a to-do row: its menu, not "close the page"
+        if let Some((x, y)) = self.pointer {
+            if let Some(Action::TodoDone(n)) = self.hit_at(x, y).map(|h| h.action.clone()) {
+                self.row_menu = self.todos.get(n).map(|t| t.uid.clone());
+                return;
+            }
+        }
+        if self.row_menu.take().is_some() {
+            return;
+        }
         // close an open page, or swap the main activity and the bubble
         if self.shown.is_compact() && self.shown_side.is_some() {
             self.swapped = !self.swapped;
@@ -262,6 +272,8 @@ impl Island {
         if let Some(at) = v.iter().position(|p| *p == Page::Sys) {
             v.insert(at + 1, Page::Activity);
         }
+        // the week ahead earns a place in the dock by being opened; until then it is on the grid
+        v.push(Page::Plan);
         v.push(Page::Options);
         v.push(Page::Settings);
         v
@@ -402,6 +414,8 @@ impl Island {
                 }
             }
             Action::PhoneCallDo(c) => return vec![Command::PhoneCall(c)],
+            Action::OpenFile(path) => return vec![Command::OpenFile(path)],
+            Action::PhoneAudioDo(here) => return vec![Command::PhoneAudio(here)],
             Action::PinCopy(n) => {
                 if let Some(t) = self.pins.get(n).cloned() {
                     self.say("Copied", &t);
@@ -413,15 +427,26 @@ impl Island {
                     self.pins.remove(n);
                 }
             }
-            Action::TodoDone(n) => {
-                if n < self.todos.len() {
-                    if self.todos[n].daily {
-                        self.todos[n].done_day = self.day_number(now);
-                    } else {
-                        self.todos.remove(n);
-                    }
+            Action::TodoDone(n) => self.complete_task(n),
+            Action::TodoPostpone(n, days) => {
+                self.row_menu = None;
+                let day = self.today_day() + days;
+                self.postpone(&[n], day);
+            }
+            Action::TodoEdit(n) => {
+                self.row_menu = None;
+                if let Some(t) = self.todos.get(n) {
+                    let words: Vec<&str> = t.text.split_whitespace().take(3).collect();
+                    let text = format!("edit {} -> ", words.join(" "));
+                    self.bar = Some(Bar { until: self.now + BAR_IDLE_MS, cursor: text.chars().count(), text, ..Default::default() });
                 }
             }
+            Action::TodoRemove(n) => {
+                self.row_menu = None;
+                self.remove_task(n);
+            }
+            Action::TodoMenuClose => self.row_menu = None,
+            Action::FindOpen(i) => self.open_hit(i),
             Action::TimerCancelExtra(n) => {
                 if n < self.extra_timers.len() {
                     self.extra_timers.remove(n);
@@ -488,7 +513,7 @@ impl Island {
                         (false, true) => n.summary.clone(),
                         _ => n.app.clone(),
                     };
-                    self.reminders.push(Reminder { due_ms: now + SNOOZE_MS, text });
+                    self.reminders.push(Reminder { due_ms: now + SNOOZE_MS, text, ..Default::default() });
                     self.reminders.sort_by_key(|r| r.due_ms);
                     self.close_notif(CloseReason::Dismissed);
                 }
@@ -496,6 +521,11 @@ impl Island {
             Action::NotifAction(key) if key == "open-island:ocr" => {
                 self.close_notif(CloseReason::Dismissed);
                 return vec![Command::Ocr];
+            }
+            Action::NotifAction(key) if key.starts_with("open-island:") => {
+                let summary = self.notif.as_ref().map(|n| n.summary.clone()).unwrap_or_default();
+                self.own_card_action(&key, &summary);
+                self.close_notif(CloseReason::Dismissed);
             }
             Action::NotifAction(key) => {
                 if key == "inline-reply" {

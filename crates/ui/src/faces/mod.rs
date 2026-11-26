@@ -160,6 +160,8 @@ impl Island {
             Face::Options => self.face_options(p, w, h),
             Face::Audio => self.face_audio(p, w, h),
             Face::Today => self.face_today(p, w, h),
+            Face::Plan => self.face_plan(p, w, h),
+            Face::Find => self.face_find(p, w, h),
             Face::Send => self.face_send(p, w, h),
             Face::Activity => self.face_activity(p, w, h),
             Face::Map => self.face_map(p, w, h),
@@ -844,6 +846,7 @@ impl Island {
     }
 }
 
+mod organizer;
 mod pages_a;
 mod pages_b;
 mod grid;
@@ -868,6 +871,8 @@ fn page_icon(p: Page) -> &'static str {
         Page::Options => "toggle-right",
         Page::Audio => "volume",
         Page::Today => "clock",
+        Page::Plan => "calendar-event",
+        Page::Find => "search",
         Page::Send => "send",
         Page::Activity => "chart-donut",
         Page::Map => "map-pin",
@@ -942,3 +947,4 @@ fn draw_image(p: P, img: &Image, x: f64, y: f64, size: f64, radius: f64) {
     p.scene.draw_image(&brush, t * Affine::translate((ox, oy)) * Affine::scale(s));
     p.scene.pop_layer();
 }
+

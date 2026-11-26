@@ -35,7 +35,7 @@ impl Island {
         }
         match &self.phone_open {
             Some(_) => head + 4.0 + MSG_ROWS as f64 * 32.0 + 8.0 + 34.0 + 10.0,
-            None => head + self.phone_call_rows() as f64 * 42.0 + 38.0 + 4.0 + ph.threads.len().clamp(1, THREAD_ROWS) as f64 * 46.0 + 22.0 + if ph.link.calls { 0.0 } else { 30.0 } + 6.0,
+            None => head + self.phone_call_rows() as f64 * 42.0 + 38.0 + 4.0 + ph.threads.len().clamp(1, THREAD_ROWS) as f64 * 46.0 + 22.0 + if ph.link.calls { 0.0 } else { 30.0 } + if ph.audio_here.is_some() { 30.0 } else { 0.0 } + 6.0,
         }
     }
 
@@ -116,8 +116,17 @@ impl Island {
                 let l = &ph.link;
                 let on = |b: bool| if b { "on" } else { "off" };
                 p.text(&format!("Messages {} · Contacts {} · Notifications {}", on(l.messages), on(l.contacts), on(l.notifications)), w / 2.0, y + 8.0, 10.0, REG, theme::DIM, Align::Center, (w - 30.0) as f32);
+                let mut cy = y + 22.0;
+                if let Some(here) = ph.audio_here {
+                    let chip = rect(14.0, cy, w - 28.0, 26.0);
+                    p.rrect(chip, 13.0, if p.hovered(chip) { theme::HOT_CHIP } else { theme::CHIP });
+                    p.icon("music", chip.x0 + 18.0, chip.center().y, 12.0, theme::ACCENT);
+                    p.text(if here { "Phone audio plays here · keep it on the phone" } else { "Phone audio stays on the phone · play it here" }, chip.x0 + 32.0, chip.center().y, 11.0, REG, theme::FG, Align::Left, (chip.width() - 44.0) as f32);
+                    p.hit(chip, Action::PhoneAudioDo(!here));
+                    cy += 30.0;
+                }
                 if !l.calls {
-                    let chip = rect(14.0, y + 22.0, w - 28.0, 26.0);
+                    let chip = rect(14.0, cy, w - 28.0, 26.0);
                     p.rrect(chip, 13.0, if p.hovered(chip) { theme::HOT_CHIP } else { theme::CHIP });
                     p.icon("phone", chip.x0 + 18.0, chip.center().y, 12.0, theme::ACCENT);
                     p.text("Calls are off · turn on to answer from here", chip.x0 + 32.0, chip.center().y, 11.0, REG, theme::FG, Align::Left, (chip.width() - 44.0) as f32);

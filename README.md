@@ -212,6 +212,36 @@ cp --targets`), marked "Tailscale", next to the LocalSend ones: a click sends wi
 and a card says how it ended (Taildrop reports no progress). Receiving is not done here on purpose: whatever already empties the
 Taildrop inbox (`tailscale file get`) keeps doing it, and two readers would take files from each other.
 
+### The day, planned: battery and files
+
+Two things the morning and evening cards, the Today page and a card now and then do for a student who spends the day away from a socket.
+
+- **Will the battery last the day?** The island learns how fast your battery drains from its own use (percent over time on battery,
+  kept in `power.json` and blended, so one compile does not rule) and knows when the day ends: the last timed event plus
+  `commute_minutes`. If the charge now is not what the day needs to get you home with the low-battery level left, the morning card
+  says "Battery 54%: the day needs ~62% (home ~19:25)", a card (once a day, with a sound) says when it would run out, and when it
+  is plugged in and about to be left a card says to charge a little more. The evening card says what to charge to before leaving
+  tomorrow ("Charge to 70% before you leave"). Nothing is said before a drain has been learned, and nothing when the battery will
+  do. The "Battery alerts" switch applies.
+- **The files for the next lecture.** For the next event (and tomorrow's first) the island looks in your study folders for
+  documents whose path says the same words as the title ("Algorithm Engineering" finds `~/Uni/Algorithm-Engineering/slides/...`,
+  `AlgorithmEngineering-2027_c1.pdf` in Downloads), best match first, slides and books before notes, the newest first, and shows the
+  top three on the Today page ("Files · Algorithm Engineering", a click opens one) and one on the cards. Folders: `study_folders`
+  in the configuration (`["~/Uni", "~/Documents/Corsi"]`), else Documents, Downloads and `Uni`, `Studio`, `Courses`... when they
+  exist. Only file names and dates are read, never the contents; hidden and build folders are skipped, links are not followed;
+  about 30 ms for a home folder. A title of short words ("Lab") has nothing to look for.
+
+### What to take along
+
+`bring laptop for reti` in the command bar (`porta ... per ...` too) makes the morning and evening cards say "Bring laptop" on the
+days with an event whose title has "reti"; without `for`, the thing is on every card. It stays until `unbring laptop` (a word of the
+thing or of the course), `unbring all` or just `unbring` (the newest). Kept in `bring.json`; thirty entries at most.
+
+### The iPhone: battery and where its audio plays
+
+The iPhone page offers a switch for where the phone's music and sounds play (this computer or the phone, `tether --bt-phone-audio`),
+and a card says when the phone's battery drops to 20% (again only after it has been above 30%; the "Battery alerts" switch applies).
+
 ### Text from an image (OCR)
 
 A screenshot's card (the compositor's "Screenshot captured") becomes one with a **Copy text** button that does the same; switch it off with
@@ -292,7 +322,17 @@ how to write it instead of "Not understood":
 |---|---|
 | `10m tea`, `1h30m`, `timer 25 pasta` | a timer (several can run at once: the one ending first is shown in the pill, the others on the timer page and on Today; a Pomodoro or the stopwatch keeps the main place and the countdowns run beside it); the words after the time name it (shown on the Today page and when it rings) |
 | `remind 20m call mom`, `in 2h x`, `ricordami tra 10m …`, `remind 15:30 …`, `remind at 9pm …`, `ricordami alle 21 …`, `remind tomorrow 8:30 …`, `remind friday 18 …`, `ricordami venerdì alle 9 …` | a reminder (a notification when due; kept across restarts; a weekday is the next one, nine o'clock when no time is given); after `at` / `alle` a bare number is an hour, not minutes |
-| `todo buy milk` (also `compito …`, or `open-island todo buy milk` from a script), `todo daily bring the charger` | something for the list on the Today page: a circle to tick off (a click removes it; a daily one only goes away for today), kept across restarts |
+| `todo buy milk` (also `compito …`, or `open-island todo buy milk` from a script), `todo report due fri #algoritmi ~2h`, `todo gym every mon and thu`, `todo daily bring the charger` | something for the list on the Today page: a circle to tick off, kept across restarts. It can carry a day (`due fri`, `entro 3 feb`, `tomorrow`), a course (`#algoritmi`), the work it takes (`~2h`) and a repetition: see "The organizer" |
+| `remind every monday 9 gym`, `ricordami ogni giorno alle 8:30 …`, `remind every month on the 27th pay rent` | a reminder that comes back: it rings and is set again for the next day it falls on (nine o'clock when no time is given) |
+| `remind 10m before lab`, `ricordami 30 minuti prima della lezione di reti` | rings that long before the next event with those words (set for its time now: if it moves, say it again) |
+| `move report to sat`, `move lab to mon 10`, `sposta lezione a domani 10-11:30` | a task's day, or an event (with hours, or when no task matches): the length stays; a task or event is found by the words of its title |
+| `edit report -> due mon ~3h #algoritmi` | changes only what the right-hand side names |
+| `rm report`, `cancel dentist` | removes a task (also on the server) / cancels the next event with those words (on its calendar) |
+| `event fri all day conference`, `evento domani tutto il giorno gita` | an entry without hours (it blocks nothing, so it never flags an overlap) |
+| `event fri 15-16:30 office hours`, `evento domani 10 dentista`, `event 3 feb 14:00 for 2h exam prep` | an event on the calendar: shown at once, written to the calendar, and a word when it overlaps another |
+| `note ask about the exam format`, `open-island note …` | a line in the notes folder (one Markdown file a day) |
+| `find compilers`, `cerca reti` | a search through events, tasks, deadlines, pins, notes and study files (the Find page) |
+| `log 90m algoritmi`, `studiato 1h30 reti`, `pomodoro algoritmi` | study time done; it comes off the work still to do for that course. A Pomodoro with a course logs its focus time by itself |
 | `esame 3 feb Algoritmi`, `deadline 3/2 project` | a date to count down to (see "For a commuting student") |
 | `until class` | a timer that ends five minutes before the next event |
 | `pomodoro`, `stopwatch`, `focus 45`, `dnd on` / `dnd off` | the matching mode |
@@ -302,6 +342,47 @@ how to write it instead of "Not understood":
 | `days until 3 feb`, `giorni al 25 dic`, `today + 45 days`, `3 feb - 2 weeks`, `31 jan + 1 month`, `week`, `3 feb` | date arithmetic and the day of the week (dates are day first; a day and month without a year is the next one to come; `week` is the ISO week) |
 | `20 usd in eur`, `100 eur to jpy` | a currency conversion with the ECB's daily rates (needs them once; works offline with the last ones) |
 | `5 km in mi`, `70 f to c`, `1 gib to mb` | a conversion (length, mass, volume, speed, data, temperature); Enter copies it |
+
+## The organizer
+
+Everything here is local first and works without an account. Nothing in it knows any other program or project: the notes
+folder is any folder, the account is any CalDAV account.
+
+- **Tasks** (`todo …`): a task has a text and, optionally, a **day** (`due fri`, `by 3 feb`, `entro domani`, or just `tomorrow` /
+  `domani` anywhere in the line), a **course** (`#algoritmi`, `#reti_di_calcolatori`), the **work** it takes (`~2h`, `~90m`, `~1h30`)
+  and a **repetition** (`daily`, `every weekday`, `every mon and thu`, `ogni martedì e giovedì`, `every month on the 27th`). The Today
+  page orders the list: late ones first (in orange), then by day, then those without one; each row ends with its day and its estimate.
+  A repeating task rests until its day comes; ticking it moves it to the next one instead of removing it.
+- **Study plan**: an exam or hand-in with an estimate (`esame 3 feb Algoritmi #algoritmi ~20h`) or a task with one is spread over the
+  days left (in steps of five minutes; all of it on the last day). The morning and evening cards end with "Study 1h20: Algoritmi exam 45m,
+  Report 35m". `log 90m algoritmi` (or a Pomodoro `pomodoro algoritmi`) takes the time off the nearest-due item of that course, so the
+  plan shrinks as you study.
+- **The Plan page** (`go plan`, `go week`; it is on the page grid, and in the dock once you open it): the next seven days, each with a
+  bar (lectures solid, study dim), "3 events · 4h30 · 2 due · study 1h20", and in orange when the day is heavy (six hours of events, three
+  things due, or nine hours with the study). Below: today's study and the time studied this week, per course.
+- **Changing what exists**: `move`, `edit`, `rm` and `cancel` act on what the island shows; the change goes to the server too (`PUT` of the changed event, `DELETE` of a removed task or event). An event that repeats is refused with a card, since "this one or all" is for the calendar app. The server is not asked whether the item changed meanwhere (no `If-Match`): the last write wins.
+- **Without the bar**: right-click a row of the to-do list and it turns into a menu: Tomorrow, +1 week, Edit (opens the bar with `edit <words> -> `), Remove; right-click again closes it. A reminder that rings offers +1 hour, Tonight (until 19:30) and Tomorrow (09:00). The evening card names what is left of today and offers "To tomorrow"; the morning card names what is late and offers "Move to today".
+- **A heavy day ahead**: the morning and evening cards say when today, tomorrow or the day after is heavy, and when a task due then could be done on a lighter day before it, which one ("Thu is lighter: move \"Report\" there?").
+- **From scripts and shortcuts**: `open-island do "<any bar line>"` runs a line as if typed and sent (`do todo report due fri ~2h`); `open-island event …` and `open-island remind …` are shorthands. A line that is not understood shows a card.
+- **Events from the bar** (`event fri 15-16:30 office hours`): the day (`fri`, `domani`, `3 feb`, today when omitted), a time or a range, an
+  optional `for 1h`, then the title. Written to a CalDAV calendar when an account is set (`event_calendar`, below), else to a calendar file of
+  the island's own (`local-events.ics` in the state folder, shown as the calendar "Island"). If the server refuses, it is kept there.
+- **Notes** (`note …`, or `open-island note …` from a shell, which needs no running island): a line `- 09:05 text` in `<notes_dir>/YYYY-MM-DD.md`.
+- **Find** (`find …`, `open-island find …`): every word must match (case and accents ignored). The island's own things come at once; the notes
+  folder (`.md` and `.txt`, three levels deep, newest first) and the study folders (file names) follow. A click opens a file or a note, and
+  copies the rest.
+- **Tasks on a server**: with `tasks_sync` the tasks are kept on a CalDAV account too (VTODO), so the phone's reminders app and the island
+  see the same list. The island sends a task when it is made, changed or ticked, and reads the list every five minutes; a task finished
+  or deleted elsewhere goes from the island, one the server has never seen (made offline) is sent. A repeating task is kept with its RRULE
+  (daily, weekly on given days, monthly on a day; a rule with an interval or a count is not claimed).
+
+| setting (`config.json`) | meaning |
+|---|---|
+| `notes_dir` | where `note` writes (`~` is the home); empty: a `notes` folder in the island's state folder |
+| `tasks_sync` | `true` keeps the tasks on a CalDAV account (needs a CalDAV account in the calendars) |
+| `tasks_account` | the account's name or user for the tasks; empty: the first CalDAV account |
+| `task_list` | the name of the to-do list on the account; empty: the first list that holds to-dos |
+| `event_calendar` | where new events go: `"Personal"` (a calendar of the first account) or `"Uni/Personal"` (account / calendar); empty: the first calendar of the first account. No account: the island's own file |
 
 ## Other kinds of calendar
 

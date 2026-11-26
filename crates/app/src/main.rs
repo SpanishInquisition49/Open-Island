@@ -31,7 +31,11 @@ fn usage() {
   send <file>...   pick a device on the network (LocalSend) and send it the files
   activity run|done|fail|clear [label] [--detail t] [--icon i] [--color c] [--progress n]   a status for a script (CI, build)
   timer <25m> [name]                     start a countdown (several can run at once; `msg timer-cancel [name]` ends them)
-  todo <text>                            add something to the list on the Today page (tick it off there)
+  todo <text>                            add something to the list on the Today page (tick it off there): todo report due fri #algoritmi ~2h, todo gym every mon
+  note <text>                            add a line to the notes folder (`notes_dir` in the settings; works without the island running)
+  find <words>                           search events, tasks, notes and files (opens the Find page)
+  do <bar line>                          run any command-bar line (todo, event, remind, note...)
+  event <when> <title>                   shorthand for do event ...
   agent                                  a coding agent reports its turns (Claude Code hook JSON on stdin); agent setup claude | agent start|tool|done|fail|end --id ID ...
   hook <zsh|bash|fish|powershell>        a pill for every long shell command (eval $(open-island hook zsh))
   progress <percent|?> <label> | progress-done [label] | progress-fail [label] | progress-clear\n\nCONFIG: {}",
@@ -90,6 +94,23 @@ fn main() {
         Some("activity") => std::process::exit(cli::activity(&args[1..])),
         Some("hook") => std::process::exit(hook::run(&args[1..])),
         Some("todo") if args.len() >= 2 => std::process::exit(if services::ipc::send(&format!("todo {}", args[1..].join(" "))) { 0 } else { eprintln!("open-island is not running"); 1 }),
+        Some("note") if args.len() >= 2 => {
+            let res = services::organizer::notes_dir().ok_or_else(|| "no place for notes".to_string()).and_then(|d| services::organizer::save_note(&d, &args[1..].join(" "), chrono::Local::now()));
+            std::process::exit(match res {
+                Ok(p) => {
+                    println!("{}", p.display());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("open-island: {e}");
+                    1
+                }
+            })
+        }
+        // any line of the command bar, from a script or a shortcut: open-island do "event fri 15-16 office hours"
+        Some("do") if args.len() >= 2 => std::process::exit(if services::ipc::send(&format!("do {}", args[1..].join(" "))) { 0 } else { eprintln!("open-island is not running"); 1 }),
+        Some(verb @ ("event" | "remind")) if args.len() >= 2 => std::process::exit(if services::ipc::send(&format!("do {verb} {}", args[1..].join(" "))) { 0 } else { eprintln!("open-island is not running"); 1 }),
+        Some("find") if args.len() >= 2 => std::process::exit(if services::ipc::send(&format!("find {}", args[1..].join(" "))) { 0 } else { eprintln!("open-island is not running"); 1 }),
         Some("pin") => std::process::exit(cli::pin(&args[1..])),
         Some("unpin") => std::process::exit(if services::ipc::send(&format!("unpin {}", args[1..].join(" "))) { 0 } else { eprintln!("open-island is not running"); 1 }),
         Some("watch") if args.len() >= 2 => std::process::exit(if services::ipc::send(&format!("watch {}", args[1..].join(" "))) { 0 } else { eprintln!("open-island is not running"); 1 }),

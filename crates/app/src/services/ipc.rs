@@ -170,6 +170,8 @@ pub(crate) fn parse(line: &str) -> Option<Input> {
             _ => Input::StartTimer(island_core::duration::parse(payload).unwrap_or(300)),
         },
         // `todo <text>` or `todo add <text>`: something for the list on the Today page
+        "do" if !payload.is_empty() => Input::RunLine(payload.to_string()),
+        "find" if !payload.is_empty() => Input::Find(payload.to_string()),
         "todo" if !payload.is_empty() => Input::TodoAdd(payload.strip_prefix("add ").unwrap_or(payload).into()),
         // `pin <text>`: a note that stays on the Today page; `unpin [text|all]` takes it off
         "pin" if !payload.is_empty() => Input::PinAdd(payload.into()),

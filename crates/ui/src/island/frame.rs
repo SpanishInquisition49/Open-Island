@@ -20,15 +20,17 @@ impl Island {
                 let n = self.day_events().len().clamp(1, 4) as f64;
                 h = 14.0 + 34.0 + 4.0 + 16.0 + weeks * 30.0 + 10.0 + n * 24.0 + 20.0;
             }
-            Face::Notif if self.notif.as_ref().is_some_and(|n| n.progress.is_some()) => h += 14.0,
             Face::Notifs => h = 14.0 + 34.0 + 6.0 + self.history_groups().len().clamp(1, 5) as f64 * 46.0 + if self.history.is_empty() { 20.0 } else { 8.0 },
             Face::Clip => h = 14.0 + 34.0 + 4.0 + self.data.clipboard.len().clamp(1, CLIP_ROWS) as f64 * 32.0 + 10.0,
+            Face::Notif if self.notif.as_ref().is_some_and(|n| n.progress.is_some()) => h += 14.0,
             Face::FocusMini => w += self.icon_count(true) as f64 * ICON_W,
             Face::Settings => h = 14.0 + 34.0 + self.settings_content_height() + 14.0,
             Face::Options => h = 14.0 + 34.0 + 40.0 + crate::options::content_height(self.options_tab, self.data.config.filters.len()) + 14.0,
             Face::Qs => h = self.qs_layout().height,
             Face::Audio => h = self.audio_height(),
             Face::Today => h = self.today_height(),
+            Face::Plan => h = self.plan_height(),
+            Face::Find => h = self.find_height(),
             Face::TimerFull => h += self.extra_timers.len().min(3) as f64 * 28.0 + if self.extra_timers.is_empty() { 0.0 } else { 8.0 },
             Face::Send => h = self.send_height(),
             Face::Phone => h = self.phone_height(),
@@ -147,10 +149,10 @@ impl Island {
         let media = self.data.media.as_ref().is_some_and(|m| !m.title.is_empty());
         let notif = self.notif.as_ref().map(|n| if n.actions.is_empty() { NotifFace::Plain } else { NotifFace::Actions });
         let snap = Snapshot {
+            notif,
             barring: self.bar.is_some(),
             replying: self.reply.is_some(),
             osd: self.osd.is_some() && now < self.osd_until,
-            notif,
             timer_done: now < self.timer_done_until,
             power: self.power.is_some() && now < self.power_until,
             device: self.device_ev.is_some() && now < self.device_until,
@@ -518,6 +520,9 @@ impl Island {
         self.map_needs(now);
         self.heads_up(now);
         self.culprit_card(now);
+        self.sample_battery(now);
+        self.power_card(now);
+        self.ask_materials(now);
         self.network_card(now);
         // a device whose battery went back up may warn again next time
         let devs = &self.data.devices;
@@ -827,7 +832,9 @@ impl Island {
         let next_ms: u32 = if moving {
             0
         } else if equalizer {
-            16 // sixty bars a second: the bars follow the music, and a slower step shows on a fast display
+            // live bars: every new spectrum (it comes 30 times a second) wakes a frame by itself, so no timer is needed
+            // while they arrive (a timer at 16 ms drew each of them twice); the made-up animation needs one, at 30 fps
+            if !self.spectrum.is_empty() && now - self.spectrum_at < 200 { 120 } else { 33 }
         } else if expiring {
             120
         } else if self.timer.is_some() || self.ops.op.is_some_and_running() {

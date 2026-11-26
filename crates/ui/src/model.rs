@@ -301,6 +301,8 @@ pub struct Data {
     /// Who is using the microphone and the camera right now (read while the system page is open).
     /// Units of each currency per euro (the ECB's daily rates), for the command bar.
     pub rates: Vec<(String, f64)>,
+    /// Files found for the title of an event (folded title -> when it was looked for, the best files).
+    pub materials: std::collections::HashMap<String, (i64, Vec<island_core::materials::Material>)>,
     /// The usual train, pinned, and what the departure board says about it today.
     pub train: Option<island_core::train::TrainPin>,
     pub train_status: Option<island_core::train::TrainStatus>,
@@ -413,6 +415,8 @@ pub enum Input {
     Activity(island_core::progress::State, island_core::progress::Activity),
     /// Open the command bar (from a shortcut).
     OpenBar,
+    /// A line for the command bar from outside (`open-island do "todo ..."`): run as if typed and sent.
+    RunLine(String),
     /// The person is back after this many milliseconds without touching the keyboard or the pointer.
     Returned { away_ms: i64 },
     /// No keyboard or pointer input for this long (the person is probably away).
@@ -432,6 +436,14 @@ pub enum Input {
     StartTimer(u64),
     /// Something for the to-do list on the Today page.
     TodoAdd(String),
+    /// Search for these words (from `open-island find`).
+    Find(String),
+    /// The tasks a server has (and whether each is finished): the list is brought in line with them.
+    TasksRemote(Vec<(island_core::task::Task, bool)>),
+    /// What the notes and files had to say about a search (the answer is dropped when the question has changed).
+    FoundMore { query: String, hits: Vec<island_core::plan::Hit> },
+    /// A line to show: a result or a problem from a service ("Could not save the note").
+    Toast { summary: String, body: String },
     /// Keep a note on the Today page, or take pins off (`unpin ssh`, `unpin all`).
     PinAdd(String),
     PinRemove(String),
@@ -487,6 +499,8 @@ pub struct Phone {
     pub calls: Vec<island_core::phone::Call>,
     /// The contacts found by the last search from the page; None before one.
     pub contacts: Option<Vec<island_core::phone::Contact>>,
+    /// Whether the phone's audio plays on this computer (None: not known).
+    pub audio_here: Option<bool>,
     pub at_ms: i64,
 }
 
@@ -504,10 +518,33 @@ pub enum PhoneCall {
 pub enum Command {
     /// Read the text of the image on the clipboard and put the text there.
     Ocr,
+    /// Make an event on the calendar that takes new ones (an account's, or the island's own file).
+    /// `whole_day` is the civil day of an event without hours.
+    CreateEvent { title: String, start_ms: i64, end_ms: i64, whole_day: Option<i64> },
+    /// Add a line to the notes folder.
+    SaveNote(String),
+    /// Look through the notes and the files for these words.
+    Find(String),
+    /// A task was added, changed or finished: tell the server that keeps them (when there is one).
+    PushTask { task: island_core::task::Task, done: bool },
+    /// A task was taken off the list: delete it on the server too.
+    DeleteTask { uid: String },
+    /// Move an event (by the id the calendar gave it) to new hours; `whole_day` is the civil day of an entry without hours.
+    MoveEvent { id: String, title: String, old_start_ms: i64, start_ms: i64, end_ms: i64, whole_day: Option<i64> },
+    /// Cancel an event.
+    CancelEvent { id: String, title: String, start_ms: i64 },
+    /// Read the tasks of the server now.
+    SyncTasks,
+    /// Look for the files of the course named in an event's title.
+    FindMaterials(String),
+    /// Open a file with the program that is set for it.
+    OpenFile(String),
     /// Read the messages of a conversation of the iPhone (its key, from the thread list).
     PhoneOpen(String),
     /// Search the phone's contacts (to write to somebody who is not in the conversations).
     PhoneSearch(String),
+    /// Play the phone's music and sounds on this computer (true) or leave them on the phone.
+    PhoneAudio(bool),
     /// Answer, hang up, dial, or turn call control on or off.
     PhoneCall(PhoneCall),
     /// Reply in a conversation of the iPhone.

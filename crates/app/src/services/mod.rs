@@ -18,6 +18,8 @@ pub mod devices;
 pub mod audio_mixer;
 pub mod culprit;
 pub mod downloads;
+pub mod materials;
+pub mod organizer;
 pub mod ocr;
 pub mod phone;
 pub mod watchpid;
@@ -164,6 +166,7 @@ pub fn start(tx: Sender<Msg>, waker: Arc<dyn Fn() + Send + Sync>) -> Sender<Comm
     downloads::start(rep.clone());
     phone::start(rep.clone());
     trains::start(rep.clone());
+    organizer::start(rep.clone());
     culprit::start(rep.clone());
     #[cfg(any(target_os = "linux", windows))]
     netwatch::start(rep.clone());
@@ -236,7 +239,10 @@ pub fn save_attention(day: i64, apps: &[(String, i64)]) {
 pub fn load_reminders() -> Vec<island_ui::island::Reminder> {
     let Some(text) = state_file("reminders.json").and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };
     let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(&text) else { return vec![] };
-    items.iter().filter_map(|v| Some(island_ui::island::Reminder { due_ms: v.get("due")?.as_i64()?, text: v.get("text")?.as_str()?.to_string() })).collect()
+    items
+        .iter()
+        .filter_map(|v| Some(island_ui::island::Reminder { due_ms: v.get("due")?.as_i64()?, text: v.get("text")?.as_str()?.to_string(), repeat: v.get("repeat").and_then(|r| r.as_str()).map_or(island_core::task::Repeat::Never, island_core::task::Repeat::from_rrule) }))
+        .collect()
 }
 
 pub fn save_reminders_if_changed(reminders: &[island_ui::island::Reminder]) {
@@ -248,7 +254,10 @@ pub fn save_reminders_if_changed(reminders: &[island_ui::island::Reminder]) {
     }
     *last = Some(reminders.to_vec());
     let Some(p) = state_file("reminders.json") else { return };
-    let items: Vec<serde_json::Value> = reminders.iter().map(|r| serde_json::json!({"due": r.due_ms, "text": r.text})).collect();
+    let items: Vec<serde_json::Value> = reminders.iter().map(|r| match r.repeat.to_rrule() {
+        Some(rule) => serde_json::json!({"due": r.due_ms, "text": r.text, "repeat": rule}),
+        None => serde_json::json!({"due": r.due_ms, "text": r.text}),
+    }).collect();
     if let Ok(text) = serde_json::to_string(&items) {
         let _ = std::fs::write(p, text);
     }
@@ -298,7 +307,10 @@ pub fn save_bar_history_if_changed(history: &[String]) {
 pub fn load_deadlines() -> Vec<island_ui::island::Deadline> {
     let Some(text) = state_file("deadlines.json").and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };
     let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(&text) else { return vec![] };
-    items.iter().filter_map(|v| Some(island_ui::island::Deadline { day: v.get("day")?.as_i64()?, text: v.get("text")?.as_str()?.to_string() })).collect()
+    items
+        .iter()
+        .filter_map(|v| Some(island_ui::island::Deadline { day: v.get("day")?.as_i64()?, text: v.get("text")?.as_str()?.to_string(), course: v.get("course").and_then(|c| c.as_str()).unwrap_or("").to_string(), est_min: v.get("est").and_then(|e| e.as_u64()).unwrap_or(0) as u32 }))
+        .collect()
 }
 
 pub fn save_deadlines_if_changed(d: &[island_ui::island::Deadline]) {
@@ -309,7 +321,7 @@ pub fn save_deadlines_if_changed(d: &[island_ui::island::Deadline]) {
         return;
     }
     *last = Some(d.to_vec());
-    let items: Vec<serde_json::Value> = d.iter().map(|x| serde_json::json!({"day": x.day, "text": x.text})).collect();
+    let items: Vec<serde_json::Value> = d.iter().map(|x| serde_json::json!({"day": x.day, "text": x.text, "course": x.course, "est": x.est_min})).collect();
     if let (Some(p), Ok(text)) = (state_file("deadlines.json"), serde_json::to_string(&items)) {
         let _ = std::fs::write(p, text);
     }
@@ -335,6 +347,48 @@ pub fn save_page_usage_if_changed(u: &[(String, u32)]) {
     }
 }
 
+/// How fast the battery drains (percent per hour), learned from use, kept between runs.
+pub fn load_drain() -> Option<f64> {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(state_file("power.json")?).ok()?).ok()?;
+    v.get("drain")?.as_f64()
+}
+
+pub fn save_drain_if_changed(rate: Option<f64>) {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<Option<u64>>> = Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return };
+    // a tenth of a percent is the same drain
+    let key = rate.map(|r| (r * 10.0).round() as u64);
+    if *last == Some(key) || (last.is_none() && key.is_none()) {
+        return;
+    }
+    *last = Some(key);
+    if let (Some(r), Some(p)) = (rate, state_file("power.json")) {
+        let _ = std::fs::write(p, serde_json::json!({"drain": (r * 10.0).round() / 10.0}).to_string());
+    }
+}
+
+/// What to take along, kept between runs: (thing, course).
+pub fn load_bring() -> Vec<island_ui::island::Bring> {
+    let Some(text) = state_file("bring.json").and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(&text) else { return vec![] };
+    items.iter().filter_map(|v| Some(island_ui::island::Bring { text: v.get("text")?.as_str()?.to_string(), course: v.get("course").and_then(|c| c.as_str()).unwrap_or("").to_string() })).collect()
+}
+
+pub fn save_bring_if_changed(b: &[island_ui::island::Bring]) {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<Vec<island_ui::island::Bring>>> = Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return };
+    if last.as_deref() == Some(b) || (last.is_none() && b.is_empty()) {
+        return;
+    }
+    *last = Some(b.to_vec());
+    let items: Vec<serde_json::Value> = b.iter().map(|x| serde_json::json!({"text": x.text, "course": x.course})).collect();
+    if let (Some(p), Ok(text)) = (state_file("bring.json"), serde_json::to_string(&items)) {
+        let _ = std::fs::write(p, text);
+    }
+}
+
 /// The notes pinned to the Today page, kept between runs.
 pub fn load_pins() -> Vec<String> {
     let Some(text) = state_file("pins.json").and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };
@@ -354,17 +408,66 @@ pub fn save_pins_if_changed(pins: &[String]) {
     }
 }
 
+/// One task as it is kept on disk (`todos.json`).
+pub fn todo_to_json(t: &island_ui::island::Todo) -> serde_json::Value {
+    let mut o = serde_json::json!({"uid": t.uid, "text": t.text});
+    let m = o.as_object_mut().expect("an object");
+    if let Some(d) = t.due {
+        m.insert("due".into(), d.into());
+    }
+    if !t.course.is_empty() {
+        m.insert("course".into(), t.course.clone().into());
+    }
+    if t.est_min > 0 {
+        m.insert("est".into(), t.est_min.into());
+    }
+    if let Some(r) = t.repeat.to_rrule() {
+        m.insert("repeat".into(), r.into());
+    }
+    if t.synced {
+        m.insert("synced".into(), true.into());
+    }
+    o
+}
+
+/// Reads a task from `todos.json`: the current form, or an older one (a bare string, or `daily` with the day it was last
+/// ticked), which becomes a task that repeats every day and rests until tomorrow when it was ticked today.
+pub fn todo_from_json(v: &serde_json::Value, today: i64, index: usize) -> Option<island_ui::island::Todo> {
+    use island_core::task::Repeat;
+    let uid = |v: &serde_json::Value| v.get("uid").and_then(|u| u.as_str()).filter(|u| !u.is_empty()).map_or_else(|| format!("oi-old-{today:x}-{index}-{}", std::process::id()), str::to_string);
+    match v {
+        serde_json::Value::String(t) => Some(island_ui::island::Todo { uid: uid(v), text: t.clone(), ..Default::default() }),
+        o => {
+            let text = o.get("text")?.as_str()?.to_string();
+            if o.get("daily").and_then(|d| d.as_bool()).unwrap_or(false) {
+                let done = o.get("done_day").and_then(|d| d.as_i64()).unwrap_or(i64::MIN);
+                return Some(island_ui::island::Todo { uid: uid(v), text, repeat: Repeat::Daily, due: Some(if done >= today { done + 1 } else { today }), ..Default::default() });
+            }
+            Some(island_ui::island::Todo {
+                uid: uid(v),
+                text,
+                due: o.get("due").and_then(|d| d.as_i64()),
+                course: o.get("course").and_then(|c| c.as_str()).unwrap_or("").to_string(),
+                est_min: o.get("est").and_then(|e| e.as_u64()).unwrap_or(0) as u32,
+                repeat: o.get("repeat").and_then(|r| r.as_str()).map_or(Repeat::Never, Repeat::from_rrule),
+                synced: o.get("synced").and_then(|s| s.as_bool()).unwrap_or(false),
+            })
+        }
+    }
+}
+
+/// Today as days since 1970 (local).
+pub fn local_day() -> i64 {
+    use chrono::Datelike;
+    chrono::Local::now().date_naive().num_days_from_ce() as i64 - 719_163
+}
+
 /// The to-do list, kept between runs.
 pub fn load_todos() -> Vec<island_ui::island::Todo> {
     let Some(text) = state_file("todos.json").and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };
     let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(&text) else { return vec![] };
-    items
-        .iter()
-        .filter_map(|v| match v {
-            serde_json::Value::String(t) => Some(island_ui::island::Todo { text: t.clone(), ..Default::default() }),
-            o => Some(island_ui::island::Todo { text: o.get("text")?.as_str()?.to_string(), daily: o.get("daily").and_then(|d| d.as_bool()).unwrap_or(false), done_day: o.get("done_day").and_then(|d| d.as_i64()).unwrap_or(i64::MIN) }),
-        })
-        .collect()
+    let today = local_day();
+    items.iter().enumerate().filter_map(|(i, v)| todo_from_json(v, today, i)).collect()
 }
 
 pub fn save_todos_if_changed(todos: &[island_ui::island::Todo]) {
@@ -376,8 +479,29 @@ pub fn save_todos_if_changed(todos: &[island_ui::island::Todo]) {
     }
     *last = Some(todos.to_vec());
     let Some(p) = state_file("todos.json") else { return };
-    let items: Vec<serde_json::Value> = todos.iter().map(|t| if t.daily { serde_json::json!({"text": t.text, "daily": true, "done_day": t.done_day}) } else { serde_json::json!(t.text) }).collect();
+    let items: Vec<serde_json::Value> = todos.iter().map(todo_to_json).collect();
     if let Ok(text) = serde_json::to_string(&items) {
+        let _ = std::fs::write(p, text);
+    }
+}
+
+/// Study time done (day, course, minutes), kept between runs.
+pub fn load_study_log() -> Vec<(i64, String, u32)> {
+    let Some(text) = state_file("study-log.json").and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(&text) else { return vec![] };
+    items.iter().filter_map(|v| Some((v.get("day")?.as_i64()?, v.get("course").and_then(|c| c.as_str()).unwrap_or("").to_string(), v.get("min")?.as_u64()? as u32))).collect()
+}
+
+pub fn save_study_log_if_changed(log: &[(i64, String, u32)]) {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<Vec<(i64, String, u32)>>> = Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return };
+    if last.as_deref() == Some(log) || (last.is_none() && log.is_empty()) {
+        return;
+    }
+    *last = Some(log.to_vec());
+    let items: Vec<serde_json::Value> = log.iter().map(|(d, c, m)| serde_json::json!({"day": d, "course": c, "min": m})).collect();
+    if let (Some(p), Ok(text)) = (state_file("study-log.json"), serde_json::to_string(&items)) {
         let _ = std::fs::write(p, text);
     }
 }
@@ -416,5 +540,33 @@ pub fn save_history_if_changed(history: &[(island_ui::model::Incoming, i64)]) {
         }
         #[cfg(not(unix))]
         let _ = std::fs::write(&p, text);
+    }
+}
+
+#[cfg(test)]
+mod organizer_state_tests {
+    use super::*;
+    use island_core::task::Repeat;
+
+    #[test]
+    fn a_task_survives_the_disk() {
+        let t = island_ui::island::Todo { uid: "oi-1".into(), text: "Report".into(), due: Some(20_470), course: "algoritmi".into(), est_min: 120, repeat: Repeat::Weekly(0b0001010), synced: true };
+        assert_eq!(todo_from_json(&todo_to_json(&t), 20_000, 0), Some(t));
+        let plain = island_ui::island::Todo { uid: "oi-2".into(), text: "x".into(), ..Default::default() };
+        assert_eq!(todo_to_json(&plain).as_object().unwrap().len(), 2, "only what is set is written");
+    }
+
+    #[test]
+    fn the_older_forms_of_the_list_still_load() {
+        let today = 20_000;
+        let bare = todo_from_json(&serde_json::json!("Buy milk"), today, 3).unwrap();
+        assert_eq!((bare.text.as_str(), bare.repeat, bare.due), ("Buy milk", Repeat::Never, None));
+        assert!(!bare.uid.is_empty(), "it gets an id, so that it can be kept on a server");
+        let ticked = todo_from_json(&serde_json::json!({"text": "charger", "daily": true, "done_day": today}), today, 0).unwrap();
+        assert_eq!((ticked.repeat, ticked.due), (Repeat::Daily, Some(today + 1)), "ticked today: it rests until tomorrow");
+        let waiting = todo_from_json(&serde_json::json!({"text": "charger", "daily": true, "done_day": today - 5}), today, 0).unwrap();
+        assert_eq!(waiting.due, Some(today), "not ticked today: it is due today");
+        assert!(todo_from_json(&serde_json::json!({"nope": 1}), today, 0).is_none());
+        assert_ne!(bare.uid, todo_from_json(&serde_json::json!("Other"), today, 4).unwrap().uid, "each gets its own id");
     }
 }

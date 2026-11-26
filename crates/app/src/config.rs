@@ -188,6 +188,8 @@ pub struct Settings {
     pub filters: Vec<Filter>,
     /// Keep the notification history on disk between runs.
     pub persist_history: bool,
+    /// Where the files of the courses are looked for (`~` is the home); empty: Documents and Downloads.
+    pub study_folders: Vec<String>,
     /// Stop another notification daemon (mako, dunst, ...) so notifications show once, in the island.
     pub take_over_notifications: bool,
     /// A font family name or the path of a font file; empty = the built-in list (SF Pro first).
@@ -196,6 +198,17 @@ pub struct Settings {
     pub screen: String,
     /// The key for map tile providers that want one (`{key}` in the tile URL).
     pub map_api_key: String,
+    /// Where `note ...` writes (one Markdown file a day; `~` is the home); empty: a folder in the island's own state folder.
+    /// Any folder will do: the island knows nothing else about it.
+    pub notes_dir: String,
+    /// Keep the tasks on a CalDAV account too (the first one, or the one named in `tasks_account`).
+    pub tasks_sync: bool,
+    pub tasks_account: String,
+    /// The name of the to-do list on the account; empty: the first one.
+    pub task_list: String,
+    /// The account and calendar that new events (`event fri 15 ...`) go to, by name; empty: the first calendar of the first
+    /// CalDAV account. Without an account they are kept in a calendar file of the island's own.
+    pub event_calendar: String,
 }
 
 impl Default for Settings {
@@ -212,10 +225,16 @@ impl Default for Settings {
             timer_sound: None,
             filters: vec![],
             persist_history: true,
+            study_folders: vec![],
             take_over_notifications: true,
             font: String::new(),
             screen: "focused".into(),
             map_api_key: String::new(),
+            notes_dir: String::new(),
+            tasks_sync: false,
+            tasks_account: String::new(),
+            task_list: String::new(),
+            event_calendar: String::new(),
         }
     }
 }
@@ -276,6 +295,13 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     }
     s.font = v.get("font").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
     s.take_over_notifications = v.get("take_over_notifications").and_then(|x| x.as_bool()).unwrap_or(true);
+    s.study_folders = v.get("study_folders").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|f| f.as_str()).map(str::to_string).take(8).collect()).unwrap_or_default();
+    let text = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+    s.notes_dir = text("notes_dir");
+    s.tasks_account = text("tasks_account");
+    s.task_list = text("task_list");
+    s.event_calendar = text("event_calendar");
+    s.tasks_sync = v.get("tasks_sync").and_then(|x| x.as_bool()).unwrap_or(false);
     s.persist_history = v.get("persist_history").and_then(|x| x.as_bool()).unwrap_or(true);
     s.latitude = v.get("latitude").and_then(|x| x.as_f64()).filter(|x| (-90.0..=90.0).contains(x));
     s.longitude = v.get("longitude").and_then(|x| x.as_f64()).filter(|x| (-180.0..=180.0).contains(x));

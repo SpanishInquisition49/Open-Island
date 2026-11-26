@@ -35,6 +35,18 @@ pub fn parse_link(text: &str) -> Link {
     l
 }
 
+/// `tether --bt-phone-audio`: whether the iPhone's music and sounds play on this computer (true) or stay on the phone.
+pub fn parse_audio(text: &str) -> Option<bool> {
+    let t = text.lines().next()?.to_lowercase();
+    if t.contains("this computer") {
+        Some(true)
+    } else if t.contains("plays on") || t.contains("stays on") || t.contains("iphone") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// One conversation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Thread {
@@ -236,5 +248,13 @@ mod tests {
         assert_eq!((c[0].name.as_str(), c[0].numbers.len()), ("Enrica Rossi", 2));
         assert_eq!(key_for_number("+39 347-123 4567"), "tel:+393471234567");
         assert!(parse_contacts("No contacts match zz").is_empty());
+    }
+
+    #[test]
+    fn where_the_phone_audio_plays_is_read() {
+        assert_eq!(parse_audio("The iPhone's audio plays on this computer.\nRemembered choice: auto"), Some(true));
+        assert_eq!(parse_audio("The iPhone's audio plays on the iPhone.\nRemembered choice: phone"), Some(false));
+        assert_eq!(parse_audio(""), None);
+        assert_eq!(parse_audio("Could not reach the daemon."), None);
     }
 }

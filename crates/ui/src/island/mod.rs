@@ -193,6 +193,18 @@ pub enum Action {
     TimerCancel,
     /// Ticks off (removes) the to-do at this position.
     TodoDone(usize),
+    /// Puts the to-do at this position off by this many days.
+    TodoPostpone(usize, i64),
+    /// Opens the bar to change the to-do at this position.
+    TodoEdit(usize),
+    /// Removes the to-do at this position.
+    TodoRemove(usize),
+    /// Closes the menu of a row.
+    TodoMenuClose,
+    /// A row of the search page: open the file or note, copy the rest.
+    FindOpen(usize),
+    /// Opens a file found for the lecture.
+    OpenFile(String),
     /// Opens the conversation at this position of the iPhone's list.
     PhoneThread(usize),
     /// Back from a conversation or a search to the list.
@@ -201,6 +213,8 @@ pub enum Action {
     PhoneContact(usize),
     /// Answer, hang up or turn call control on.
     PhoneCallDo(PhoneCall),
+    /// Choose where the phone's audio plays.
+    PhoneAudioDo(bool),
     /// Copies the pin at this position.
     PinCopy(usize),
     /// Takes the pin at this position off.
@@ -379,29 +393,44 @@ pub struct MapView {
     pub dest: Option<((f64, f64), String)>,
 }
 
-/// Something to do, from the command bar or a script; ticking it off removes it.
+/// Something to do, from the command bar, a script or a server: a day, a course, a time estimate, a repetition.
+pub use island_core::task::Task as Todo;
+
+/// Something to take along, for the lectures of a course (or any day).
 #[derive(Clone, Debug, PartialEq, Default)]
-pub struct Todo {
+pub struct Bring {
     pub text: String,
-    /// Comes back every day: ticking it hides it until tomorrow instead of removing it.
-    pub daily: bool,
-    /// The day (since 1970) it was last ticked, for a daily one.
-    pub done_day: i64,
+    /// A word of the event title (case does not matter); empty: every day.
+    pub course: String,
 }
 
 /// A date to count down to: an exam, a project hand-in.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Deadline {
     /// Days since 1970-01-01 (local).
     pub day: i64,
     pub text: String,
+    /// What to study for it (a word of an event title), and the minutes of work still to do: the study plan is made of these.
+    pub course: String,
+    pub est_min: u32,
 }
 
 /// A reminder set from the command bar.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Reminder {
     pub due_ms: i64,
     pub text: String,
+    /// A reminder that comes back: when it fires it is set again for the next day it falls on.
+    pub repeat: island_core::task::Repeat,
+}
+
+/// The answer to a search: what was asked and what was found so far.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Found {
+    pub query: String,
+    pub hits: Vec<island_core::plan::Hit>,
+    /// The notes and files are still being read.
+    pub searching: bool,
 }
 
 /// A setting being edited in the settings menu.
@@ -560,8 +589,28 @@ pub struct Island {
     /// Countdowns running beside `timer`, soonest first.
     pub(crate) extra_timers: Vec<Timer>,
     pub(crate) todos: Vec<Todo>,
+    /// Tasks finished here whose server copy may still say open for one more sync (so they do not come back).
+    pub(crate) tasks_done: Vec<String>,
+    /// The task (by uid) whose row shows its menu: put off, edit, remove.
+    pub row_menu: Option<String>,
+    /// Study time done: (day, course, minutes), kept for a few months.
+    pub(crate) study_log: Vec<(i64, String, u32)>,
+    pub(crate) found: Found,
     /// Notes kept on the Today page until removed, newest first.
     pub(crate) pins: Vec<String>,
+    /// When each event title was last looked up for files, and when the lookups were last considered.
+    pub(crate) materials_asked: std::collections::HashMap<String, i64>,
+    pub(crate) materials_checked: i64,
+    /// (time, percent) while on battery, for the drain.
+    pub(crate) battery_log: Vec<(i64, f32)>,
+    /// Percent per hour measured now / learned before (kept between runs), and when it was last blended in.
+    pub(crate) drain_live: Option<f64>,
+    pub(crate) drain_saved: Option<f64>,
+    pub(crate) drain_blended_at: i64,
+    /// The day number each battery card was last given (the day will not last / charge more).
+    pub(crate) power_told: [i64; 2],
+    /// What to take along, with the course it is for (empty: any day).
+    pub(crate) bring: Vec<Bring>,
     /// How often each page was opened (the dock keeps the ones that are).
     pub(crate) page_uses: std::collections::HashMap<Page, u32>,
     /// The iPhone conversation that is open on its page (its key).
@@ -738,9 +787,21 @@ impl Island {
             timer: None,
             extra_timers: Vec::new(),
             todos: Vec::new(),
+            tasks_done: Vec::new(),
+            row_menu: None,
+            study_log: Vec::new(),
+            found: Found::default(),
             notif_group: 1,
             deadlines: Vec::new(),
             pins: Vec::new(),
+            materials_asked: std::collections::HashMap::new(),
+            materials_checked: i64::MIN / 2,
+            battery_log: Vec::new(),
+            drain_live: None,
+            drain_saved: None,
+            drain_blended_at: i64::MIN / 2,
+            power_told: [i64::MIN; 2],
+            bring: Vec::new(),
             page_uses: std::collections::HashMap::new(),
             phone_open: None,
             phone_search: false,
@@ -860,7 +921,10 @@ impl Island {
 
 mod frame;
 mod inputs;
+mod organizer;
 mod pointer;
+mod power;
+mod study;
 #[cfg(test)]
 mod tests;
 
@@ -905,7 +969,7 @@ pub(crate) fn notif_code(n: &Incoming) -> Option<String> {
 
 /// Faces that are pages: they carry the dock at the bottom.
 pub(crate) fn has_dock(f: Face) -> bool {
-    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options | Face::Audio | Face::Today | Face::Send | Face::Activity | Face::Map | Face::Phone | Face::Grid)
+    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options | Face::Audio | Face::Today | Face::Plan | Face::Find | Face::Send | Face::Activity | Face::Map | Face::Phone | Face::Grid)
 }
 
 pub(crate) fn page_of(f: Face) -> Option<Page> {
@@ -925,6 +989,8 @@ pub(crate) fn page_of(f: Face) -> Option<Page> {
         Face::Options => Page::Options,
         Face::Audio => Page::Audio,
         Face::Today => Page::Today,
+        Face::Plan => Page::Plan,
+        Face::Find => Page::Find,
         Face::Send => Page::Send,
         Face::Activity => Page::Activity,
         Face::Map => Page::Map,

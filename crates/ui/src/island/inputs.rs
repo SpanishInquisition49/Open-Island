@@ -22,6 +22,10 @@ impl Island {
             }
             Input::Key(k) => self.on_key(k),
             Input::StartReply => self.start_reply(),
+            Input::RunLine(line) => match self.parse_line(&line) {
+                Some(c) => self.run_bar(c),
+                None => self.say("Not understood", &line),
+            },
             Input::OpenBar => self.bar = Some(Bar { until: now + BAR_IDLE_MS, ..Default::default() }),
             Input::Click(x, y) => {
                 let cmds = self.pointer_down(now, x, y);
@@ -135,7 +139,11 @@ impl Island {
                 }
             }
             Input::StartTimer(secs) => self.start_timer(secs),
-            Input::TodoAdd(text) => self.add_todo(text),
+            Input::TodoAdd(text) => self.add_task_text(&text),
+            Input::Find(query) => self.start_find(query),
+            Input::TasksRemote(remote) => self.merge_tasks(remote),
+            Input::FoundMore { query, hits } => self.found_more(query, hits),
+            Input::Toast { summary, body } => self.say(&summary, &body),
             Input::PinAdd(text) => self.pin(&text),
             Input::PinRemove(what) => self.unpin(&what),
             Input::StartNamedTimer(secs, label) => self.start_named_timer(secs, label),
@@ -313,13 +321,14 @@ impl Island {
     }
 
     /// A headline and a line for a list of items and the open to-dos ("Tomorrow · 3 events, 1 to do"). None when there is nothing.
-    fn agenda_card(&self, heading: &str, items: &[island_core::timeline::Item]) -> Option<(String, String)> {
+    pub(super) fn agenda_card(&self, heading: &str, items: &[island_core::timeline::Item]) -> Option<(String, String)> {
         let off = self.data.utc_offset_secs;
         let events = items.iter().filter(|i| i.kind == island_core::timeline::Kind::Event).count();
         let reminders = items.len() - events;
         let todos = self.open_todos().len();
         let soon: Vec<&Deadline> = self.deadlines_soon(7);
-        if items.is_empty() && todos == 0 && soon.is_empty() {
+        let bring = self.bring_for(items);
+        if items.is_empty() && todos == 0 && soon.is_empty() && bring.is_empty() && self.study_line(self.today_day() + i64::from(heading == "Tomorrow")).is_none() && self.heavy_lines(self.today_day() + i64::from(heading == "Tomorrow")).is_empty() {
             return None;
         }
         let when = |i: &island_core::timeline::Item| if i.all_day { "all day".to_string() } else { crate::clock::civil(i.at_ms, off).hhmm() };
@@ -359,6 +368,23 @@ impl Island {
             if let Some(t) = self.train_tonight() {
                 lines.insert(0, t);
             }
+        }
+        if let Some(l) = self.power_line(heading == "Tomorrow", items) {
+            let at = usize::from(lines.first().is_some_and(|l| l.starts_with("Leave")));
+            lines.insert(at, l);
+        }
+        if let Some(l) = self.files_line(items) {
+            lines.push(l);
+        }
+        // the work to do for what is coming up, spread over the days left
+        let study_day = self.today_day() + i64::from(heading == "Tomorrow");
+        if let Some(l) = self.study_line(study_day) {
+            lines.push(l);
+        }
+        lines.extend(self.heavy_lines(study_day));
+        if !bring.is_empty() {
+            let at = usize::from(lines.first().is_some_and(|l| l.starts_with("Leave")));
+            lines.insert(at, format!("Bring {}", bring.join(", ")));
         }
         // the nearest deadline, as what it is: "Reti exam in 3 days"
         if let Some(d) = soon.first() {
@@ -465,8 +491,8 @@ impl Island {
 
     /// The card with tomorrow, held on screen long enough to read; false when there is nothing to say.
     pub fn show_evening(&mut self) -> bool {
-        let card = self.evening_card();
-        self.show_card(card, false)
+        let (card, actions) = self.with_leftovers(self.evening_card(), false);
+        self.show_card(card, false, actions)
     }
 
     /// Once a day, at the chosen time (or the first moment after it, until 23:30), the card with tomorrow.
@@ -497,7 +523,7 @@ impl Island {
         !self.data.events.is_empty() || now - since >= 30_000
     }
 
-    fn show_card(&mut self, card: Option<(String, String)>, morning: bool) -> bool {
+    fn show_card(&mut self, card: Option<(String, String)>, morning: bool, actions: Vec<NotifAction>) -> bool {
         let Some((summary, body)) = card else { return false };
         self.next_own_id += 1;
         if morning {
@@ -505,15 +531,15 @@ impl Island {
         } else {
             self.evening_id = self.next_own_id;
         }
-        let n = Incoming { id: self.next_own_id, app: "open-island".into(), summary, body, expire_ms: Some(45_000), ..Default::default() };
+        let n = Incoming { id: self.next_own_id, app: "open-island".into(), summary, body, actions, expire_ms: Some(45_000), ..Default::default() };
         self.push(self.now, Input::Notification(n));
         true
     }
 
     /// The card with today, held on screen long enough to read; false when there is nothing to say.
     pub fn show_morning(&mut self) -> bool {
-        let card = self.morning_card();
-        self.show_card(card, true)
+        let (card, actions) = self.with_leftovers(self.morning_card(), true);
+        self.show_card(card, true, actions)
     }
 
     /// Once a day, at the first moment from the chosen time until 14:00 (the machine may be opened late), the card with today.
@@ -554,11 +580,15 @@ impl Island {
     }
 
     pub(crate) fn bar_cmd(&self) -> Option<island_core::bar::Cmd> {
-        let b = self.bar.as_ref()?;
+        self.parse_line(&self.bar.as_ref()?.text)
+    }
+
+    /// A line as the command bar would read it now.
+    pub(super) fn parse_line(&self, text: &str) -> Option<island_core::bar::Cmd> {
         let local = (self.now / 1000 + self.data.utc_offset_secs as i64).rem_euclid(86_400);
         let t = crate::clock::civil(self.now, self.data.utc_offset_secs);
         let ctx = island_core::bar::Ctx { local_secs: local, weekday: Some(self.weekday_at(self.now)), today: Some((t.year as i64, t.month as i64, t.day as i64)), rates: &self.data.rates };
-        island_core::bar::parse_ctx(&b.text, &ctx)
+        island_core::bar::parse_ctx(text, &ctx)
     }
 
     pub(super) fn bar_key(&mut self, k: KeyInput) {
@@ -627,17 +657,20 @@ impl Island {
             Cmd::Dnd(on) => self.pending.push(Command::SetDnd(on)),
             Cmd::Focus { minutes } => self.pending.push(Command::StartFocus(minutes)),
             Cmd::Remind { secs, text } => {
-                self.reminders.push(Reminder { due_ms: now + secs * 1000, text: text.clone() });
+                self.reminders.push(Reminder { due_ms: now + secs * 1000, text: text.clone(), ..Default::default() });
                 self.reminders.sort_by_key(|r| r.due_ms);
                 self.reminders.truncate(50);
                 self.say("Reminder set", &format!("in {} · {text}", island_core::duration::fmt_took(secs * 1000).replace(' ', "")));
             }
+            Cmd::RemindBefore { secs, query } => self.remind_before(secs, &query),
             Cmd::Ocr => self.pending.push(Command::Ocr),
             Cmd::Go(page) => self.push(now, Input::OpenPage(page)),
+            Cmd::Bring { text, course } => self.add_bring(&text, &course),
+            Cmd::Unbring(what) => self.remove_bring(&what),
             Cmd::Pin(text) => self.pin(&text),
             Cmd::Unpin(what) => self.unpin(&what),
-            Cmd::Deadline { day, text } => {
-                self.deadlines.push(Deadline { day, text: text.chars().take(80).collect() });
+            Cmd::Deadline { day, text, course, est_min } => {
+                self.deadlines.push(Deadline { day, text: text.chars().take(80).collect(), course, est_min });
                 self.deadlines.sort_by_key(|d| d.day);
                 self.deadlines.truncate(20);
                 let left = day - self.day_number(now);
@@ -657,8 +690,25 @@ impl Island {
                 self.say("Setting home", &h);
                 self.pending.push(Command::SetHome(h));
             }
-            Cmd::Todo(text) => self.add_todo(text),
-            Cmd::TodoDaily(text) => self.add_daily_todo(text),
+            Cmd::Todo(spec) => self.add_task(spec),
+            Cmd::RemindEvery { repeat, at_secs, text } => self.add_repeating_reminder(repeat, at_secs, text),
+            Cmd::Move { query, day, start_min, dur_min } => self.move_item(&query, day, start_min, dur_min),
+            Cmd::EditTask { query, spec } => self.edit_task(&query, spec),
+            Cmd::DropTask(q) => self.drop_task(&q),
+            Cmd::CancelEvent(q) => self.cancel_event(&q),
+            Cmd::Event { day, start_min, dur_min, title } => self.add_event(day, start_min, dur_min, title),
+            Cmd::Note(text) => {
+                self.pending.push(Command::SaveNote(text.clone()));
+                self.say("Noted", &text);
+            }
+            Cmd::Find(query) => self.start_find(query),
+            Cmd::Study { minutes, course } => self.log_study(minutes, &course),
+            Cmd::PomodoroFor(course) => {
+                self.start_pomodoro();
+                if let Some(t) = self.timer.as_mut() {
+                    t.label = course;
+                }
+            }
             Cmd::UntilNext => {
                 let next = self.data.events.iter().filter(|e| !e.all_day && e.start_ms > now).min_by_key(|e| e.start_ms).map(|e| (e.start_ms, e.title.clone()));
                 match next {
@@ -696,36 +746,6 @@ impl Island {
                 self.say("Copied", &copy);
             }
         }
-    }
-
-    fn add_todo_item(&mut self, t: Todo) {
-        self.todos.push(t);
-        self.todos.truncate(30);
-    }
-
-    /// A to-do that comes back every day (the charger, the pass, lunch): ticking it hides it until tomorrow.
-    pub(super) fn add_daily_todo(&mut self, text: String) {
-        let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(120).collect();
-        if text.is_empty() || self.todos.iter().any(|t| t.text == text) {
-            return;
-        }
-        self.add_todo_item(Todo { text: text.clone(), daily: true, done_day: i64::MIN });
-        self.say("Added, every day", &text);
-    }
-
-    /// The to-dos still to do today, with their position in the list: a daily one that was ticked today waits for tomorrow.
-    pub(crate) fn open_todos(&self) -> Vec<(usize, &Todo)> {
-        let today = self.day_number(self.now);
-        self.todos.iter().enumerate().filter(|(_, t)| !(t.daily && t.done_day == today)).collect()
-    }
-
-    pub(super) fn add_todo(&mut self, text: String) {
-        let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(120).collect();
-        if text.is_empty() || self.todos.iter().any(|t| t.text == text) {
-            return;
-        }
-        self.add_todo_item(Todo { text: text.clone(), ..Default::default() });
-        self.say("Added to your list", &text);
     }
 
     /// Deadlines that have not passed (one is kept for the day after, so that "yesterday" is seen), soonest first.
@@ -791,6 +811,53 @@ impl Island {
         self.page_uses = v.into_iter().filter_map(|(k, n)| Some((island_core::face::page_by_name(&k)?, n))).collect();
     }
 
+    pub fn add_bring(&mut self, text: &str, course: &str) {
+        let (text, course) = (text.split_whitespace().collect::<Vec<_>>().join(" "), course.split_whitespace().collect::<Vec<_>>().join(" "));
+        if text.is_empty() {
+            return;
+        }
+        let b = Bring { text: text.chars().take(80).collect(), course: course.chars().take(60).collect() };
+        self.bring.retain(|x| !(x.text.eq_ignore_ascii_case(&b.text) && x.course.eq_ignore_ascii_case(&b.course)));
+        self.bring.push(b.clone());
+        self.bring.truncate(30);
+        self.say("Will remind you to bring", &if b.course.is_empty() { b.text } else { format!("{} · for {}", b.text, b.course) });
+    }
+
+    /// "" the newest, "all", else the first containing the words.
+    pub fn remove_bring(&mut self, what: &str) {
+        let what = what.trim().to_lowercase();
+        let gone = match what.as_str() {
+            "" => self.bring.pop().map(|b| vec![b]),
+            "all" | "tutto" => Some(std::mem::take(&mut self.bring)),
+            w => self.bring.iter().position(|b| b.text.to_lowercase().contains(w) || b.course.to_lowercase().contains(w)).map(|i| vec![self.bring.remove(i)]),
+        };
+        match gone {
+            Some(g) if !g.is_empty() => self.say("No longer bringing", &if g.len() == 1 { g[0].text.clone() } else { format!("{} things", g.len()) }),
+            _ => self.say("Nothing to remove", ""),
+        }
+    }
+
+    pub fn bring_list(&self) -> &[Bring] {
+        &self.bring
+    }
+
+    pub fn restore_bring(&mut self, b: Vec<Bring>) {
+        self.bring = b;
+        self.bring.truncate(30);
+    }
+
+    /// What to take along for these items (events): the things for no course, and those whose course is in an event title.
+    pub(crate) fn bring_for(&self, items: &[island_core::timeline::Item]) -> Vec<String> {
+        let mut out: Vec<String> = vec![];
+        for b in &self.bring {
+            let fits = b.course.is_empty() || items.iter().any(|i| i.kind == island_core::timeline::Kind::Event && i.title.to_lowercase().contains(&b.course.to_lowercase()));
+            if fits && !out.contains(&b.text) {
+                out.push(b.text.clone());
+            }
+        }
+        out
+    }
+
     pub fn pins(&self) -> &[String] {
         &self.pins
     }
@@ -808,8 +875,12 @@ impl Island {
     pub(super) fn fire_reminders(&mut self, now: i64) {
         while self.reminders.first().is_some_and(|r| r.due_ms <= now) {
             let r = self.reminders.remove(0);
+            if let Some(next) = self.next_reminder(&r) {
+                self.reminders.push(next);
+                self.reminders.sort_by_key(|r| r.due_ms);
+            }
             self.next_own_id += 1;
-            let n = Incoming { id: self.next_own_id, app: "Reminder".into(), summary: r.text, body: String::new(), expire_ms: Some(15_000), ..Default::default() };
+            let n = Incoming { id: self.next_own_id, app: "Reminder".into(), summary: r.text, body: String::new(), actions: self.snooze_actions(), expire_ms: Some(15_000), ..Default::default() };
             self.pending.push(Command::PlaySound);
             self.push(now, Input::Notification(n));
         }
@@ -1208,6 +1279,9 @@ impl Island {
         match t.mode {
             TimerMode::Pomodoro => {
                 let (phase, round, secs) = pomodoro::next(t.phase, t.round);
+                if t.phase == Phase::Focus {
+                    self.log_study((pomodoro::FOCUS / 60) as u32, &t.label);
+                }
                 self.timer_done_text = match t.phase {
                     Phase::Focus => ("Focus done".into(), format!("Break: {}", duration::preset_label(secs))),
                     Phase::Break => ("Break over".into(), format!("Round {round}: back to focus")),
@@ -1226,7 +1300,7 @@ impl Island {
 }
 
 /// 64 random bits from the operating system (the clock only if it fails, which is no place for a password but still a die).
-fn os_random() -> u64 {
+pub(super) fn os_random() -> u64 {
     let mut b = [0u8; 8];
     if getrandom::fill(&mut b).is_err() {
         let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
