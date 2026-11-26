@@ -565,7 +565,7 @@ a script with `open-island msg set <option> <value>`:
 | Places | `currency_rates` (the ECB's daily rates for the bar) | on |
 | Places | `wifi_position` (Linux: a position within metres from the Wi-Fi networks around you, looked up at beacondb.net; a card says so when you turn it on) | **off** |
 | Places | `map_tile_url` (a preset name or a URL; see the map), `map_dark`, `map_api_key` (Settings page), `travel_mode` (`car`, `walk`, `transit`, `train`: on the Today page and the map) | OpenStreetMap, on, none, car |
-| Music | `media_auto_expand`, `lyrics`, `lyrics_in_pill` (off), `art_tint` | on |
+| Music (a title or artist too long for its place slides back and forth, pausing at each end, instead of being cut) | `media_auto_expand`, `lyrics`, `lyrics_in_pill` (off; the compact pill widens, up to 640 px, to show the line whole), `art_tint` | on |
 
 Not carried over, because they are about running inside Noctalia: `style` (the island is always black), `update_check`.
 

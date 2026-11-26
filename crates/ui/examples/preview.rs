@@ -187,6 +187,8 @@ fn main() {
         ("idle", Box::new(|_, _| {})),
         ("idle-mic", Box::new(|_, d| d.privacy.mic = true)),
         ("media-mini", Box::new(|_, d| media(d, true))),
+        ("media-mini-lyric", Box::new(|i, d| { media(d, true); i.cfg.lyrics_in_pill = true; })),
+        ("media-long-title", Box::new(|_, d| { media(d, true); d.media.as_mut().unwrap().title = "Sinfonia n. 9 in re minore, op. 125: IV. Finale (Presto - Allegro assai)".into(); })),
         ("media-full", Box::new(|i, d| { media(d, true); i.push(NOW, Input::Peek); i.cfg.lyrics = false; })),
         ("media-lyrics", Box::new(|i, d| { media(d, true); i.push(NOW, Input::Peek); })),
         ("media-transition", Box::new(|i, d| { media(d, true); i.push(NOW, Input::Peek); i.cfg.lyrics = false; })),

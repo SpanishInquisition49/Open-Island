@@ -39,7 +39,12 @@ impl Island {
             Face::Activity => h = 14.0 + 34.0 + 8.0 + 6.0 * 30.0 + 10.0,
             Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
             Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
-            Face::MediaMini | Face::TimerMini | Face::MeetMini => w += self.icon_count(true) as f64 * ICON_W,
+            Face::MediaMini | Face::TimerMini | Face::MeetMini => {
+                w += self.icon_count(true) as f64 * ICON_W;
+                if face == Face::MediaMini {
+                    w = w.max(self.lyric_pill_width(w));
+                }
+            }
             _ => {}
         }
         if has_dock(face) {
@@ -47,6 +52,19 @@ impl Island {
             w = w.max((self.dock_pages().len() + 1) as f64 * 30.0 + 28.0);
         }
         (w, h)
+    }
+
+    /// The width the compact pill needs to show the line being sung whole (the option puts it where the title is): left
+    /// margin, the line (about 0.54 em a character at 12 px), the equalizer, the clock and the icons already counted in `w`.
+    /// Never narrower than `w`, never wider than `LYRIC_PILL_MAX`.
+    fn lyric_pill_width(&self, w: f64) -> f64 {
+        if !self.cfg.lyrics_in_pill || !self.data.media.as_ref().is_some_and(|m| m.playing) {
+            return w;
+        }
+        let Some((line, _)) = self.lyric_now() else { return w };
+        let icons = if self.cfg.status_icons { w - Face::MediaMini.size().0 } else { 0.0 };
+        let clock = if self.cfg.clock_in_pill { 50.0 } else { 0.0 };
+        (38.0 + line.chars().count() as f64 * 12.0 * 0.54 + 26.0 + 14.0 + clock + icons).clamp(w, LYRIC_PILL_MAX.max(w))
     }
 
     /// Rows of the system page that have data.
@@ -826,7 +844,8 @@ impl Island {
         // a timer twice a second, otherwise the clock once a second
         let levels_moving = self.ease_levels(dt_ms) | self.ease_media_button(dt_ms);
         let waiting_for_hover = (self.hovering && now - self.hover_since < HOVER_INTENT_MS + 60) || now < self.hover_left + HOVER_GRACE_MS + 60;
-        let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving;
+        let marquee = self.marquee_on.replace(false);
+        let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving || marquee;
         let equalizer = self.data.media.as_ref().is_some_and(|m| m.playing) && matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric);
         let expiring = snap.osd || snap.notif.is_some() || snap.timer_done || snap.power || snap.meeting || snap.rain || snap.op_flash || self.edit.is_some() || self.reply.is_some() || self.kb.is_some() || self.bar.is_some();
         let next_ms: u32 = if moving {

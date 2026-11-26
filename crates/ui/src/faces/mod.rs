@@ -271,6 +271,30 @@ impl Island {
         x_right - w - 8.0
     }
 
+    /// One line of text; when it is wider than `max_w` it slides back and forth inside its place (a pause at each end) so
+    /// that all of it can be read, instead of being cut.
+    #[allow(clippy::too_many_arguments)]
+    fn marquee(&self, p: P, text: &str, x: f64, cy: f64, size: f32, weight: Weight, color: Color, max_w: f32) {
+        let width = p.fonts.measure(text, size, weight);
+        if width <= max_w {
+            p.text(text, x, cy, size, weight, color, Align::Left, max_w);
+            return;
+        }
+        self.marquee_on.set(true);
+        let t0 = {
+            let mut s = self.marquee_since.borrow_mut();
+            if s.0 != text {
+                *s = (text.to_string(), self.now);
+            }
+            s.1
+        };
+        let offset = marquee_offset((self.now - t0).max(0), (width - max_w) as f64 + 8.0);
+        let t = p.transform;
+        p.scene.push_clip_layer(Fill::NonZero, t, &Rect::new(x, cy - size as f64, x + max_w as f64, cy + size as f64));
+        p.text(text, x - offset, cy, size, weight, color, Align::Left, width + 16.0);
+        p.scene.pop_layer();
+    }
+
     fn face_media_mini(&self, p: P, w: f64, h: f64) {
         let Some(m) = self.data.media.as_ref() else { return };
         let cy = h / 2.0;
@@ -287,7 +311,7 @@ impl Island {
                 p.opacity = base;
             }
             None => {
-                p.text(&m.title, 38.0, cy, 12.0, SEMI, theme::FG, Align::Left, max);
+                self.marquee(p, &m.title, 38.0, cy, 12.0, SEMI, theme::FG, max);
             }
         }
         p.hit(rect(0.0, 0.0, w, h), Action::Open(Page::Media));
@@ -295,8 +319,8 @@ impl Island {
 
     fn face_media_full(&self, p: P, w: f64, _h: f64, lyric: bool) {
         let Some(m) = self.data.media.as_ref() else { return };
-        p.text(&m.title, 92.0, 30.0, 14.0, SEMI, theme::FG, Align::Left, (w - 92.0 - 56.0) as f32);
-        p.text(&m.artist, 92.0, 50.0, 12.0, REG, theme::DIM, Align::Left, (w - 92.0 - 56.0) as f32);
+        self.marquee(p, &m.title, 92.0, 30.0, 14.0, SEMI, theme::FG, (w - 92.0 - 56.0) as f32);
+        self.marquee(p, &m.artist, 92.0, 50.0, 12.0, REG, theme::DIM, (w - 92.0 - 56.0) as f32);
         self.equalizer(p, w - 40.0, 30.0, 4, 14.0, 3.0, self.playing_shown(), self.art_tint());
         // progress (a slider you can drag) + times
         let pos = self.media_position();
@@ -948,3 +972,35 @@ fn draw_image(p: P, img: &Image, x: f64, y: f64, size: f64, radius: f64) {
     p.scene.pop_layer();
 }
 
+/// How far a line that overflows by `travel` pixels has slid `ms` after it appeared: a pause, a slide to the end, a
+/// pause, a slide back, and again.
+pub(crate) fn marquee_offset(ms: i64, travel: f64) -> f64 {
+    const PAUSE: f64 = 1500.0;
+    const SPEED: f64 = 40.0; // pixels a second
+    let slide = travel / SPEED * 1000.0;
+    let t = ms as f64 % (2.0 * PAUSE + 2.0 * slide);
+    if t < PAUSE {
+        0.0
+    } else if t < PAUSE + slide {
+        (t - PAUSE) / 1000.0 * SPEED
+    } else if t < 2.0 * PAUSE + slide {
+        travel
+    } else {
+        travel - (t - 2.0 * PAUSE - slide) / 1000.0 * SPEED
+    }
+}
+
+#[cfg(test)]
+mod marquee_tests {
+    use super::marquee_offset;
+
+    #[test]
+    fn a_long_line_rests_slides_to_its_end_rests_and_comes_back() {
+        assert_eq!(marquee_offset(0, 80.0), 0.0);
+        assert_eq!(marquee_offset(1400, 80.0), 0.0, "it rests first");
+        assert!((marquee_offset(1500 + 1000, 80.0) - 40.0).abs() < 0.01, "half way after a second at 40 px/s");
+        assert_eq!(marquee_offset(1500 + 2000 + 500, 80.0), 80.0, "it rests at the end");
+        assert!(marquee_offset(1500 + 2000 + 1500 + 1000, 80.0) < 80.0, "then comes back");
+        assert_eq!(marquee_offset(2 * 1500 + 2 * 2000, 80.0), 0.0, "and the cycle begins again");
+    }
+}

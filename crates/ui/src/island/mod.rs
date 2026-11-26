@@ -27,6 +27,8 @@ const SWIPE_TRACK: f64 = 3.0;
 const SWIPE_COOLDOWN_MS: i64 = 700;
 /// How long a press of play/pause is believed before the player has confirmed it.
 const PLAY_CONFIRM_MS: i64 = 1500;
+/// The widest the compact pill grows to show a line of lyrics.
+const LYRIC_PILL_MAX: f64 = 640.0;
 const SNOOZE_MS: i64 = 10 * 60_000;
 /// Notifications the island makes itself (confirmations, reminders, the recap) have ids from here.
 const OWN_ID_BASE: u32 = 3_000_000;
@@ -593,6 +595,10 @@ pub struct Island {
     pub(crate) tasks_done: Vec<String>,
     /// The task (by uid) whose row shows its menu: put off, edit, remove.
     pub row_menu: Option<String>,
+    /// A line too long for its place is being scrolled (set while drawing; the next tick asks for frames), and what
+    /// scrolls with the moment it began.
+    pub(crate) marquee_on: std::cell::Cell<bool>,
+    pub(crate) marquee_since: std::cell::RefCell<(String, i64)>,
     /// Study time done: (day, course, minutes), kept for a few months.
     pub(crate) study_log: Vec<(i64, String, u32)>,
     pub(crate) found: Found,
@@ -789,6 +795,8 @@ impl Island {
             todos: Vec::new(),
             tasks_done: Vec::new(),
             row_menu: None,
+            marquee_on: std::cell::Cell::new(false),
+            marquee_since: std::cell::RefCell::new((String::new(), 0)),
             study_log: Vec::new(),
             found: Found::default(),
             notif_group: 1,

@@ -3620,3 +3620,25 @@ fn a_reminder_card_offers_to_ring_again_later() {
     assert_eq!(i.reminders[0].text, "Call mom");
     assert_eq!(i.reminders[0].due_ms, i.day_start_ms(i.today_day()) + 20 * 3_600_000);
 }
+
+#[test]
+fn the_pill_widens_for_a_long_line_of_lyrics_and_stays_put_for_a_short_one() {
+    let mut i = Island::new(Config { lyrics_in_pill: true, ..Config::default() });
+    i.data = data();
+    let long = "I've been walking down this road for a thousand miles and I still don't know the way home";
+    i.data.lyrics_lrc = Some(format!("[00:01.00] ok\n[00:10.00] {long}\n[00:30.00] end\n"));
+    i.data.media.as_mut().unwrap().playing = true;
+    i.data.media.as_mut().unwrap().position_ms = 2_000.0;
+    i.data.media.as_mut().unwrap().sampled_at_ms = T0;
+    run(&mut i, 600);
+    let base = i.face_size(Face::MediaMini).0;
+    assert!((base - Face::MediaMini.size().0).abs() < 80.0, "a short line fits the usual pill: {base}");
+    i.data.media.as_mut().unwrap().position_ms = 11_000.0;
+    i.data.media.as_mut().unwrap().sampled_at_ms = i.now;
+    run(&mut i, 16);
+    let wide = i.face_size(Face::MediaMini).0;
+    assert!(wide > base + 200.0 && wide <= 640.0, "{base} -> {wide}");
+    i.cfg.lyrics_in_pill = false;
+    assert_eq!(i.face_size(Face::MediaMini).0, base.min(i.face_size(Face::MediaMini).0), "off: the title's pill");
+    assert!(i.face_size(Face::MediaMini).0 < wide);
+}
