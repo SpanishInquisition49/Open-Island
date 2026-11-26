@@ -140,8 +140,8 @@ impl Island {
         let level = f.level(now).clamp(0.0, 1.0);
         let surface = r - 2.0 * r * level;
         let since = (now - f.changed) as f64;
-        let ripple = 0.5 + 1.6 * (1.0 - since / WAVE_MS as f64).max(0.0);
-        let phase = since.min(WAVE_MS as f64) / 110.0;
+        // the surface settles after a change; a sloshing one never does
+        let (ripple, phase) = if f.busy { (1.6, now.rem_euclid(1_000_000) as f64 / 160.0) } else { (0.5 + 1.6 * (1.0 - since / WAVE_MS as f64).max(0.0), since.min(WAVE_MS as f64) / 110.0) };
         let mut wave = BezPath::new();
         wave.move_to((-r, r + 1.0));
         for i in 0..=24 {

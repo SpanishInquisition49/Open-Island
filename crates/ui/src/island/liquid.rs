@@ -15,6 +15,11 @@ const DROP_OUT: Curve = Curve::new(0.35, 0.0);
 /// How long the drop's level takes to reach a new value, and its surface to settle after that.
 const LEVEL_MS: i64 = 600;
 pub(crate) const WAVE_MS: i64 = 1500;
+/// A drop with nothing to measure rises and falls once in this time, between these two levels.
+const SLOSH_MS: f64 = 2400.0;
+const SLOSH: (f64, f64) = (0.25, 0.75);
+/// The time between two of its frames: it moves slowly, and goes on for as long as a download does.
+pub(crate) const BUSY_STEP_MS: u32 = 33;
 /// A change of level smaller than this is simply there: a countdown creeping on needs no frames.
 const STEP: f64 = 0.02;
 /// The hanging drop's width and the room between it and the pill.
@@ -72,8 +77,8 @@ pub(crate) enum Source {
     Timer,
 }
 
-/// What there is to hang: for what, how full, in which colour, and the page a click opens.
-type Filling = (Source, f64, (u8, u8, u8), Page);
+/// What there is to hang: for what, how full (None: it cannot be said), in which colour, and the page a click opens.
+type Filling = (Source, Option<f64>, (u8, u8, u8), Page);
 
 /// The hanging drop.
 pub(crate) struct Fill {
@@ -83,6 +88,8 @@ pub(crate) struct Fill {
     from: f64,
     to: f64,
     pub changed: i64,
+    /// There is nothing to measure: the liquid sloshes.
+    pub busy: bool,
     pub tint: (u8, u8, u8),
     pub page: Page,
     /// The island is opening over it: its centre, from the middle of the surface, where it stays.
@@ -105,6 +112,11 @@ impl Fill {
 
     /// How full it looks.
     pub fn level(&self, now: i64) -> f64 {
+        if self.busy {
+            let swing = (std::f64::consts::TAU * (now - self.born) as f64 / SLOSH_MS).sin();
+            let (mid, half) = ((SLOSH.0 + SLOSH.1) / 2.0, (SLOSH.1 - SLOSH.0) / 2.0);
+            return mid + half * swing;
+        }
         let t = ((now - self.changed) as f64 / LEVEL_MS as f64).clamp(0.0, 1.0);
         self.from + (self.to - self.from) * (1.0 - (1.0 - t).powi(3))
     }
@@ -188,12 +200,15 @@ impl Island {
     /// What the hanging drop shows: how far along, in which colour, and the page a click opens.
     fn fill_source(&self) -> Option<Filling> {
         if let Some(op) = self.ops.running().into_iter().find(|o| o.frac.is_some()) {
-            return Some((Source::Job(op.id.clone()), op.frac.unwrap_or(0.0).clamp(0.0, 1.0), op.tint.unwrap_or((0x0a, 0x84, 0xff)), Page::Op));
+            return Some((Source::Job(op.id.clone()), Some(op.frac.unwrap_or(0.0).clamp(0.0, 1.0)), op.tint.unwrap_or((0x0a, 0x84, 0xff)), Page::Op));
         }
-        let t = self.timer.as_ref().filter(|t| t.mode != TimerMode::Stopwatch && t.total_ms > 0)?;
-        // full at the start and empty at the end, as the ring of a card drains: what is left is what shows
-        let left = (t.end_ms? - self.now).max(0);
-        Some((Source::Timer, (left as f64 / t.total_ms as f64).clamp(0.0, 1.0), (0xff, 0x9f, 0x0a), Page::Timer))
+        let countdown = self.timer.as_ref().filter(|t| t.mode != TimerMode::Stopwatch && t.total_ms > 0).and_then(|t| {
+            // full at the start and empty at the end, as the ring of a card drains: what is left is what shows
+            let left = (t.end_ms? - self.now).max(0);
+            Some((Source::Timer, Some((left as f64 / t.total_ms as f64).clamp(0.0, 1.0)), (0xff, 0x9f, 0x0a), Page::Timer))
+        });
+        // what has something to measure comes first; then whatever is at work without being able to say how far it is
+        countdown.or_else(|| self.ops.running().into_iter().find(|o| o.busy).map(|op| (Source::Job(op.id.clone()), None, op.tint.unwrap_or((0x0a, 0x84, 0xff)), Page::Op)))
     }
 
     /// Hangs the drop when there is something to fill it with and the pill is at rest.
@@ -212,6 +227,13 @@ impl Island {
         match (source, self.fill.as_mut()) {
             (Some((source, level, tint, page)), Some(f)) if f.left.is_none() => {
                 (f.source, f.tint, f.page) = (source, tint, page);
+                if f.busy && level.is_some() {
+                    // it can be measured now: the level goes there from where the liquid happens to be
+                    (f.from, f.changed) = (f.level(now), now);
+                    f.to = f.from;
+                }
+                f.busy = level.is_none();
+                let level = level.unwrap_or(f.to);
                 if (level - f.to).abs() > STEP {
                     (f.from, f.to, f.changed) = (f.level(now), level, now);
                 } else if now - f.changed >= LEVEL_MS {
@@ -219,9 +241,14 @@ impl Island {
                 }
             }
             // a new one, also in place of one on its way back
-            (Some((source, level, tint, page)), _) => self.fill = Some(Fill { source, born: now, left: None, from: 0.0, to: level, changed: now, tint, page, held: None, rect: None }),
+            (Some((source, level, tint, page)), _) => self.fill = Some(Fill { source, born: now, left: None, from: 0.0, to: level.unwrap_or(0.0), changed: now, busy: level.is_none(), tint, page, held: None, rect: None }),
             (None, Some(f)) => {
                 if f.left.is_none() {
+                    // it leaves with the liquid as it is
+                    if f.busy {
+                        (f.to, f.busy) = (f.level(now), false);
+                        f.from = f.to;
+                    }
                     (f.left, f.rect) = (Some(now), None);
                     // the pill opens over it: it stays where it hangs
                     f.held = opening.then_some(-DROP_GAP - DROP_D / 2.0 - (w + slot) / 2.0);
@@ -249,5 +276,10 @@ impl Island {
 
     pub(super) fn fill_moving(&self) -> bool {
         self.fill.as_ref().is_some_and(|f| f.moving(self.now))
+    }
+
+    /// A drop that sloshes is hanging (it needs its own frames).
+    pub(super) fn fill_sloshing(&self) -> bool {
+        self.fill.as_ref().is_some_and(|f| f.busy && f.left.is_none() && f.held.is_none())
     }
 }

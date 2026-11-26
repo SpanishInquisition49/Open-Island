@@ -595,7 +595,7 @@ fn a_study_focus_holds_notifications_too() {
 #[test]
 fn a_script_activity_shows_with_its_own_icon_colour_and_words() {
     let mut i = Island::new(Config::default());
-    let a = island_core::progress::Activity { id: String::new(), label: "CI main".into(), detail: "building".into(), icon: Some("git-branch".into()), tint: Some((255, 159, 10)), frac: None, file: None };
+    let a = island_core::progress::Activity { id: String::new(), label: "CI main".into(), detail: "building".into(), icon: Some("git-branch".into()), tint: Some((255, 159, 10)), frac: None, file: None, busy: false };
     i.push(T0, Input::Activity(progress::State::Run, a.clone()));
     run(&mut i, 600);
     assert_eq!((i.current_face(), i.shown_side), (Face::Idle, Some(Side::Op)), "a small pill");
@@ -3679,6 +3679,46 @@ fn the_study_hours_are_edited_on_the_plan_page_and_kept() {
     }
     open(&mut i);
     assert!(i.hits.iter().any(|h| matches!(h.action, Action::PlanHours(true))));
+}
+
+#[test]
+fn a_download_of_unknown_size_hangs_a_drop_that_sloshes_while_data_comes() {
+    let mut i = Island::new(Config::default());
+    run(&mut i, 3000);
+    let dl = |detail: &str, busy: bool| island_core::progress::Activity { id: "dl:a.iso.part".into(), label: "a.iso".into(), detail: detail.into(), icon: Some("download".into()), busy, ..Default::default() };
+    i.push(i.now, Input::Activity(progress::State::Run, dl("1.0 MB", false)));
+    run(&mut i, 8000);
+    assert!(i.fill.is_none(), "nothing arrives yet: no drop");
+    i.push(i.now, Input::Activity(progress::State::Run, dl("5.0 MB · 2.0 MB/s", true)));
+    run(&mut i, 4000);
+    assert!(i.fill.as_ref().is_some_and(|f| f.out(i.now) > 0.9), "the drop hangs");
+    let mut levels = vec![];
+    let mut asked = vec![];
+    for _ in 0..90 {
+        let t = i.now + 33;
+        asked.push(i.tick(t, 33.0).next_ms);
+        levels.push(i.fill.as_ref().unwrap().level(t));
+    }
+    let (low, high) = levels.iter().fold((1.0f64, 0.0f64), |(a, b), l| (a.min(*l), b.max(*l)));
+    assert!(low > 0.1 && high < 0.9 && high - low > 0.3, "it rises and falls, never empty nor full: {low}..{high}");
+    assert!(asked.iter().all(|ms| (1..=liquid::BUSY_STEP_MS).contains(ms)), "frames of its own, but not at the screen's rate: {asked:?}");
+    // a countdown has something to show: it takes the drop
+    i.push(i.now, Input::StartTimer(60));
+    run(&mut i, 4000);
+    assert_eq!(i.fill.as_ref().map(|f| f.source.clone()), Some(liquid::Source::Timer));
+    i.cancel_timer();
+    run(&mut i, 4000);
+    // stalled: the drop goes back, and no more frames are asked for it
+    i.push(i.now, Input::Activity(progress::State::Run, dl("5.0 MB · stalled", false)));
+    run(&mut i, 6000);
+    assert!(i.fill.is_none());
+    // data again, then the end: the drop becomes the card
+    i.push(i.now, Input::Activity(progress::State::Run, dl("7.0 MB · 1 MB/s", true)));
+    run(&mut i, 4000);
+    i.push(i.now, Input::Activity(progress::State::Done, dl("9.0 MB · 20s", false)));
+    run(&mut i, 100);
+    let card = i.notif.as_ref().map(|n| format!("{} · {}", n.summary, n.body));
+    assert!(card.as_ref().is_some_and(|c| c.contains("a.iso")), "{card:?}");
 }
 
 #[test]

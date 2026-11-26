@@ -119,13 +119,14 @@ app, and see your headphones' battery when they connect.
 
 - **Send files** to your phone or another computer nearby (with [LocalSend](https://localsend.org)).
 - **Clipboard history**, with the entries you want to keep pinned.
-- **Downloads** and long jobs filling up beside the island.
+- **Downloads and long jobs** beside the island, as a drop of liquid: it fills up with a job that says how far it is,
+  and sloshes while your browser downloads a file.
 - **A heads-up** when a program is slowing the computer down, or the network stops working.
 - **Camera and microphone dots**, so you know when they are in use.
 - **Make it yours:** most things can be switched on or off from the options page.
 
 <p align="center">
-  <img src="docs/images/progress.png" width="430" alt="A download at 62 percent beside the island, filling like a drop">
+  <img src="docs/images/progress.png" width="430" alt="A job at 62 percent beside the island, filling like a drop">
 </p>
 
 ### For people who like the terminal

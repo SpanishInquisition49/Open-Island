@@ -156,6 +156,8 @@ pub(crate) fn parse(line: &str) -> Option<Input> {
                     tint: parse_color(&s("color")),
                     frac: v.get("progress").and_then(|x| x.as_f64()).filter(|x| x.is_finite()).map(|x| x.clamp(0.0, 100.0) / 100.0),
                     file: None,
+                    // a script that says no progress is not known to be at work: it may be waiting for hours
+                    busy: false,
                 },
             )
         }

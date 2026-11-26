@@ -336,7 +336,10 @@ screenshot.
 ### Downloads
 
 A browser download shows as an activity with what has arrived and how fast ("48 MB · 2.1 MB/s"); when the file is complete a card
-says its size and the time, with "Open" and "Show in folder". No extension: the island looks at the download folder (the XDG one, else `~/Downloads`) for
+says its size and the time, with "Open" and "Show in folder". The drop beside the pill sloshes while data arrives (the
+browser does not say how big the file is, so there is nothing to fill it up to), goes back when the download stalls, and
+becomes the card at the end. A download that is over before the folder is looked at (every four seconds when nothing is
+going on) is not seen. No extension: the island looks at the download folder (the XDG one, else `~/Downloads`) for
 the files a browser writes meanwhile (`.part` Firefox, `.crdownload` Chrome / Edge / Brave, `.download` Safari, `.opdownload`
 Opera). The total size is not known, so there is no percentage; a download that stops growing for 20 s says "stalled", one that
 disappears without its file is dropped quietly. Only names and sizes are read. Off with `watch_downloads` (Options > Island > "Show

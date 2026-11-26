@@ -36,6 +36,8 @@ pub struct Op {
     pub tint: Option<(u8, u8, u8)>,
     /// The file it made, when it made one (a download that is complete).
     pub file: Option<String>,
+    /// At work with no known end (see `Activity::busy`).
+    pub busy: bool,
 }
 
 /// An activity reported by a script.
@@ -50,6 +52,8 @@ pub struct Activity {
     pub frac: Option<f64>,
     /// The file it made, when it ends with one.
     pub file: Option<String>,
+    /// It is at work right now but cannot say how far along it is (a download whose size is not known).
+    pub busy: bool,
 }
 
 /// A colour by name (the system palette) or `#rrggbb`.
@@ -91,7 +95,7 @@ pub struct Tracker {
 }
 
 fn blank(id: &str, now: i64) -> Op {
-    Op { id: id.to_string(), label: String::new(), frac: None, state: State::Run, updated_ms: now, detail: String::new(), icon: None, tint: None, file: None }
+    Op { id: id.to_string(), label: String::new(), frac: None, state: State::Run, updated_ms: now, detail: String::new(), icon: None, tint: None, file: None, busy: false }
 }
 
 impl Tracker {
@@ -158,6 +162,7 @@ impl Tracker {
             op.label = label.to_string();
         }
         op.state = state;
+        op.busy = false;
         if state == State::Done {
             op.frac = Some(1.0);
         }
@@ -173,6 +178,7 @@ impl Tracker {
             o.detail = a.detail.clone();
             o.icon = a.icon.clone();
             o.tint = a.tint;
+            o.busy = a.busy;
         }
     }
 
@@ -269,7 +275,7 @@ mod tests {
     #[test]
     fn an_activity_carries_its_look_and_ends_with_a_word() {
         let mut t = Tracker::default();
-        let a = Activity { id: String::new(), label: "CI main".into(), detail: "building".into(), icon: Some("git-branch".into()), tint: Some((1, 2, 3)), frac: Some(0.4), file: None };
+        let a = Activity { id: String::new(), label: "CI main".into(), detail: "building".into(), icon: Some("git-branch".into()), tint: Some((1, 2, 3)), frac: Some(0.4), file: None, busy: false };
         t.run_activity(0, &a);
         let o = t.op.clone().unwrap();
         assert_eq!((o.label.as_str(), o.detail.as_str(), o.icon.as_deref(), o.tint, o.frac, o.state), ("CI main", "building", Some("git-branch"), Some((1, 2, 3)), Some(0.4), State::Run));

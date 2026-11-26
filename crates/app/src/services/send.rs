@@ -211,7 +211,7 @@ pub fn send(rep: Reporter, peer: Peer, paths: Vec<String>) {
         return send_taildrop(rep, peer, paths);
     }
     std::thread::spawn(move || {
-        let act = |detail: String, frac: Option<f64>| Activity { id: "send".into(), label: format!("Sending to {}", peer.alias), detail, icon: Some("send".into()), tint: None, frac, file: None };
+        let act = |detail: String, frac: Option<f64>| Activity { id: "send".into(), label: format!("Sending to {}", peer.alias), detail, icon: Some("send".into()), tint: None, frac, file: None, busy: false };
         let last = Mutex::new(Instant::now() - Duration::from_secs(1));
         let result = send_files(&peer, &paths, |p| {
             let (detail, frac) = match p {
@@ -236,7 +236,7 @@ pub fn send(rep: Reporter, peer: Peer, paths: Vec<String>) {
 /// Sends through Taildrop: `tailscale file cp <files> <address>:`. It reports no progress, so the pill only says where it goes.
 fn send_taildrop(rep: Reporter, peer: Peer, paths: Vec<String>) {
     std::thread::spawn(move || {
-        let act = |detail: String| Activity { id: "send".into(), label: format!("Sending to {}", peer.alias), detail, icon: Some("send".into()), tint: None, frac: None, file: None };
+        let act = |detail: String| Activity { id: "send".into(), label: format!("Sending to {}", peer.alias), detail, icon: Some("send".into()), tint: None, frac: None, file: None, busy: false };
         rep.input(Input::Activity(State::Run, act("through Tailscale".into())));
         let files = collect(&paths);
         let mut cmd = Command::new("tailscale");

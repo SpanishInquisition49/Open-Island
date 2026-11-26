@@ -30,8 +30,8 @@ pub fn fmt_size(bytes: u64) -> String {
 /// What happened to one download.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
-    /// Running: what to call it and the status line ("12 MB · 2.1 MB/s").
-    Running { id: String, label: String, detail: String },
+    /// Running: what to call it, the status line ("12 MB · 2.1 MB/s"), and whether data is arriving.
+    Running { id: String, label: String, detail: String, moving: bool },
     /// Done: the file is complete, with its size and how long it took.
     Done { id: String, label: String, detail: String },
     /// The partial file went away and nothing was left in its place (cancelled).
@@ -81,7 +81,7 @@ impl Tracker {
             } else {
                 fmt_size(s.size)
             };
-            out.push(Event::Running { id: format!("dl:{file}"), label, detail });
+            out.push(Event::Running { id: format!("dl:{file}"), label, detail, moving: !stalled && s.speed > 0.0 });
         }
         // those that were there and are not any more: done when the real file is there, else dropped
         let gone: Vec<String> = self.seen.keys().filter(|k| !listing.iter().any(|(n, _)| n == *k)).cloned().collect();
@@ -131,9 +131,9 @@ mod tests {
     fn a_download_is_followed_from_start_to_the_file_appearing() {
         let mut t = Tracker::default();
         let ev = t.update(0, &[f("a.iso.part", 1_000_000), f("other.txt", 5)]);
-        assert_eq!(ev, vec![Event::Running { id: "dl:a.iso.part".into(), label: "a.iso".into(), detail: "1.0 MB".into() }]);
+        assert_eq!(ev, vec![Event::Running { id: "dl:a.iso.part".into(), label: "a.iso".into(), detail: "1.0 MB".into(), moving: false }], "a file found there may be an old leftover");
         let ev = t.update(2_000, &[f("a.iso.part", 5_000_000)]);
-        assert_eq!(ev, vec![Event::Running { id: "dl:a.iso.part".into(), label: "a.iso".into(), detail: "5.0 MB · 2.0 MB/s".into() }]);
+        assert_eq!(ev, vec![Event::Running { id: "dl:a.iso.part".into(), label: "a.iso".into(), detail: "5.0 MB · 2.0 MB/s".into(), moving: true }]);
         let ev = t.update(4_000, &[f("a.iso", 9_000_000)]);
         assert_eq!(ev, vec![Event::Done { id: "dl:a.iso.part".into(), label: "a.iso".into(), detail: "9.0 MB · 4s".into() }]);
         assert!(t.update(6_000, &[f("a.iso", 9_000_000)]).is_empty(), "nothing more once it is done");
@@ -144,7 +144,7 @@ mod tests {
         let mut t = Tracker::default();
         t.update(0, &[f("x.zip.crdownload", 500_000)]);
         let ev = t.update(30_000, &[f("x.zip.crdownload", 500_000)]);
-        assert!(matches!(&ev[0], Event::Running { detail, .. } if detail == "500 kB · stalled"), "{ev:?}");
+        assert!(matches!(&ev[0], Event::Running { detail, moving: false, .. } if detail == "500 kB · stalled"), "{ev:?}");
         assert_eq!(t.update(31_000, &[]), vec![Event::Dropped { id: "dl:x.zip.crdownload".into() }]);
     }
 

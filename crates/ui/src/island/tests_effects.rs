@@ -85,7 +85,7 @@ fn behind_another_card_the_new_one_drops_from_it_as_before() {
 
 #[test]
 fn a_sent_file_leaves_as_a_drop_and_a_failed_send_does_not() {
-    let act = |label: &str| island_core::progress::Activity { id: "send".into(), label: label.into(), detail: String::new(), icon: None, tint: None, frac: Some(0.5), file: None };
+    let act = |label: &str| island_core::progress::Activity { id: "send".into(), label: label.into(), detail: String::new(), icon: None, tint: None, frac: Some(0.5), file: None, busy: false };
     for (state, label, shot) in [(progress::State::Done, "Sent", true), (progress::State::Fail, "Send failed", false), (progress::State::Done, "Nothing to send", false)] {
         let mut i = island();
         i.push(T0, Input::Activity(progress::State::Run, act("Sending to Pixel")));

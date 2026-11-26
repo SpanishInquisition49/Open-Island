@@ -13,7 +13,7 @@ fn card(rep: &Reporter, summary: &str, body: &str, secs: i64) {
 
 pub fn start(rep: Reporter) {
     std::thread::spawn(move || {
-        let act = |detail: &str| Activity { id: "ocr".into(), label: "Reading the image".into(), detail: detail.into(), icon: Some("search".into()), tint: None, frac: None, file: None };
+        let act = |detail: &str| Activity { id: "ocr".into(), label: "Reading the image".into(), detail: detail.into(), icon: Some("search".into()), tint: None, frac: None, file: None, busy: false };
         rep.input(Input::Activity(State::Run, act("with Tesseract")));
         let result = read();
         rep.input(Input::ActivityClear("ocr".into()));

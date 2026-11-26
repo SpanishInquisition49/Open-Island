@@ -225,7 +225,7 @@ fn fx_case(g: &mut Gpu, fonts: &Fonts, scale: f64, dir: &std::path::Path, name: 
         frame
     };
     run(&mut i, 600);
-    let act = |label: &str| island_core::progress::Activity { id: "send".into(), label: label.into(), detail: "2 files to Pixel".into(), icon: Some("send".into()), tint: None, frac: Some(0.7), file: None };
+    let act = |label: &str| island_core::progress::Activity { id: "send".into(), label: label.into(), detail: "2 files to Pixel".into(), icon: Some("send".into()), tint: None, frac: Some(0.7), file: None, busy: false };
     let code = || Incoming { id: 7, app: "Banca".into(), summary: "Codice di accesso".into(), body: "Your verification code is 482913".into(), expire_ms: Some(20_000), ..Default::default() };
     match kind {
         0 | 1 => {
@@ -318,7 +318,7 @@ fn main() {
         ("device-low", Box::new(|i, _| i.push(NOW, Input::DeviceLow(island_ui::model::Device { id: "x".into(), name: "Nothing Ear".into(), kind: island_core::bluetooth::Kind::Earbuds, battery: Some(12) })))),
         ("qs-devices", Box::new(|i, d| { d.devices = vec![island_ui::model::Device { id: "x".into(), name: "Sony XM5".into(), kind: island_core::bluetooth::Kind::Headphones, battery: Some(85) }, island_ui::model::Device { id: "y".into(), name: "Nothing Ear".into(), kind: island_core::bluetooth::Kind::Earbuds, battery: Some(12) }, island_ui::model::Device { id: "z".into(), name: "MX Master".into(), kind: island_core::bluetooth::Kind::Mouse, battery: None }]; i.push(NOW, Input::OpenPage(island_core::face::Page::Qs)) })),
         ("progress-done", Box::new(|i, _| { i.push(NOW, Input::Progress("64 rsync backup".into())); i.push(NOW, Input::ProgressDone("rsync backup".into())) })),
-        ("activity-run", Box::new(|i, _| i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { id: String::new(), label: "CI main".into(), detail: "building 3/5".into(), icon: Some("git-branch".into()), tint: Some((255, 159, 10)), frac: None, file: None })))),
+        ("activity-run", Box::new(|i, _| i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { id: String::new(), label: "CI main".into(), detail: "building 3/5".into(), icon: Some("git-branch".into()), tint: Some((255, 159, 10)), frac: None, file: None, busy: false })))),
         ("activity-fail", Box::new(|i, _| { i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { id: String::new(), label: "CI main".into(), icon: Some("git-branch".into()), ..Default::default() })); i.push(NOW, Input::Activity(island_core::progress::State::Fail, island_core::progress::Activity { id: String::new(), label: "CI main".into(), detail: "2 tests failed".into(), ..Default::default() })) })),
         // the small pill on its way out of the main one, and the drop that fills at the other side
         ("liquid-bubble-a", Box::new(|i, _| i.push(NOW, Input::Progress("62 rsync backup".into())))),
@@ -328,6 +328,7 @@ fn main() {
         ("liquid-open-a", Box::new(|i, _| i.push(NOW, Input::Progress("62 rsync backup".into())))),
         ("liquid-open-b", Box::new(|i, _| i.push(NOW, Input::Progress("62 rsync backup".into())))),
         ("liquid-open-c", Box::new(|i, _| i.push(NOW, Input::Progress("62 rsync backup".into())))),
+        ("liquid-download", Box::new(|i, _| i.push(NOW, Input::Activity(island_core::progress::State::Run, island_core::progress::Activity { id: "dl:thesis.pdf.part".into(), label: "thesis.pdf".into(), detail: "48 MB · 2.1 MB/s".into(), icon: Some("download".into()), busy: true, ..Default::default() })))),
         ("liquid-fill", Box::new(|i, _| i.push(NOW, Input::Progress("62 rsync backup".into())))),
         ("liquid-fill-timer", Box::new(|i, d| { media(d, true); i.push(NOW - 900_000, Input::StartTimer(1500)); })),
         ("event-cards", Box::new(|i, _| {
@@ -667,7 +668,7 @@ fn main() {
         // pages need a page request; "home" and "meeting" go through the hover-less path
         let hold = name == "lyrics-scroll" || name == "page-sys-opening" || name == "media-transition" || name.contains("full") || name.starts_with("focus-full") || name.contains("lyrics") || name == "home" || name == "home-rain" || name == "qs-devices" || name.starts_with("page-");
         let frames = if name == "media-transition" { 26 } else if name == "page-sys-opening" { 38 } else if name == "lyrics-scroll" { 40 } else { 400 };
-        let frames = match name { "liquid-bubble-a" => 14, "liquid-bubble-b" => 24, "liquid-bubble-c" => 40, "liquid-open-a" | "liquid-open-b" | "liquid-open-c" => 300, "event-cards" => 330, "liquid-fill" => 220, "notif-stack-in-a" => 100, "notif-stack-in-b" => 122, "notif-stack-in-c" => 195, "notif-drop-a" => 12, "notif-drop-b" => 24, "notif-drop-c" => 36, "notif-drop-d" => 52, _ => frames };
+        let frames = match name { "liquid-bubble-a" => 14, "liquid-bubble-b" => 24, "liquid-bubble-c" => 40, "liquid-open-a" | "liquid-open-b" | "liquid-open-c" => 300, "event-cards" => 330, "liquid-fill" => 220, "liquid-download" => 520, "notif-stack-in-a" => 100, "notif-stack-in-b" => 122, "notif-stack-in-c" => 195, "notif-drop-a" => 12, "notif-drop-b" => 24, "notif-drop-c" => 36, "notif-drop-d" => 52, _ => frames };
         let mut f = settle(&mut i, &d, frames, hold);
         if let Some(after) = match name { "liquid-open-a" => Some(8), "liquid-open-b" => Some(16), "liquid-open-c" => Some(26), _ => None } {
             let mut t = NOW + frames as i64 * 8;

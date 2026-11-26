@@ -876,6 +876,7 @@ impl Island {
             1000
         };
         let next_ms = if moving { 0 } else { marquee.map_or(next_ms, |wait| next_ms.min(wait.max(MARQUEE_STEP_MS))) };
+        let next_ms = if self.fill_sloshing() { next_ms.min(liquid::BUSY_STEP_MS) } else { next_ms };
         let animating = next_ms == 0;
         // the surface: holds both shapes plus room for the overshoot while animating
         // (a small pill on its way back still needs its room)
