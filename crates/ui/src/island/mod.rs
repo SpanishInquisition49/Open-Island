@@ -596,7 +596,7 @@ pub struct Island {
     pub(crate) alpha: f64,
     from_size: (f64, f64),
     anim_box: Option<(f64, f64, f64, f64)>, // target (w,h) it was sized for, box (w,h)
-    settled: bool,
+    pub(crate) settled: bool,
     pub(crate) page: Option<Page>,
     hover_page: Option<Page>,
     expand_until: i64,
@@ -617,10 +617,10 @@ pub struct Island {
     pub(crate) tasks_done: Vec<String>,
     /// The task (by uid) whose row shows its menu: put off, edit, remove.
     pub row_menu: Option<String>,
-    /// A line too long for its place is being scrolled (set while drawing; the next tick asks for frames), and what
-    /// scrolls with the moment it began.
-    pub(crate) marquee_on: std::cell::Cell<bool>,
-    pub(crate) marquee_since: std::cell::RefCell<(String, i64)>,
+    /// When a line too long for its place next moves (set while drawing; the next tick asks for a frame then), and for each
+    /// such line of a face (title, artist) what scrolls with the moment it began.
+    pub(crate) marquee_wake: std::cell::Cell<Option<i64>>,
+    pub(crate) marquee_since: std::cell::RefCell<[(String, i64); 2]>,
     /// Study time done: (day, course, minutes), kept for a few months.
     pub(crate) study_log: Vec<(i64, String, u32)>,
     pub(crate) found: Found,
@@ -812,8 +812,8 @@ impl Island {
             todos: Vec::new(),
             tasks_done: Vec::new(),
             row_menu: None,
-            marquee_on: std::cell::Cell::new(false),
-            marquee_since: std::cell::RefCell::new((String::new(), 0)),
+            marquee_wake: Default::default(),
+            marquee_since: Default::default(),
             study_log: Vec::new(),
             found: Found::default(),
             notif_group: 1,

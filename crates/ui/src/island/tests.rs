@@ -3482,6 +3482,20 @@ fn studying_takes_time_off_the_work_and_the_plan_spreads_what_is_left() {
 }
 
 #[test]
+fn a_resting_line_asks_for_its_next_frame_only_when_it_moves() {
+    let mut i = Island::new(Config::default());
+    run(&mut i, 3000);
+    let t = i.now + 8;
+    i.marquee_wake.set(Some(t + 400));
+    let f = i.tick(t, 8.0);
+    assert!(!f.animating && f.next_ms == 400, "{f:?}");
+    // woken at the end of the pause: it slides, frame after frame
+    i.marquee_wake.set(Some(t + 400));
+    assert!(i.tick(t + 400, 8.0).animating);
+    assert!(!i.tick(t + 408, 8.0).animating, "no line drawn: nothing to wake for");
+}
+
+#[test]
 fn a_pomodoro_for_a_course_logs_its_focus_time() {
     let mut i = Island::new(Config::default());
     i.tick(T0, 8.0);

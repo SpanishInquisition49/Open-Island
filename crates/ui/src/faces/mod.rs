@@ -95,11 +95,7 @@ impl Island {
         // following the shape's height, so it never cross-fades with the rest of the content
         if matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric) {
             scene.push_clip_layer(Fill::NonZero, base, &RoundedRect::new(0.0, 0.0, w, h, radius));
-            let t = ((h - 28.0) / (160.0 - 28.0)).clamp(0.0, 1.0);
-            let t = t * t * (3.0 - 2.0 * t);
-            let lerp = |a: f64, b: f64| a + (b - a) * t;
-            let size = lerp(20.0, 64.0);
-            let (x, y, r) = (lerp(8.0, 14.0), lerp((28.0 - 20.0) / 2.0, 14.0), lerp(6.0, 12.0));
+            let (x, y, size, r) = cover_at(h);
             let mut p = Painter { scene, fonts, hits: &mut hits, opacity: 1.0, pointer: None, transform: base, base: (1.0, base), since_enter: 10_000 };
             let art = self.data.media.as_ref().and_then(|m| m.art.as_ref());
             self.draw_art(&mut p, art, x, y, size, r);
@@ -264,23 +260,20 @@ impl Island {
     }
 
     /// One line of text; when it is wider than `max_w` it slides back and forth inside its place (a pause at each end) so
-    /// that all of it can be read, instead of being cut.
+    /// that all of it can be read, instead of being cut. `line` numbers the sliding lines of a face, each with its own clock.
     #[allow(clippy::too_many_arguments)]
-    fn marquee(&self, p: P, text: &str, x: f64, cy: f64, size: f32, weight: Weight, color: Color, max_w: f32) {
+    fn marquee(&self, p: P, line: usize, text: &str, x: f64, cy: f64, size: f32, weight: Weight, color: Color, max_w: f32) {
         let width = p.fonts.measure(text, size, weight);
         if width <= max_w {
             p.text(text, x, cy, size, weight, color, Align::Left, max_w);
             return;
         }
-        self.marquee_on.set(true);
-        let t0 = {
-            let mut s = self.marquee_since.borrow_mut();
-            if s.0 != text {
-                *s = (text.to_string(), self.now);
-            }
-            s.1
-        };
-        let offset = marquee_offset((self.now - t0).max(0), (width - max_w) as f64 + 8.0);
+        let elapsed = marquee_elapsed(&mut self.marquee_since.borrow_mut()[line], text, self.now, self.settled);
+        let travel = (width - max_w) as f64 + 8.0;
+        let offset = marquee_offset(elapsed, travel);
+        // the next frame is wanted when the line moves again: at once while it slides, at the end of a pause
+        let moves_at = self.now + marquee_rest(elapsed, travel);
+        self.marquee_wake.set(Some(self.marquee_wake.get().map_or(moves_at, |t| t.min(moves_at))));
         let t = p.transform;
         p.scene.push_clip_layer(Fill::NonZero, t, &Rect::new(x, cy - size as f64, x + max_w as f64, cy + size as f64));
         p.text(text, x - offset, cy, size, weight, color, Align::Left, width + 16.0);
@@ -293,17 +286,18 @@ impl Island {
         let mut right = self.pill_clock(p, w - 14.0, cy);
         right = self.status_icons(p, right, cy, 13.0);
         self.equalizer(p, right - 22.0, cy, 4, 12.0, 2.5, self.playing_shown(), self.art_tint());
-        let max = (right - 26.0 - 38.0).max(20.0) as f32;
+        let left = mini_text_x(h);
+        let max = (right - 26.0 - left).max(20.0) as f32;
         // with the option on, the line being sung replaces the title and rises into place on every change
         match self.cfg.lyrics_in_pill.then(|| self.lyric_now()).flatten().filter(|_| m.playing) {
             Some((line, e)) => {
                 let base = p.opacity;
                 p.opacity = base * e as f32;
-                p.text(&line, 38.0, cy + 5.0 * (1.0 - e), 12.0, SEMI, theme::FG, Align::Left, max);
+                p.text(&line, left, cy + 5.0 * (1.0 - e), 12.0, SEMI, theme::FG, Align::Left, max);
                 p.opacity = base;
             }
             None => {
-                self.marquee(p, &m.title, 38.0, cy, 12.0, SEMI, theme::FG, max);
+                self.marquee(p, 0, &m.title, left, cy, 12.0, SEMI, theme::FG, max);
             }
         }
         p.hit(rect(0.0, 0.0, w, h), Action::Open(Page::Media));
@@ -311,8 +305,8 @@ impl Island {
 
     fn face_media_full(&self, p: P, w: f64, _h: f64, lyric: bool) {
         let Some(m) = self.data.media.as_ref() else { return };
-        self.marquee(p, &m.title, 92.0, 30.0, 14.0, SEMI, theme::FG, (w - 92.0 - 56.0) as f32);
-        self.marquee(p, &m.artist, 92.0, 50.0, 12.0, REG, theme::DIM, (w - 92.0 - 56.0) as f32);
+        self.marquee(p, 0, &m.title, 92.0, 30.0, 14.0, SEMI, theme::FG, (w - 92.0 - 56.0) as f32);
+        self.marquee(p, 1, &m.artist, 92.0, 50.0, 12.0, REG, theme::DIM, (w - 92.0 - 56.0) as f32);
         self.equalizer(p, w - 40.0, 30.0, 4, 14.0, 3.0, self.playing_shown(), self.art_tint());
         // progress (a slider you can drag) + times
         let pos = self.media_position();
@@ -867,11 +861,53 @@ fn draw_image(p: P, img: &Image, x: f64, y: f64, size: f64, radius: f64) {
     p.scene.pop_layer();
 }
 
+/// The cover on its way between the small pill's spot and the open player's, at pill height `h`: left, top, side and
+/// corner radius.
+fn cover_at(h: f64) -> (f64, f64, f64, f64) {
+    let t = ((h - 28.0) / (160.0 - 28.0)).clamp(0.0, 1.0);
+    let t = t * t * (3.0 - 2.0 * t);
+    let lerp = |a: f64, b: f64| a + (b - a) * t;
+    (lerp(8.0, 14.0), lerp((28.0 - 20.0) / 2.0, 14.0), lerp(20.0, 64.0), lerp(6.0, 12.0))
+}
+
+/// Where the small pill's line begins: after the cover, wherever it is on its way (38 once the pill is at rest).
+fn mini_text_x(h: f64) -> f64 {
+    let (x, _, size, _) = cover_at(h);
+    x + size + 10.0
+}
+
+/// How long the line `text` has been sliding. `clock` holds the line and the moment it began; it starts over for a new
+/// line, and waits at the start while the island is changing shape (the room for the line differs at every frame, which
+/// would make it jump).
+fn marquee_elapsed(clock: &mut (String, i64), text: &str, now: i64, at_rest: bool) -> i64 {
+    if clock.0 != text {
+        *clock = (text.to_string(), now);
+    } else if !at_rest {
+        clock.1 = now;
+    }
+    (now - clock.1).max(0)
+}
+
+/// A sliding line's pause at each end, and its speed in pixels a second.
+const PAUSE: f64 = 1500.0;
+const SPEED: f64 = 40.0;
+
+/// The milliseconds for which such a line stays where it is: 0 while it slides, what is left of the pause at an end.
+fn marquee_rest(ms: i64, travel: f64) -> i64 {
+    let slide = travel / SPEED * 1000.0;
+    let t = ms as f64 % (2.0 * PAUSE + 2.0 * slide);
+    if t < PAUSE {
+        (PAUSE - t).ceil() as i64
+    } else if t >= PAUSE + slide && t < 2.0 * PAUSE + slide {
+        (2.0 * PAUSE + slide - t).ceil() as i64
+    } else {
+        0
+    }
+}
+
 /// How far a line that overflows by `travel` pixels has slid `ms` after it appeared: a pause, a slide to the end, a
 /// pause, a slide back, and again.
 pub(crate) fn marquee_offset(ms: i64, travel: f64) -> f64 {
-    const PAUSE: f64 = 1500.0;
-    const SPEED: f64 = 40.0; // pixels a second
     let slide = travel / SPEED * 1000.0;
     let t = ms as f64 % (2.0 * PAUSE + 2.0 * slide);
     if t < PAUSE {
@@ -887,7 +923,44 @@ pub(crate) fn marquee_offset(ms: i64, travel: f64) -> f64 {
 
 #[cfg(test)]
 mod marquee_tests {
-    use super::marquee_offset;
+    use super::{cover_at, marquee_elapsed, marquee_offset, marquee_rest, mini_text_x};
+
+    #[test]
+    fn a_resting_line_says_how_long_until_it_moves() {
+        // 80 px: rest 1.5 s, slide 2 s, rest 1.5 s, slide back 2 s
+        assert_eq!([marquee_rest(0, 80.0), marquee_rest(1000, 80.0)], [1500, 500]);
+        assert_eq!([marquee_rest(1500, 80.0), marquee_rest(3000, 80.0)], [0, 0], "sliding");
+        assert_eq!([marquee_rest(3500, 80.0), marquee_rest(4500, 80.0)], [1500, 500], "at the end");
+        assert_eq!([marquee_rest(5000, 80.0), marquee_rest(7000, 80.0)], [0, 1500], "back, and the cycle begins again");
+        for ms in 0..14_000 {
+            let rest = marquee_rest(ms, 80.0);
+            if rest > 0 {
+                assert_eq!(marquee_offset(ms, 80.0), marquee_offset(ms + rest, 80.0), "nothing moves before it says ({ms})");
+            }
+        }
+    }
+
+    #[test]
+    fn the_line_in_the_small_pill_never_runs_under_the_cover() {
+        assert_eq!(mini_text_x(28.0), 38.0, "at rest it is where it always was");
+        assert_eq!(mini_text_x(25.0), 38.0, "a spring that dips under the pill's height changes nothing");
+        for h in 28..=240 {
+            let (x, _, size, _) = cover_at(h as f64);
+            assert!(mini_text_x(h as f64) >= x + size + 8.0, "at height {h} the cover ends at {} and the line begins at {}", x + size, mini_text_x(h as f64));
+        }
+    }
+
+    #[test]
+    fn a_line_only_starts_to_slide_once_the_shape_is_at_rest() {
+        let mut clock = (String::new(), 0);
+        assert_eq!(marquee_elapsed(&mut clock, "a long title", 1_000, true), 0);
+        assert_eq!(marquee_elapsed(&mut clock, "a long title", 5_000, true), 4_000);
+        // the island changes shape: the room for the line changes every frame, so it waits at its start
+        assert_eq!(marquee_elapsed(&mut clock, "a long title", 6_000, false), 0);
+        assert_eq!(marquee_elapsed(&mut clock, "a long title", 6_016, false), 0);
+        assert_eq!(marquee_elapsed(&mut clock, "a long title", 7_016, true), 1_000);
+        assert_eq!(marquee_elapsed(&mut clock, "another one", 8_000, true), 0, "a new line starts over");
+    }
 
     #[test]
     fn a_long_line_rests_slides_to_its_end_rests_and_comes_back() {

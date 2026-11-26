@@ -851,8 +851,9 @@ impl Island {
         // a timer twice a second, otherwise the clock once a second
         let levels_moving = self.ease_levels(dt_ms) | self.ease_media_button(dt_ms);
         let waiting_for_hover = (self.hovering && now - self.hover_since < HOVER_INTENT_MS + 60) || now < self.hover_left + HOVER_GRACE_MS + 60;
-        let marquee = self.marquee_on.replace(false);
-        let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving || marquee || self.card_moving() || self.bubbles_moving() || self.fill_moving() || self.fx.moving();
+        // milliseconds until a sliding line moves (0: it is sliding)
+        let marquee = self.marquee_wake.take().map(|at| (at - now).clamp(0, u32::MAX as i64) as u32);
+        let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving || marquee == Some(0) || self.card_moving() || self.bubbles_moving() || self.fill_moving() || self.fx.moving();
         let equalizer = self.data.media.as_ref().is_some_and(|m| m.playing) && matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric);
         let expiring = snap.osd || self.notif.is_some() || self.edit.is_some() || self.reply.is_some() || self.kb.is_some() || self.bar.is_some();
         let next_ms: u32 = if moving {
@@ -870,6 +871,7 @@ impl Island {
         } else {
             1000
         };
+        let next_ms = marquee.map_or(next_ms, |wait| next_ms.min(wait));
         let animating = next_ms == 0;
         // the surface: holds both shapes plus room for the overshoot while animating
         // (a small pill on its way back still needs its room)
