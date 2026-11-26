@@ -75,22 +75,25 @@ fn default_sink() -> String {
     pactl(&["get-default-sink"]).map(|s| s.trim().to_string()).unwrap_or_default()
 }
 
+/// An output may have come or gone.
+fn changes_the_outputs(line: &str) -> bool {
+    line.contains(" on sink #") || line.contains(" on card #")
+}
+
 pub fn start(rep: Reporter) {
-    let Some(events) = super::linux::pactl_subscribe() else { return };
+    let Some(events) = super::linux::pactl_events(changes_the_outputs) else { return };
     std::thread::spawn(move || {
         // what is there now is the state to compare with, not a change
         let mut before: Option<Vec<OutSink>> = Some(parse_outputs(&pactl(&["-f", "json", "list", "sinks"]).unwrap_or_default()));
         let mut announce_id = 0u32;
         loop {
             // a connecting headset announces its output a moment before it is usable: wait for the burst to end
-            let Ok(first) = events.recv() else { return };
-            let mut relevant = first.contains(" on sink #") || first.contains(" on card #");
-            while let Ok(l) = events.recv_timeout(Duration::from_millis(500)) {
-                relevant |= l.contains(" on sink #") || l.contains(" on card #");
+            if !super::linux::next_change(&events, Duration::from_millis(500), Duration::from_secs(4)) {
+                return;
             }
             let now = parse_outputs(&pactl(&["-f", "json", "list", "sinks"]).unwrap_or_default());
             let Some(prev) = before.replace(now.clone()) else { continue };
-            if !relevant || !crate::config::load().ui.auto_audio_output {
+            if !crate::config::load().ui.auto_audio_output {
                 continue;
             }
             let default = default_sink();

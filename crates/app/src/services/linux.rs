@@ -173,10 +173,36 @@ fn read_brightness() -> Option<f32> {
     None
 }
 
-/// Lines of `pactl subscribe` (what PulseAudio / PipeWire report as it happens), so volume and recording streams
-/// are read when they change instead of every few hundred milliseconds. None when pactl is missing.
-pub(crate) fn pactl_subscribe() -> Option<std::sync::mpsc::Receiver<String>> {
-    use std::io::{BufRead, BufReader};
+/// Which lines of `pactl subscribe` a watcher wants to hear.
+pub(crate) type Wanted = fn(&str) -> bool;
+
+/// Who listens to the audio server's events, and for which.
+#[derive(Default)]
+struct Hub {
+    listeners: Vec<(Wanted, std::sync::mpsc::Sender<String>)>,
+}
+
+impl Hub {
+    fn publish(&mut self, line: &str) {
+        self.listeners.retain(|(wanted, tx)| !wanted(line) || tx.send(line.to_string()).is_ok());
+    }
+}
+
+/// The lines of `pactl subscribe` (what PulseAudio / PipeWire report as it happens) that `wanted` accepts, so the audio
+/// server is read when something changes instead of every few hundred milliseconds. None when pactl is missing.
+///
+/// Every watcher says what it cares about because each `pactl` command it then runs is itself reported (a client comes
+/// and goes): a watcher that read again at any line fed itself, some thirty commands a second for as long as the island
+/// ran. One `pactl subscribe` serves them all.
+pub(crate) fn pactl_events(wanted: Wanted) -> Option<std::sync::mpsc::Receiver<String>> {
+    static HUB: std::sync::OnceLock<Option<Arc<std::sync::Mutex<Hub>>>> = std::sync::OnceLock::new();
+    let hub = HUB.get_or_init(start_hub).as_ref()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    hub.lock().ok()?.listeners.push((wanted, tx));
+    Some(rx)
+}
+
+fn spawn_subscribe() -> Option<std::process::Child> {
     use std::os::unix::process::CommandExt;
     let mut cmd = Proc::new("pactl");
     cmd.arg("subscribe").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
@@ -188,19 +214,78 @@ pub(crate) fn pactl_subscribe() -> Option<std::sync::mpsc::Receiver<String>> {
             Ok(())
         });
     }
-    let mut child = cmd.spawn().ok()?;
-    let out = child.stdout.take()?;
-    let (tx, rx) = std::sync::mpsc::channel();
+    cmd.spawn().ok()
+}
+
+fn start_hub() -> Option<Arc<std::sync::Mutex<Hub>>> {
+    use std::io::{BufRead, BufReader};
+    let hub: Arc<std::sync::Mutex<Hub>> = Default::default();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let shared = hub.clone();
+    // the child dies with the thread that spawned it, so one thread spawns it and stays to read it
     std::thread::spawn(move || {
-        for line in BufReader::new(out).lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
+        let mut started = Some(started_tx);
+        let mut wait = 2;
+        loop {
+            let child = spawn_subscribe();
+            if let Some(tx) = started.take() {
+                let _ = tx.send(child.is_some());
+                if child.is_none() {
+                    return;
+                }
+            } else if child.is_some() {
+                // the audio server was away: what it holds now may be anything
+                if let Ok(mut h) = shared.lock() {
+                    for line in ["Event 'change' on server #0", "Event 'change' on sink #0", "Event 'change' on source #0"] {
+                        h.publish(line);
+                    }
+                }
             }
+            if let Some(mut child) = child {
+                let began = std::time::Instant::now();
+                if let Some(out) = child.stdout.take() {
+                    for line in BufReader::new(out).lines().map_while(Result::ok) {
+                        if let Ok(mut h) = shared.lock() {
+                            h.publish(&line);
+                        }
+                    }
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                if began.elapsed() > Duration::from_secs(60) {
+                    wait = 2;
+                }
+            }
+            std::thread::sleep(Duration::from_secs(wait));
+            wait = (wait * 2).min(60);
         }
-        let _ = child.kill();
-        let _ = child.wait();
     });
-    Some(rx)
+    started_rx.recv().unwrap_or(false).then_some(hub)
+}
+
+/// Waits for an event, then for the burst it belongs to to end: `quiet` without another one, and never longer than
+/// `most` after the first. False when no more events will come.
+pub(crate) fn next_change(events: &std::sync::mpsc::Receiver<String>, quiet: Duration, most: Duration) -> bool {
+    if events.recv().is_err() {
+        return false;
+    }
+    let end = std::time::Instant::now() + most;
+    loop {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() || events.recv_timeout(quiet.min(left)).is_err() {
+            return true;
+        }
+    }
+}
+
+/// The volume bar: an output changed, or which one is the default.
+fn volume_event(line: &str) -> bool {
+    line.contains(" on sink #") || line.contains(" on server")
+}
+
+/// The microphone indicator: a recording stream or an input changed.
+fn recording_event(line: &str) -> bool {
+    line.contains(" on source-output #") || line.contains(" on source #")
 }
 
 fn audio_and_brightness(rep: Reporter, settings: Arc<Settings>) {
@@ -209,33 +294,31 @@ fn audio_and_brightness(rep: Reporter, settings: Arc<Settings>) {
         let mut last_bloop = std::time::Instant::now();
         let mut last_vol_read = std::time::Instant::now();
         let mut last_change = std::time::Instant::now() - Duration::from_secs(60);
-        let events = pactl_subscribe();
+        let events = pactl_events(volume_event);
         let mut first = true;
         loop {
             // the volume is read when the audio server says something changed (and once a few seconds as a
             // safety net); the backlight has no events, a sysfs read every second and a half costs nothing
             // While something is changing both are looked at often (so a bar can follow a key held down or a
             // slider being dragged at nearly the display's rate); at rest the backlight is read four times a second
-            // and the volume once every second and a half, besides when the audio server says so.
+            // and the volume when the audio server says so.
             let busy = last_change.elapsed() < Duration::from_secs(2);
             let poll = Duration::from_millis(if busy { 30 } else { 250 });
             let mut read_volume_now = first;
             match &events {
                 Some(rx) => match rx.recv_timeout(poll) {
-                    Ok(line) => {
+                    Ok(_) => {
                         // events that piled up while the last reading ran are the same news: read once
-                        let mut relevant = line.contains("sink") || line.contains("server");
-                        while let Ok(l) = rx.try_recv() {
-                            relevant |= l.contains("sink") || l.contains("server");
-                        }
-                        read_volume_now |= relevant;
+                        while rx.try_recv().is_ok() {}
+                        read_volume_now = true;
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     Err(_) => std::thread::sleep(poll),
                 },
                 None => std::thread::sleep(poll),
             }
-            if last_vol_read.elapsed() > Duration::from_millis(1500) {
+            // (with the server's events to say when it changed, this is only in case one was missed)
+            if last_vol_read.elapsed() > Duration::from_millis(if events.is_some() { 5000 } else { 1500 }) {
                 read_volume_now = true;
             }
             first = false;
@@ -377,7 +460,7 @@ fn video_devices_exist() -> bool {
 fn privacy(rep: Reporter) {
     std::thread::spawn(move || {
         let mut last = Privacy::default();
-        let events = pactl_subscribe();
+        let events = pactl_events(recording_event);
         let has_camera = video_devices_exist();
         let (mut camera, mut screen) = (false, false);
         let (mut camera_at, mut screen_at, mut mic_at) = (None::<std::time::Instant>, None::<std::time::Instant>, None::<std::time::Instant>);
@@ -386,7 +469,12 @@ fn privacy(rep: Reporter) {
             // the microphone is re-read when a recording stream appears or goes; the camera (a scan of /proc) and the
             // screen share (pw-dump) are slower and only looked at every few seconds
             let mut mic_changed = match &events {
-                Some(rx) => rx.recv_timeout(Duration::from_secs(4)).map_or(true, |l| l.contains("source-output") || l.contains("source #")),
+                Some(rx) => {
+                    // a time-out counts too: that is the look taken every few seconds anyway
+                    let _ = rx.recv_timeout(Duration::from_secs(4));
+                    while rx.try_recv().is_ok() {}
+                    true
+                }
                 None => {
                     std::thread::sleep(Duration::from_secs(3));
                     true
@@ -626,6 +714,72 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
             std::thread::sleep(Duration::from_millis(if playing { 1000 } else { 2000 }));
         }
     });
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+    use std::sync::mpsc::channel;
+    use std::time::Instant;
+
+    #[test]
+    fn each_watcher_hears_only_what_it_asked_for_and_a_gone_one_is_forgotten() {
+        let mut hub = Hub::default();
+        let ((vtx, volume), (rtx, recording)) = (channel(), channel());
+        hub.listeners.push((volume_event, vtx));
+        hub.listeners.push((recording_event, rtx));
+        for line in ["Event 'new' on client #1", "Event 'change' on sink #2", "Event 'new' on source-output #3", "Event 'change' on sink-input #4", "Event 'remove' on client #1"] {
+            hub.publish(line);
+        }
+        assert_eq!(volume.try_iter().collect::<Vec<_>>(), ["Event 'change' on sink #2"]);
+        assert_eq!(recording.try_iter().collect::<Vec<_>>(), ["Event 'new' on source-output #3"]);
+        drop(volume);
+        hub.publish("Event 'change' on sink #2");
+        assert_eq!(hub.listeners.len(), 1);
+    }
+
+    #[test]
+    fn a_burst_is_one_change_and_one_that_never_ends_is_still_looked_at() {
+        let (tx, rx) = channel();
+        for n in 0..5 {
+            tx.send(n.to_string()).unwrap();
+        }
+        assert!(next_change(&rx, Duration::from_millis(20), Duration::from_secs(1)));
+        assert!(rx.try_recv().is_err(), "the whole burst was taken");
+        // events every 5 ms, never 50 ms apart
+        let feed = std::thread::spawn(move || {
+            for _ in 0..100 {
+                if tx.send(String::new()).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let began = Instant::now();
+        assert!(next_change(&rx, Duration::from_millis(50), Duration::from_millis(100)));
+        assert!(began.elapsed() < Duration::from_millis(400), "{:?}", began.elapsed());
+        drop(rx);
+        feed.join().unwrap();
+        let (tx, rx) = channel::<String>();
+        drop(tx);
+        assert!(!next_change(&rx, Duration::from_millis(1), Duration::from_millis(1)), "no more will come");
+    }
+
+    /// `cargo test -p open-island live_audio_events -- --ignored --nocapture`: how often the sound page would be read
+    /// again in five seconds, with the real audio server and whatever else is talking to it.
+    #[test]
+    #[ignore = "reads the real pactl"]
+    fn live_audio_events() {
+        let events = pactl_events(volume_event).expect("pactl");
+        let end = Instant::now() + Duration::from_secs(5);
+        let mut reads = 0;
+        while events.recv_timeout(end.saturating_duration_since(Instant::now())).is_ok() {
+            reads += 1;
+            let _ = run("pactl", &["-f", "json", "list", "sinks"]);
+        }
+        println!("{reads} events asked for a reading in 5 s");
+        assert!(reads < 20, "the readings feed themselves");
+    }
 }
 
 #[cfg(test)]

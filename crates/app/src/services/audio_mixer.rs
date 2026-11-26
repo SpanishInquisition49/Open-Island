@@ -76,13 +76,17 @@ pub fn command(c: &Command) -> bool {
     true
 }
 
+/// What the lists show: outputs, inputs, apps that are playing, and the defaults.
+fn changes_the_lists(line: &str) -> bool {
+    [" on sink #", " on source #", " on sink-input #", " on card #", " on server"].iter().any(|what| line.contains(what))
+}
+
 pub fn start(rep: Reporter) {
-    let Some(events) = super::linux::pactl_subscribe() else { return };
+    let Some(events) = super::linux::pactl_events(changes_the_lists) else { return };
     std::thread::spawn(move || {
         read(&rep);
-        while events.recv().is_ok() {
-            // a burst of events is one change
-            while events.recv_timeout(Duration::from_millis(120)).is_ok() {}
+        // a burst of events is one change
+        while super::linux::next_change(&events, Duration::from_millis(120), Duration::from_secs(1)) {
             read(&rep);
         }
     });
@@ -91,6 +95,16 @@ pub fn start(rep: Reporter) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn its_own_commands_do_not_make_it_read_again() {
+        for line in ["Event 'new' on client #81", "Event 'change' on client #81", "Event 'remove' on client #81", "Event 'new' on source-output #9"] {
+            assert!(!changes_the_lists(line), "{line}");
+        }
+        for line in ["Event 'change' on sink #56", "Event 'new' on sink-input #4", "Event 'remove' on source #3", "Event 'new' on card #2", "Event 'change' on server #4294967295"] {
+            assert!(changes_the_lists(line), "{line}");
+        }
+    }
 
     #[test]
     fn inputs_leave_out_the_monitor_of_an_output() {
