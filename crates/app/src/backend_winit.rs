@@ -377,8 +377,10 @@ pub fn run() {
     let waker: crate::app::Waker = Arc::new(move || {
         let _ = proxy.send_event(Wake);
     });
+    // the graphics context first: it is made while the program has one thread
+    let gpu = Gpu::new();
     let app = App::new(waker);
-    let mut shell = Shell { app, gpu: Gpu::new(), window: None, surface_logical: (0.0, 0.0), animating: true, next_ms: 0, keyboard_on: false, hidden: false, mods: ModifiersState::empty(), shape: vec![], wanted: (0.0, 0.0), last_redraw: Instant::now(), perf: crate::perf::Perf::from_env() };
+    let mut shell = Shell { app, gpu, window: None, surface_logical: (0.0, 0.0), animating: true, next_ms: 0, keyboard_on: false, hidden: false, mods: ModifiersState::empty(), shape: vec![], wanted: (0.0, 0.0), last_redraw: Instant::now(), perf: crate::perf::Perf::from_env() };
     let _ = (TOP_MARGIN, LogicalPosition::new(0.0, 0.0));
     event_loop.set_control_flow(ControlFlow::Wait);
     if let Err(e) = event_loop.run_app(&mut shell) {

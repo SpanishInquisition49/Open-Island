@@ -635,7 +635,11 @@ brings the window of its app to the front.
 `OPEN_ISLAND_PERF=1 open-island` logs one line per animation: frames, the interval between them (8.3 ms is a steady
 120 Hz), the slowest one, how many took over 20 ms, and what drawing cost. The island asks for the low-power GPU
 (`WGPU_POWER_PREF=low`, change it in the environment); on a laptop with a discrete GPU, installing the integrated GPU's
-Vulkan driver (`vulkan-radeon`, `vulkan-intel`) lets it run there instead of keeping the big GPU awake.
+Vulkan driver (`vulkan-radeon`, `vulkan-intel`) lets it run there instead of keeping the big GPU awake. On such a laptop
+NVIDIA's driver is then not even loaded (it takes some 80 MB and holds the card open); only Vulkan is asked, unless it has
+no hardware to offer. `WGPU_BACKEND`, `WGPU_ADAPTER_NAME`, `WGPU_POWER_PREF` and the Vulkan loader's driver variables are
+respected. Font files are mapped into memory, not copied, and a line sliding because it is too long is drawn 60 times a
+second at most, and not at all while it pauses.
 
 ## Options
 
