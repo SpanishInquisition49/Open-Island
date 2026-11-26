@@ -5,7 +5,7 @@ use crate::services::{self, Msg};
 use crate::config::CalendarSource;
 use island_ui::model::{Command, Data};
 use island_ui::text::Fonts;
-use island_ui::{Config, Island};
+use island_ui::Island;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::Instant;
@@ -40,6 +40,12 @@ pub fn config_view_of(fonts: &Fonts) -> island_ui::model::ConfigView {
         home: crate::config::home_label(&s.home),
         home_pos: s.home.as_ref().map(|h| (h.0, h.1)),
     }
+}
+
+/// The island as it starts: with the options saved in the configuration, before what else it remembers from the last run
+/// is put back.
+fn new_island(settings: &crate::config::Settings) -> Island {
+    Island::new(settings.ui.clone())
 }
 
 pub struct App {
@@ -92,7 +98,8 @@ impl App {
     pub fn new(waker: Waker) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         let cmd_tx = services::start(tx, waker);
-        let wanted = crate::config::load().font;
+        let settings = crate::config::load();
+        let wanted = settings.font.clone();
         let fonts = Fonts::load_system(Some(&wanted));
         if !wanted.is_empty() && !fonts.preferred_found() {
             log::warn!("font {wanted:?} not found: using the default");
@@ -102,7 +109,7 @@ impl App {
         }
         let epoch_at_start = chrono::Utc::now().timestamp_millis();
         let now = Instant::now();
-        let mut island = Island::new(Config::default());
+        let mut island = new_island(&settings);
         island.restore_announced(services::load_announced());
         island.restore_reminders(services::load_reminders());
         island.restore_todos(services::load_todos());
@@ -122,11 +129,11 @@ impl App {
         if let Some((day, apps)) = services::load_attention() {
             island.restore_attention(day, apps);
         }
-        if crate::config::load().persist_history {
+        if settings.persist_history {
             island.restore_history(services::load_history());
         }
         island.data.config = config_view_of(&fonts);
-        Self { attention_saved_at: 0, island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, was_animating: false, quit: false, persist_history: crate::config::load().persist_history, fullscreen: false, maximized: false, pointer_near: false, last_pointer: (0.0, 0.0) }
+        Self { attention_saved_at: 0, island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, was_animating: false, quit: false, persist_history: settings.persist_history, fullscreen: false, maximized: false, pointer_near: false, last_pointer: (0.0, 0.0) }
     }
 
     /// Epoch milliseconds: the monotonic clock since the start, so a clock that is adjusted a little does not make
@@ -404,7 +411,61 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{frame_dt, reanchor};
+    use super::{frame_dt, new_island, reanchor};
+    use island_ui::model::OptionValue;
+    use island_ui::options;
+
+    /// Writes one option as the options page does, into a file of its own, and returns the island the next start makes.
+    fn restarted_after(name: &str, changes: &[(&str, OptionValue)]) -> island_ui::Island {
+        let dir = std::env::temp_dir().join(format!("open-island-restart-{}-{name}", std::process::id()));
+        let file = dir.join("config.json");
+        let _ = std::fs::remove_file(&file);
+        for (key, value) in changes {
+            crate::config::set_option(&mut serde_json::Map::new(), key, value).unwrap_or_else(|e| panic!("{key}: {e}"));
+            crate::config::update_at(&file, |o| crate::config::set_option(o, key, value).unwrap()).unwrap();
+        }
+        let settings = crate::config::parse(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        new_island(&settings)
+    }
+
+    #[test]
+    fn every_switch_of_the_options_page_is_still_set_after_a_restart() {
+        let defaults = island_ui::Config::default();
+        for tab in 0..options::TABS.len() {
+            for (key, _) in options::toggles(tab) {
+                let changed = !options::get_bool(&defaults, key);
+                let island = restarted_after(key, &[(key, OptionValue::Bool(changed))]);
+                assert_eq!(options::get_bool(&island.cfg, key), changed, "{key} is forgotten");
+            }
+        }
+    }
+
+    #[test]
+    fn every_value_a_stepper_can_reach_is_still_set_after_a_restart() {
+        for tab in 0..options::TABS.len() {
+            for (key, _, _, step, min, max) in options::steppers(tab) {
+                let steps = ((max - min) / step).round() as i64;
+                for n in 0..=steps {
+                    // rounded as a click on the page rounds it
+                    let value = ((min + n as f64 * step).min(*max) * 10.0).round() / 10.0;
+                    let island = restarted_after(key, &[(key, OptionValue::Num(value))]);
+                    assert!((options::get_num(&island.cfg, key) - value).abs() < 1e-6, "{key}: {value} came back as {}", options::get_num(&island.cfg, key));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_text_options_and_the_way_of_travelling_are_still_set_after_a_restart() {
+        let text = |t: &str| OptionValue::Text(t.into());
+        // the presets as the field shows them, and so as it writes them back
+        let island = restarted_after("texts", &[("timer_presets", text("2 min, 45 min, 1 h 30 min")), ("travel_mode", text("train")), ("map_tile_url", text("opentopomap")), ("map_dark", OptionValue::Bool(false))]);
+        assert_eq!(island.cfg.timer_presets, [120, 2700, 5400]);
+        assert_eq!(island.cfg.travel_mode, island_core::travel::Mode::Train);
+        assert_eq!(Some(island.cfg.map_tile_url.clone()), island_core::map::resolve("opentopomap"));
+        assert!(!island.cfg.map_dark);
+    }
 
     #[test]
     fn the_clock_follows_the_wall_clock_after_a_sleep_but_not_its_jitter() {
