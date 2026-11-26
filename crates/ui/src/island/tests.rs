@@ -3648,10 +3648,11 @@ fn a_resting_line_asks_for_its_next_frame_only_when_it_moves() {
     i.marquee_wake.set(Some(t + 400));
     let f = i.tick(t, 8.0);
     assert!(!f.animating && f.next_ms == 400, "{f:?}");
-    // woken at the end of the pause: it slides, frame after frame
+    // woken at the end of the pause: it slides, at sixty frames a second and not at the screen's own rate
     i.marquee_wake.set(Some(t + 400));
-    assert!(i.tick(t + 400, 8.0).animating);
-    assert!(!i.tick(t + 408, 8.0).animating, "no line drawn: nothing to wake for");
+    let f = i.tick(t + 400, 8.0);
+    assert!(!f.animating && f.next_ms == MARQUEE_STEP_MS, "{f:?}");
+    assert!(i.tick(t + 412, 8.0).next_ms > 100, "no line drawn: nothing to wake for");
 }
 
 #[test]

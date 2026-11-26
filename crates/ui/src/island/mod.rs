@@ -29,6 +29,10 @@ const SWIPE_COOLDOWN_MS: i64 = 700;
 const PLAY_CONFIRM_MS: i64 = 1500;
 /// The widest the compact pill grows to show a line of lyrics.
 const LYRIC_PILL_MAX: f64 = 640.0;
+/// The time between two frames of a sliding line. At 40 px a second sixty a second move it less than a pixel each, and
+/// a fast screen is not redrawn at its own rate for as long as a long title is up. (Under 16 so that a 60 Hz screen
+/// gets every one of its frames.)
+const MARQUEE_STEP_MS: u32 = 12;
 const SNOOZE_MS: i64 = 10 * 60_000;
 /// Notifications the island makes itself (confirmations, reminders, the recap) have ids from here.
 const OWN_ID_BASE: u32 = 3_000_000;
