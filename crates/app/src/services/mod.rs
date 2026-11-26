@@ -572,3 +572,43 @@ mod organizer_state_tests {
         assert_ne!(bare.uid, todo_from_json(&serde_json::json!("Other"), today, 4).unwrap().uid, "each gets its own id");
     }
 }
+
+/// A worker that does `job` with the newest value sent to it: values that arrive while it is busy are skipped, so a
+/// flood of slider positions costs one command at a time and the last one always lands.
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) fn latest_wins(job: impl Fn(f32) + Send + 'static) -> std::sync::mpsc::Sender<f32> {
+    let (tx, rx) = std::sync::mpsc::channel::<f32>();
+    std::thread::spawn(move || {
+        while let Ok(mut v) = rx.recv() {
+            while let Ok(newer) = rx.try_recv() {
+                v = newer;
+            }
+            job(v);
+        }
+    });
+    tx
+}
+
+#[cfg(all(test, any(target_os = "linux", windows)))]
+mod latest_tests {
+    use super::latest_wins;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    #[test]
+    fn a_flood_of_values_costs_few_jobs_and_the_last_always_lands() {
+        let done = Arc::new(Mutex::new(vec![]));
+        let d = done.clone();
+        let tx = latest_wins(move |v| {
+            std::thread::sleep(Duration::from_millis(20)); // a slow command
+            d.lock().unwrap().push(v);
+        });
+        for k in 0..50 {
+            tx.send(k as f32).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        let got = done.lock().unwrap().clone();
+        assert_eq!(*got.last().unwrap(), 49.0, "the final position is applied");
+        assert!(got.len() < 10, "and not fifty processes: {got:?}");
+    }
+}

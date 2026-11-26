@@ -39,6 +39,13 @@ pub fn now_playing(text: &str, duration_in_ms: bool) -> Option<NowPlaying> {
     })
 }
 
+/// Whether Windows' panel brightness is to be read again: reading it starts a PowerShell, a costly thing to do in the
+/// background, so only while the page with its slider is open: as it opens, then every five seconds.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn brightness_due(page_open: bool, was_open: bool, since_read: std::time::Duration) -> bool {
+    page_open && (!was_open || since_read >= std::time::Duration::from_secs(5))
+}
+
 /// `(Get-CimInstance ... WmiMonitorBrightness).CurrentBrightness` -> 0..=1.
 pub fn win_brightness(text: &str) -> Option<f32> {
     let v: f32 = text.lines().find(|l| !l.trim().is_empty())?.trim().parse().ok()?;
@@ -238,5 +245,14 @@ mod tests {
         assert_eq!(consent_app(r"C:#Users#me#AppData#Local#Discord#app-1.0#Discord.exe"), ("Discord".to_string(), true));
         assert_eq!(consent_app("Microsoft.WindowsCamera_8wekyb3d8bbwe"), ("WindowsCamera".to_string(), false));
         assert_eq!(consent_app("Zoom"), ("Zoom".to_string(), false));
+    }
+
+    #[test]
+    fn windows_brightness_is_only_read_while_its_page_is_open() {
+        use std::time::Duration;
+        let s = Duration::from_secs;
+        assert!(!brightness_due(false, false, s(3600)), "closed: never, however long ago");
+        assert!(brightness_due(true, false, s(0)), "as the page opens");
+        assert!(!brightness_due(true, true, s(4)) && brightness_due(true, true, s(5)));
     }
 }

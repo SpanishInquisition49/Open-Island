@@ -12,7 +12,7 @@ MSVC build tools needed) or take the `open-island.exe` someone built for you.
 5. `open-island timer 10`, `pomodoro`, `stopwatch`: bubble next to the pill, hover opens the timer page.
 6. Music: play something in Spotify, the browser or the Windows media player: title, cover, play/pause/next work.
 7. Volume: change it with the keys: a volume card appears; the slider on the quick-settings page moves it.
-8. Brightness (laptop only): the slider on the quick-settings page changes the panel; a desktop monitor has none.
+8. Brightness (laptop only): the slider on the quick-settings page changes the panel; a desktop monitor has none. It is read as the page opens and every five seconds while it stays open; while it is closed no `powershell` process should keep appearing in Task Manager (one at start is expected).
 9. `open-island progress run -l Ping -- ping -n 6 127.0.0.1`: a progress card, then a green "done".
    (`ping` prints no percentage, so the bar stays indeterminate; try `curl -O` of a big file for a real one.)
 10. Open a fullscreen video or game: the island hides; leave it: it comes back.
@@ -45,12 +45,14 @@ Also: the System page now names the program using the microphone or the camera (
 Known gaps on Windows: night light, muting one microphone user, audio following the headphones.
 
 If nothing appears: run it from a terminal (PowerShell) as `$env:RUST_LOG="debug"; .\open-island.exe` and send the output;
-the lines "window created", "showing the island" and "hiding the island (fullscreen window: ...)" say how far it got. Windows
-surfaces are opaque, so the line "the window surface is opaque" is normal: the window is cut to the island's shape.
+the lines "transparent surface", "window created", "showing the island" and "hiding the island (fullscreen: ...)" say how
+far it got.
 
 Smoothness and the edge (the window is one fixed size and does not change while the island animates; if it still
 stutters, run with `$env:OPEN_ISLAND_PERF=1` and send the log lines): on Windows the island draws through DirectX 12 into a transparent DirectComposition surface
-(log line "transparent surface"). If that misbehaves (black rectangle, nothing shown), start it with
+(log line "transparent surface (PreMultiplied) on ...", which also names the graphics adapter used). Until 2026-11-26 the
+surface was in fact opaque although that line appeared: a black rectangle showed while the island moved and was cut round
+when it stopped. If that, or anything like it, still happens (black rectangle, nothing shown), start it with
 `$env:OPEN_ISLAND_OPAQUE=1` to use the old cut-to-shape way and tell me which of the two worked. With a maximized
 window in front the island hides; moving the pointer to the top edge, around the middle of the screen, brings it
 back, and it goes again a moment after the pointer leaves. A notification, the volume or a timer still show.

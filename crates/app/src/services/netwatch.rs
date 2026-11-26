@@ -125,7 +125,47 @@ fn connectivity() -> &'static str {
 
 #[cfg(windows)]
 fn vpn_up() -> bool {
-    command_output("powershell", &["-NoProfile", "-NonInteractive", "-Command", "Get-NetAdapter | Where-Object Status -eq 'Up' | ForEach-Object InterfaceDescription"]).is_some_and(|t| ns::any_vpn_adapter(&t))
+    adapters_up().is_some_and(|t| ns::any_vpn_adapter(&t))
+}
+
+/// The descriptions of the network adapters that are up, one to a line, as the system lists them (asking a PowerShell
+/// for them costs seconds of processor time).
+#[cfg(windows)]
+fn adapters_up() -> Option<String> {
+    use windows::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR};
+    use windows::Win32::NetworkManagement::IpHelper::{GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_UNICAST, IP_ADAPTER_ADDRESSES_LH};
+    use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+    use windows::Win32::Networking::WinSock::AF_UNSPEC;
+    let flags = GAA_FLAG_SKIP_UNICAST | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    let mut bytes = 16 * 1024u32;
+    // the list can grow between two calls: a few tries with the size it asks for
+    for _ in 0..3 {
+        // u64s, so that the records are aligned as they must be
+        let mut buffer = vec![0u64; (bytes as usize).div_ceil(8)];
+        let first = buffer.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+        // SAFETY: `first` points to at least `bytes` bytes, which is what the call is told
+        let result = unsafe { GetAdaptersAddresses(AF_UNSPEC.0 as u32, flags, None, Some(first), &mut bytes) };
+        if result == ERROR_BUFFER_OVERFLOW.0 {
+            continue;
+        }
+        if result != NO_ERROR.0 {
+            return None;
+        }
+        let (mut at, mut up) = (first, String::new());
+        while !at.is_null() {
+            // SAFETY: the records and their strings live in `buffer`, linked and terminated by the call above
+            let adapter = unsafe { &*at };
+            if adapter.OperStatus == IfOperStatusUp {
+                if let Ok(description) = unsafe { adapter.Description.to_string() } {
+                    up.push_str(&description);
+                    up.push('\n');
+                }
+            }
+            at = adapter.Next;
+        }
+        return Some(up);
+    }
+    None
 }
 
 #[cfg(windows)]

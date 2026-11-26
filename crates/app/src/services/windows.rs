@@ -47,10 +47,7 @@ pub fn command(c: Command) {
                 let _ = t.send(true);
             }
         }
-        Command::SetBrightness(v) => {
-            let pct = (v.clamp(0.0, 1.0) * 100.0).round() as i32;
-            std::thread::spawn(move || drop(powershell(&format!("(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods) | Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{Timeout=0;Brightness={pct}}}"))));
-        }
+        Command::SetBrightness(v) => set_brightness(v),
         Command::SetSink(_) | Command::SetSource(_) | Command::SetStreamVolume { .. } | Command::ToggleStreamMute(_) | Command::NextSink => super::win_audio::command(c),
         Command::PlaySound => play_default_sound(),
         other => super::win_more::command(other),
@@ -66,18 +63,39 @@ fn powershell(script: &str) -> Option<String> {
 }
 
 /// The panel brightness (laptops and tablets answer WMI; desktop monitors do not, and then the slider stays hidden).
+/// Read once at the start, so that the page knows whether to have the slider, then only while the page is open.
 fn brightness(rep: Reporter) {
     std::thread::spawn(move || {
-        let mut last = None;
+        let read = || powershell("(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness | Select-Object -First 1).CurrentBrightness").and_then(|t| super::parse::win_brightness(&t));
+        let (mut last, mut read_at, mut was_open) = (read(), std::time::Instant::now(), false);
+        rep.patch(move |d| d.brightness = last);
         loop {
-            let v = powershell("(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness | Select-Object -First 1).CurrentBrightness").and_then(|t| super::parse::win_brightness(&t));
-            if v != last {
-                last = v;
-                rep.patch(move |d| d.brightness = v);
+            std::thread::sleep(Duration::from_millis(300));
+            let open = super::QUICK_WANTED.load(std::sync::atomic::Ordering::Relaxed);
+            if super::parse::brightness_due(open, was_open, read_at.elapsed()) {
+                let v = read();
+                read_at = std::time::Instant::now();
+                if v != last {
+                    last = v;
+                    rep.patch(move |d| d.brightness = v);
+                }
             }
-            std::thread::sleep(std::time::Duration::from_secs(5));
+            was_open = open;
         }
     });
+}
+
+/// Sets the panel brightness; a drag of the slider costs one PowerShell at a time, not one for every position.
+fn set_brightness(level: f32) {
+    static TX: Mutex<Option<Sender<f32>>> = Mutex::new(None);
+    let Ok(mut tx) = TX.lock() else { return };
+    let tx = tx.get_or_insert_with(|| {
+        super::latest_wins(|v| {
+            let pct = (v.clamp(0.0, 1.0) * 100.0).round() as i32;
+            drop(powershell(&format!("(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods) | Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{Timeout=0;Brightness={pct}}}")));
+        })
+    });
+    let _ = tx.send(level);
 }
 
 fn play_default_sound() {
