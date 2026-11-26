@@ -20,6 +20,10 @@ fn usage() {
     eprintln!(
         "open-island {}\n\nUSAGE:\n  open-island [--backend winit|wayland]   run the island\n  open-island msg <event> [payload]       talk to a running island
   open-island notify <title> [body]       show a notification (any platform)
+  open-island ok|warn|fail|info <title> [-d detail] [-s secs] [--stay] [--id name] [--open url] [--yes l [--no l]]
+                                          a card from a script; a question exits 0 yes, 1 no, 5 unanswered (--help)
+  open-island run [--] <command>...       a card when the command ends: how it went and how long it took
+  open-island dismiss [--id name]         take a card away
   open-island pin <text> | unpin [text|all]  keep a note on the Today page (a click copies it)
   open-island watch <pid|program> [label]  a card when that process ends
   open-island autostart on|off|status     start with the session
@@ -80,13 +84,9 @@ fn main() {
             }
         }
         Some("doctor") => doctor::run(),
-        Some("notify") if args.len() >= 2 => {
-            let line = format!("notify {}", args[1..].join(" | "));
-            if !services::ipc::send(&line) {
-                eprintln!("open-island is not running");
-                std::process::exit(1);
-            }
-        }
+        Some(verb @ ("notify" | "ok" | "warn" | "fail" | "info")) => std::process::exit(cli::card(verb, &args[1..])),
+        Some("run") => std::process::exit(cli::run_and_tell(&args[1..])),
+        Some("dismiss") => std::process::exit(cli::dismiss(&args[1..])),
         Some("autostart") => std::process::exit(cli::autostart(args.get(1).map(String::as_str))),
         Some("-V") | Some("--version") | Some("version") => println!("open-island {}", env!("CARGO_PKG_VERSION")),
         Some("progress") => std::process::exit(cli::progress(&args[1..])),

@@ -364,6 +364,199 @@ fn run(args: &[String]) -> i32 {
     code
 }
 
+const CARD_USAGE: &str = "usage: open-island ok|warn|fail|info <title> [options]   |   open-island notify <title> [body] [options]
+  -d, --detail <text>      the grey text under the title        -s, --seconds <n>   0.5 to 60
+  --stay                   until clicked (10 minutes at most)   --id <name>         a newer card of this name takes its place
+  --open <url|file>        adds a button that opens it          --button <label>    that button's label
+  --yes <label> [--no <label>]   asks, and waits: exit 0 for yes, 1 for no, 5 when nobody answers
+  --icon <name>   --color <name|#rrggbb>   --sound <file>   --preset <name> (card_presets in the settings)";
+
+/// The JSON of a `card` message from the arguments of `open-island <verb> ...`. `piped` is what came on standard input,
+/// whose first line is the title when no argument gives one.
+pub fn card_spec(verb: &str, args: &[String], piped: Option<&str>) -> Result<serde_json::Value, String> {
+    let mut v = serde_json::Map::new();
+    if verb != "notify" {
+        v.insert("kind".into(), serde_json::json!(verb));
+    }
+    let mut words = vec![];
+    let mut args = args.iter();
+    while let Some(a) = args.next() {
+        let key = match a.as_str() {
+            "--" => {
+                words.extend(args.by_ref().cloned());
+                break;
+            }
+            "--stay" => {
+                v.insert("stay".into(), serde_json::json!(true));
+                continue;
+            }
+            "-d" | "--detail" => "detail",
+            "-s" | "--seconds" => "seconds",
+            "--id" => "id",
+            "--open" => "open",
+            "--button" => "button",
+            "--yes" => "yes",
+            "--no" => "no",
+            "--icon" => "icon",
+            "--color" | "--colour" => "color",
+            "--sound" => "sound",
+            "--preset" => "preset",
+            f if f.starts_with('-') && f.len() > 1 => return Err(format!("unknown option {f}")),
+            _ => {
+                words.push(a.clone());
+                continue;
+            }
+        };
+        let value = args.next().ok_or_else(|| format!("{a} needs a value"))?;
+        let value = match key {
+            "seconds" => {
+                let n: f64 = value.parse().ok().filter(|n| (0.5..=60.0).contains(n)).ok_or_else(|| format!("{a} is a number from 0.5 to 60, not {value}"))?;
+                serde_json::json!(n)
+            }
+            // the island runs somewhere else: a file is named from here
+            "open" | "sound" => serde_json::json!(std::fs::canonicalize(value).map_or_else(|_| value.clone(), |p| p.to_string_lossy().into_owned())),
+            "color" if island_core::progress::parse_color(value).is_none() => return Err(format!("{value} is not a colour (a name or #rrggbb)")),
+            "icon" if !island_ui::is_known_icon(value) => return Err(format!("the island has no icon named {value}")),
+            _ => serde_json::json!(value),
+        };
+        v.insert(key.into(), value);
+    }
+    if words.len() > if verb == "notify" { usize::MAX } else { 1 } {
+        return Err(format!("one title, in quotes (the text under it goes in -d): {}", words.join(" ")));
+    }
+    let mut words = words.into_iter();
+    if let Some(title) = words.next() {
+        v.insert("title".into(), serde_json::json!(title));
+        let body: Vec<String> = words.collect();
+        if !body.is_empty() && !v.contains_key("detail") {
+            v.insert("detail".into(), serde_json::json!(body.join(" ")));
+        }
+    } else if let Some(text) = piped {
+        let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+        if let Some(title) = lines.next() {
+            v.insert("title".into(), serde_json::json!(title));
+            let rest = lines.collect::<Vec<_>>().join(" ");
+            if !rest.is_empty() && !v.contains_key("detail") {
+                v.insert("detail".into(), serde_json::json!(rest));
+            }
+        }
+    }
+    if !v.contains_key("title") {
+        return Err("a card needs a title".into());
+    }
+    if v.contains_key("no") && !v.contains_key("yes") {
+        return Err("--no goes with --yes".into());
+    }
+    if v.contains_key("yes") && v.contains_key("open") {
+        return Err("a question (--yes) has no --open button".into());
+    }
+    Ok(serde_json::Value::Object(v))
+}
+
+/// The exit status for what the island answered to a question.
+fn answer_status(answer: &str) -> i32 {
+    match answer {
+        "yes" => 0,
+        "no" => 1,
+        _ => 5,
+    }
+}
+
+/// `open-island ok|warn|fail|info|notify ...`: a card from a script. Only a clear "yes" exits 0 for a question, so
+/// that `... --yes Merge && gh pr merge` never goes ahead by mistake.
+pub fn card(verb: &str, args: &[String]) -> i32 {
+    use std::io::{IsTerminal, Read};
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        println!("{CARD_USAGE}");
+        return 0;
+    }
+    let mut spec = card_spec(verb, args, None);
+    // no title among the arguments: it may come from a pipe
+    if spec.as_ref().is_err_and(|e| e.starts_with("a card needs")) && !std::io::stdin().is_terminal() {
+        let mut text = String::new();
+        let _ = std::io::stdin().take(4096).read_to_string(&mut text);
+        spec = card_spec(verb, args, Some(&text));
+    }
+    let spec = match spec {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("open-island: {e}\n{CARD_USAGE}");
+            return 2;
+        }
+    };
+    let line = format!("card {spec}");
+    let status = if spec.get("yes").is_some() { ipc::ask(&line).map(|a| answer_status(&a)) } else { ipc::send(&line).then_some(0) };
+    status.unwrap_or_else(|| {
+        eprintln!("open-island is not running");
+        3
+    })
+}
+
+/// A command's running time as a card says it: "3.1s", "3m 12s", "1h 05m".
+fn took(d: Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0..=9 => format!("{:.1}s", d.as_secs_f64()),
+        10..=59 => format!("{s}s"),
+        60..=3599 => format!("{}m {:02}s", s / 60, s % 60),
+        _ => format!("{}h {:02}m", s / 3600, s % 3600 / 60),
+    }
+}
+
+/// The card for a command that ended with `code`.
+fn ran_spec(command: &[String], code: i32, time: Duration) -> serde_json::Value {
+    let mut line = command.join(" ");
+    // only the command is cut, so that the outcome after it always shows
+    if line.chars().count() > 80 {
+        line = line.chars().take(79).collect::<String>() + "…";
+    }
+    let (kind, title) = if code == 0 { ("ok", format!("{line} finished")) } else { ("fail", format!("{line} failed (exit {code})")) };
+    serde_json::json!({"kind": kind, "title": title, "detail": took(time)})
+}
+
+/// `open-island run [--] <command>...`: runs the command as it is (same terminal, same input), then a card says how it
+/// went and how long it took. Exits with the command's own status.
+pub fn run_and_tell(args: &[String]) -> i32 {
+    let command = if args.first().is_some_and(|a| a == "--") { &args[1..] } else { args };
+    let Some(program) = command.first().filter(|p| !matches!(p.as_str(), "-h" | "--help")) else {
+        eprintln!("usage: open-island run [--] <command> [args]...");
+        return 2;
+    };
+    let started = Instant::now();
+    let code = match std::process::Command::new(program).args(&command[1..]).status() {
+        Ok(status) => {
+            #[cfg(unix)]
+            let signal = std::os::unix::process::ExitStatusExt::signal(&status).map(|s| 128 + s);
+            #[cfg(not(unix))]
+            let signal = None;
+            status.code().or(signal).unwrap_or(1)
+        }
+        Err(e) => {
+            eprintln!("open-island run: cannot start {program}: {e}");
+            127
+        }
+    };
+    let _ = ipc::send(&format!("card {}", ran_spec(command, code, started.elapsed())));
+    code
+}
+
+/// `open-island dismiss [--id <name>]`: takes the first card away, or the one of that name.
+pub fn dismiss(args: &[String]) -> i32 {
+    let line = match args {
+        [] => "dismiss".to_string(),
+        [flag, name] if flag == "--id" => format!("dismiss {name}"),
+        _ => {
+            eprintln!("usage: open-island dismiss [--id <name>]");
+            return 2;
+        }
+    };
+    if !ipc::send(&line) {
+        eprintln!("open-island is not running");
+        return 3;
+    }
+    0
+}
+
 /// `open-island pin <text>` (or the text on stdin: `echo 10.0.0.5 | open-island pin`): a note on the Today page, a click there copies it.
 pub fn pin(args: &[String]) -> i32 {
     use std::io::{IsTerminal, Read};
@@ -410,6 +603,43 @@ mod tests {
         assert_eq!(last_percent(b"100% 250%"), Some(100.0), "250% is not a progress");
         assert_eq!(last_percent(b"% 50"), None);
         assert_eq!(last_percent(b""), None);
+    }
+
+    fn spec(verb: &str, a: &[&str]) -> Result<serde_json::Value, String> {
+        card_spec(verb, &a.iter().map(|x| x.to_string()).collect::<Vec<_>>(), None)
+    }
+
+    #[test]
+    fn a_cards_arguments_become_its_message() {
+        assert_eq!(spec("ok", &["Build finished", "-d", "246 passed", "-s", "8"]).unwrap(), serde_json::json!({"kind": "ok", "title": "Build finished", "detail": "246 passed", "seconds": 8.0}));
+        assert_eq!(spec("notify", &["Build done", "all", "passed"]).unwrap(), serde_json::json!({"title": "Build done", "detail": "all passed"}), "the older form still works");
+        let q = spec("warn", &["Merge?", "--yes", "Merge", "--no", "Later", "--id", "pr"]).unwrap();
+        assert_eq!((q["yes"].as_str(), q["no"].as_str(), q["id"].as_str()), (Some("Merge"), Some("Later"), Some("pr")));
+        assert_eq!(spec("info", &["--stay", "--", "-v is a title"]).unwrap()["title"], "-v is a title");
+        assert!(spec("ok", &["Build", "finished"]).unwrap_err().contains("quotes"));
+        for bad in [&["t", "-s", "90"][..], &["t", "--bogus"], &["t", "--id"], &["t", "--no", "n"], &["t", "--yes", "y", "--open", "u"], &["t", "--color", "mauve"], &["t", "--icon", "no-such"], &[]] {
+            assert!(spec("ok", bad).is_err(), "{bad:?}");
+        }
+        let piped = card_spec("fail", &[], Some("\nDeploy failed\nstaging: timed out\nafter 30s\n")).unwrap();
+        assert_eq!((piped["title"].as_str(), piped["detail"].as_str()), (Some("Deploy failed"), Some("staging: timed out after 30s")));
+    }
+
+    #[test]
+    fn only_a_yes_is_a_success() {
+        assert_eq!([answer_status("yes"), answer_status("no"), answer_status("none"), answer_status("")], [0, 1, 5, 5]);
+    }
+
+    #[test]
+    fn a_command_ends_in_a_card() {
+        let words = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(ran_spec(&words("make test"), 0, Duration::from_millis(3140)), serde_json::json!({"kind": "ok", "title": "make test finished", "detail": "3.1s"}));
+        let f = ran_spec(&words(&"x".repeat(200)), 2, Duration::from_secs(192));
+        assert!(f["title"].as_str().unwrap().ends_with("… failed (exit 2)"));
+        assert_eq!((f["kind"].as_str(), f["detail"].as_str()), (Some("fail"), Some("3m 12s")));
+        assert_eq!(took(Duration::from_secs(3900)), "1h 05m");
+        assert_eq!(run_and_tell(&words("-- sh -c false")), 1);
+        assert_eq!(run_and_tell(&words("definitely-not-a-program-xyz")), 127);
+        assert_eq!(run_and_tell(&[]), 2);
     }
 
     #[test]

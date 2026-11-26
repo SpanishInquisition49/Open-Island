@@ -843,7 +843,7 @@ impl Island {
             // live bars: every new spectrum (it comes 30 times a second) wakes a frame by itself, so no timer is needed
             // while they arrive (a timer at 16 ms drew each of them twice); the made-up animation needs one, at 30 fps
             if !self.spectrum.is_empty() && now - self.spectrum_at < 200 { 120 } else { 33 }
-        } else if self.cards.any_live() {
+        } else if self.cards.any_ticking(now) {
             33 // the rings drain
         } else if expiring {
             120
@@ -873,7 +873,7 @@ impl Island {
             // room for the card under the pill, centred on the pill however many small pills sit beside it
             let slot = self.side_slot(self.shown_side.is_some() || self.want_side.is_some(), self.shown_more.len().max(self.want_more.len()));
             sw = sw.max(card::CARD_MAX_W + slot);
-            sh += card::zone_height(self.cards_shown().max(self.cards.stack.len()));
+            sh += card::zone_height(self.cards_shown().max(self.cards.stack.len()), self.cards.taller());
         }
         Frame { surface: (sw + 8.0, sh + TOP_MARGIN + 4.0), animating, next_ms }
     }

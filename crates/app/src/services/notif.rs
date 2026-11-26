@@ -39,6 +39,8 @@ struct Daemon {
 /// Everything a `Notify` call carries, decoded.
 #[derive(Default, Debug, PartialEq)]
 pub struct Hints {
+    /// Success or failure, when the `category` hint says so.
+    pub kind: Option<island_core::notify::Kind>,
     pub critical: bool,
     pub resident: bool,
     pub suppress_sound: bool,
@@ -63,6 +65,7 @@ pub fn read_hints(h: &HashMap<String, OwnedValue>) -> Hints {
         _ => None,
     };
     Hints {
+        kind: s("category").and_then(|c| island_core::notify::Kind::from_category(&c)),
         critical: matches!(h.get("urgency").map(|v| &**v), Some(Value::U8(2))),
         resident: b("resident"),
         suppress_sound: b("suppress-sound"),
@@ -184,6 +187,8 @@ impl Daemon {
             progress: hs.progress,
             resident: hs.resident,
             desktop_entry: hs.desktop_entry.clone(),
+            kind: hs.kind,
+            ..Default::default()
         }));
         id
     }
@@ -363,6 +368,8 @@ fn watch_bus(rep: Reporter) {
             progress: hs.progress,
             resident: hs.resident,
             desktop_entry: hs.desktop_entry.clone(),
+            kind: hs.kind,
+            ..Default::default()
         }));
     }
 }

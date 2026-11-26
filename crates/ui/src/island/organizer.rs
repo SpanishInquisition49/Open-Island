@@ -282,11 +282,10 @@ impl Island {
         if idxs.is_empty() {
             return (card, vec![]);
         }
-        let names: Vec<String> = idxs.iter().take(3).map(|&i| self.todos[i].text.clone()).collect();
-        let more = idxs.len().saturating_sub(3);
-        let line = format!("{}: {}{}", if morning { "Late" } else { "Left today" }, names.join(", "), if more > 0 { format!(" +{more}") } else { String::new() });
+        let names: Vec<String> = idxs.iter().map(|&i| self.todos[i].text.clone()).collect();
+        let line = format!("{}: {}", if morning { "Late" } else { "Left today" }, names.join(", "));
         let card = match card {
-            Some((s, b)) => (s, format!("{line} · {b}")),
+            Some((s, b)) => (s, format!("{line}\n{b}")),
             None => (if morning { "Today · late" } else { "Today · unfinished" }.to_string(), line),
         };
         let action = if morning { NotifAction { key: "open-island:late".into(), label: "Move to today".into() } } else { NotifAction { key: "open-island:carry".into(), label: "To tomorrow".into() } };
@@ -385,7 +384,7 @@ impl Island {
     pub(crate) fn study_line(&self, day: i64) -> Option<String> {
         let plan = self.study_on(day);
         let total: u32 = plan.iter().map(|(_, m)| m).sum();
-        (total > 0).then(|| format!("Study {}: {}", task::fmt_minutes(total), plan.iter().take(3).map(|(l, m)| format!("{l} {}", task::fmt_minutes(*m))).collect::<Vec<_>>().join(", ")))
+        (total > 0).then(|| format!("Study {}: {}", task::fmt_minutes(total), plan.iter().map(|(l, m)| format!("{l} {}", task::fmt_minutes(*m))).collect::<Vec<_>>().join(", ")))
     }
 
     /// Study time done: kept in the log and taken off the work still to do for that course.

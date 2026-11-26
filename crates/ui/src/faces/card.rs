@@ -1,10 +1,12 @@
 //! The notification card under the pill, laid out as drip's capsule: the icon at the left, the title over the detail,
-//! and at the right a ring that drains with the time left, or the card's buttons. With the pointer on it the icon
-//! becomes a close button and the ring becomes snooze (on the island's own cards, an arrow: a click opens them).
+//! and at the right a ring that drains with the time left, a pinging dot on a card that waits, or the card's buttons.
+//! With the pointer on it the icon becomes a close button and the ring becomes snooze (on the island's own cards and a
+//! script's, an arrow: a click opens them).
 
 use super::*;
 use crate::island::card::{Card, CARD_MAX_W};
 use island_core::droplet::{self, Animator, Blob, Shape, Size, GAP, LINE_STAGGER, STACK_GAP};
+use island_core::notify::{button_fill, Kind};
 use vello::kurbo::{Arc as KArc, BezPath, Point, Stroke, Vec2};
 
 const PAD: f64 = 14.0;
@@ -26,8 +28,42 @@ const BUTTON_GAP: f64 = 6.0;
 /// The room snooze takes beside a card's buttons (without buttons it takes the ring's place).
 const SNOOZE_SLOT: f64 = 32.0;
 const BUTTON_SIZE: f32 = 12.5;
-const BLUE: Color = Color::from_rgba8(0x0a, 0x84, 0xff, 255);
+/// The dot of a card that waits: its radius, and its ping (drip's: every 2.4 s it grows to 2.1 times its size as it
+/// fades from 0.4, over the first three quarters).
+const DOT_R: f64 = 4.0;
+const PING_MS: i64 = 2400;
+const PING_SCALE: f64 = 2.1;
+const PING_OPACITY: f32 = 0.4;
+const PING_SPREAD: f64 = 0.75;
 const GREY: Color = Color::from_rgba8(0x9e, 0x9e, 0x9e, 255);
+
+fn rgb((r, g, b): (u8, u8, u8)) -> Color {
+    Color::from_rgba8(r, g, b, 255)
+}
+
+/// A card's colour: its own, else its kind's, else red when urgent and blue otherwise.
+fn accent_of(n: &crate::model::Incoming) -> (u8, u8, u8) {
+    n.tint.or(n.kind.map(Kind::color)).unwrap_or(if n.critical { Kind::Fail.color() } else { Kind::Info.color() })
+}
+
+/// Snooze is for what other programs send: not for the island's own cards, nor for those a script asks for.
+fn snoozes(n: &crate::model::Incoming) -> bool {
+    !crate::island::is_own_notification(n) && !crate::island::is_script(n)
+}
+
+/// The mark of a kind: a tick, a cross, an exclamation or an i, `size` high.
+fn kind_mark(p: P, kind: Kind, x: f64, y: f64, size: f64, color: Color) {
+    match kind {
+        Kind::Ok => p.icon("check", x, y, size as f32, color),
+        Kind::Fail => p.icon("x", x, y, size as f32, color),
+        Kind::Warn => {
+            p.text("!", x, y, size as f32, SEMI, color, Align::Center, size as f32);
+        }
+        Kind::Info => {
+            p.text("i", x, y, size as f32, SEMI, color, Align::Center, size as f32);
+        }
+    }
+}
 
 /// What a card says and where.
 struct Layout {
@@ -41,6 +77,9 @@ struct Layout {
     text_h: f64,
     size: Size,
 }
+
+/// The most lines of text a card shown whole can take: more than any day needs, less than a screen.
+const FULL_LINES: usize = 32;
 
 /// `text` broken into at most `max_lines` lines no wider than `max_w`; the last one ends in an ellipsis when it does not
 /// all fit.
@@ -96,13 +135,13 @@ fn layout(fonts: &Fonts, c: &Card) -> Layout {
             (label, Action::NotifAction(a.key.clone()), w)
         })
         .collect();
-    let snooze = if crate::island::is_own_notification(n) { 0.0 } else { SNOOZE_SLOT };
+    let snooze = if snoozes(n) { SNOOZE_SLOT } else { 0.0 };
     let right = if buttons.is_empty() { RING } else { buttons.iter().map(|b| b.2).sum::<f64>() + BUTTON_GAP * (buttons.len() - 1) as f64 + snooze };
     let column = (CARD_MAX_W - 140.0).min(CARD_MAX_W - TEXT_X - SPACE - right - PAD).max(80.0) as f32;
 
-    let own = n.app == "open-island";
+    let own = n.app == "open-island" || crate::island::is_script(n);
     let headline = if n.summary.trim().is_empty() { n.app.as_str() } else { n.summary.as_str() };
-    let title = wrap(fonts, headline, TITLE_SIZE, SEMI, column, 2);
+    let title = wrap(fonts, headline, TITLE_SIZE, SEMI, column, if n.full { 4 } else { 2 });
     let mut sender = if own || n.summary.trim().is_empty() { String::new() } else { n.app.clone() };
     if c.group > 1 {
         sender = if sender.is_empty() { format!("{} new", c.group) } else { format!("{sender}  ·  {} new", c.group) };
@@ -118,7 +157,16 @@ fn layout(fonts: &Fonts, c: &Card) -> Layout {
     });
 
     let code = crate::island::notif_code(n);
-    let detail = if code.is_some() { Vec::new() } else { wrap(fonts, &n.body, DETAIL_SIZE, REG, column, 3) };
+    let detail = if code.is_some() {
+        Vec::new()
+    } else if n.full {
+        n.body.lines().fold(Vec::new(), |mut all, line| {
+            all.extend(wrap(fonts, line, DETAIL_SIZE, REG, column, FULL_LINES.saturating_sub(all.len())));
+            all
+        })
+    } else {
+        wrap(fonts, &n.body, DETAIL_SIZE, REG, column, 3)
+    };
     text_w = detail.iter().map(|l| measure(l, DETAIL_SIZE, REG)).fold(text_w, f64::max);
     if let Some(code) = &code {
         text_w = text_w.max(measure(&island_core::codes::display(code), CODE_SIZE, SEMI) + 8.0 + measure("tap to copy", 10.0, REG));
@@ -298,7 +346,8 @@ impl Island {
         let at = |delay: f64, over: f64| (a.content_opacity(age, delay, over) * fresh) as f32;
         let cx = body.center().x;
         let (left, right, cy) = (cx - s.content_w / 2.0, cx + s.content_w / 2.0, body.center().y);
-        let accent = if n.critical { theme::RED } else { BLUE };
+        let accent_rgb = accent_of(n);
+        let accent = rgb(accent_rgb);
         let controls = live && (p.hovered(body) || self.kb.is_some());
         // a click on the card goes to the app that sent it, or copies the code it carries
         p.hit(body, l.code.clone().map_or(Action::NotifOpen, Action::CopyCode));
@@ -306,12 +355,14 @@ impl Island {
         // the icon
         p.opacity = at(0.0, 0.18);
         let icon_cx = left + PAD + ICON / 2.0;
-        match (&n.image, &n.app_icon) {
-            (Some(img), _) => faded_image(p, img, icon_cx - ICON / 2.0, cy - ICON / 2.0, ICON, ICON / 2.0),
-            (None, Some(img)) => faded_image(p, img, icon_cx - ICON / 2.0, cy - ICON / 2.0, ICON, 6.0),
-            (None, None) => {
+        match (&n.image, &n.app_icon, &n.icon) {
+            (Some(img), ..) => faded_image(p, img, icon_cx - ICON / 2.0, cy - ICON / 2.0, ICON, ICON / 2.0),
+            (None, Some(img), _) => faded_image(p, img, icon_cx - ICON / 2.0, cy - ICON / 2.0, ICON, 6.0),
+            (None, None, Some(name)) => p.icon(name, icon_cx, cy, ICON as f32, accent),
+            (None, None, None) => {
+                let kind = n.kind.unwrap_or(if n.critical { Kind::Warn } else { Kind::Info });
                 p.circle(icon_cx, cy, ICON / 2.0, accent);
-                p.icon(if n.critical { "alert-triangle" } else { "bell" }, icon_cx, cy, 14.0, theme::FG);
+                kind_mark(p, kind, icon_cx, cy, 15.0, theme::FG);
             }
         }
         let close = rect(icon_cx - 15.0, cy - 15.0, 30.0, 30.0);
@@ -363,7 +414,9 @@ impl Island {
 
         // the right end: the buttons, or the time left
         p.opacity = at(0.0, 0.18);
-        let snoozes = !crate::island::is_own_notification(n);
+        let snoozes = snoozes(n);
+        // when the icon says who, the ring says what
+        let mark = n.kind.filter(|_| n.image.is_some() || n.app_icon.is_some() || n.icon.is_some());
         let mut end = right - PAD;
         if l.buttons.is_empty() {
             let ring = Point::new(end - RING / 2.0, cy);
@@ -387,19 +440,27 @@ impl Island {
                 arrow.line_to(ring + Vec2::new(3.5, -3.5));
                 arrow.line_to(ring + Vec2::new(3.5, 1.5));
                 stroke(p, &arrow, 1.8, theme::FG);
+            } else if c.waits() {
+                self.card_dot(p, ring, c);
             } else {
                 self.card_ring(p, ring, accent, c, live);
+                if let Some(kind) = mark {
+                    kind_mark(p, kind, ring.x, ring.y, 11.0, theme::FG);
+                }
             }
         } else {
             for (i, (label, action, bw)) in l.buttons.iter().enumerate().rev() {
                 end -= bw;
                 let r = rect(end, cy - BUTTON_H / 2.0, *bw, BUTTON_H);
                 let hot = p.hovered(r);
-                let fill = match (i, hot) {
-                    (0, false) => BLUE,
-                    (0, true) => Color::from_rgba8(0x27, 0x93, 0xff, 255),
-                    (_, false) => with_alpha(theme::FG, 0.15),
-                    (_, true) => with_alpha(theme::FG, 0.25),
+                // the sender's first action is its main one; a script's question ends with "yes", as drip's does
+                let main = if crate::island::is_script(n) { l.buttons.len() - 1 } else { 0 };
+                let fill = if i == main {
+                    let (r, g, b) = button_fill(accent_rgb);
+                    let up = |c: u8| if hot { c.saturating_add(24) } else { c };
+                    rgb((up(r), up(g), up(b)))
+                } else {
+                    with_alpha(theme::FG, if hot { 0.25 } else { 0.15 })
                 };
                 p.rrect(r, BUTTON_H / 2.0, fill);
                 p.text(label, r.center().x, cy, BUTTON_SIZE, SEMI, theme::FG, Align::Center, *bw as f32);
@@ -416,6 +477,19 @@ impl Island {
                 p.hit(r, Action::Snooze);
             }
         }
+    }
+
+    /// The mark of a card that waits: a white dot that sends out a soft ping, for a while.
+    fn card_dot(&self, p: P, centre: Point, c: &Card) {
+        let since = self.now - c.born.max(c.changed_at);
+        if (0..crate::island::card::PING_FOR_MS).contains(&since) {
+            let t = (since % PING_MS) as f64 / (PING_MS as f64 * PING_SPREAD);
+            if t < 1.0 {
+                let k = 1.0 - (1.0 - t).powi(3);
+                p.circle(centre.x, centre.y, DOT_R * (1.0 + (PING_SCALE - 1.0) * k), with_alpha(theme::FG, PING_OPACITY * (1.0 - k as f32)));
+            }
+        }
+        p.circle(centre.x, centre.y, DOT_R, theme::FG);
     }
 
     /// The countdown: a faint circle and over it the time left, from twelve o'clock, draining clockwise.

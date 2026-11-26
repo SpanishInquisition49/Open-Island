@@ -347,6 +347,16 @@ pub struct Incoming {
     pub resident: bool,
     /// The sender's desktop entry (`org.telegram.desktop`), used to find its window.
     pub desktop_entry: String,
+    /// What it is about (success, warning, ...): sets the card's colour and, without a picture, its icon.
+    pub kind: Option<island_core::notify::Kind>,
+    /// A colour of its own, over the kind's.
+    pub tint: Option<(u8, u8, u8)>,
+    /// An icon of the island's own by name, drawn in the card's colour.
+    pub icon: Option<String>,
+    /// It waits for the user instead of counting down.
+    pub stay: bool,
+    /// Its text is shown whole, a line of the body to a line of the card (the day's agenda): the card grows to fit it.
+    pub full: bool,
 }
 
 impl Incoming {
@@ -400,6 +410,8 @@ pub enum PowerEvent {
 pub enum Input {
     Notification(Incoming),
     NotificationClosed(u32),
+    /// The user takes the first card away from a script or a shortcut: the sender is told.
+    DismissCard,
     Osd { kind: OsdKind, level: f32, muted: bool },
     Power(PowerEvent),
     /// "<percent|?> [label]" (see island_core::progress)

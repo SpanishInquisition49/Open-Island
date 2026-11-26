@@ -32,6 +32,10 @@ const LYRIC_PILL_MAX: f64 = 640.0;
 const SNOOZE_MS: i64 = 10 * 60_000;
 /// Notifications the island makes itself (confirmations, reminders, the recap) have ids from here.
 const OWN_ID_BASE: u32 = 3_000_000;
+/// The cards a script asks for (`open-island ok ...`, `run`, the agent hook) take their ids from here.
+pub const SCRIPT_ID_BASE: u32 = 5_000_000;
+/// The longest a card that waits for the user stays, should nothing click or replace it.
+pub(crate) const STAY_MS: i64 = 600_000;
 const KB_IDLE_MS: i64 = 9_000;
 const EDIT_IDLE_MS: i64 = 40_000;
 const LYRIC_LEAD_MS: f64 = 250.0;
@@ -342,6 +346,11 @@ pub struct Reply {
 
 pub fn is_own_notification(n: &Incoming) -> bool {
     is_own(n)
+}
+
+/// A card a script asked for.
+pub(crate) fn is_script(n: &Incoming) -> bool {
+    (SCRIPT_ID_BASE..SCRIPT_ID_BASE + 1_000_000).contains(&n.id)
 }
 
 fn is_own(n: &Incoming) -> bool {

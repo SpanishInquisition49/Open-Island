@@ -21,6 +21,7 @@ impl Island {
                 self.below.retain(|b| b.n.id != id);
                 self.waiting.retain(|n| n.id != id);
             }
+            Input::DismissCard => self.close_notif(CloseReason::Dismissed),
             Input::Key(k) => self.on_key(k),
             Input::StartReply => self.start_reply(),
             Input::RunLine(line) => match self.parse_line(&line) {
@@ -201,22 +202,32 @@ impl Island {
         } else {
             n
         };
-        if (self.quiet() || !self.cfg.show_notifications) && !n.critical && !is_own(&n) {
+        // a script's question shows even then: whoever asked is waiting for the answer
+        let question = is_script(&n) && n.actions.iter().any(|a| a.key == "yes");
+        if (self.quiet() || !self.cfg.show_notifications) && !n.critical && !is_own(&n) && !question {
+            if is_script(&n) {
+                self.pending.push(Command::NotificationClosed { id: n.id, reason: CloseReason::Expired });
+            }
             return;
         }
-        // an update replaces the card on screen
+        // an update replaces the card on screen, or the one waiting for its turn
         if self.notif.as_ref().is_some_and(|c| c.id == n.id) {
-            self.notif = Some(n);
-            self.notif_until = self.now + self.cfg.notification_ms;
+            let group = self.notif_group;
+            self.show_notif(n);
+            self.notif_group = group;
             return;
         }
-        if let Some(b) = self.below.iter_mut().find(|b| b.n.id == n.id) {
-            b.n = n;
-            b.until = self.now + self.cfg.notification_ms;
+        if let Some(k) = self.below.iter().position(|b| b.n.id == n.id) {
+            self.below[k] = Shown { group: self.below[k].group, ..self.timed(n) };
+            return;
+        }
+        if let Some(w) = self.waiting.iter_mut().find(|w| w.id == n.id) {
+            *w = n;
             return;
         }
         // another message of a conversation on screen joins its card instead of taking a card of its own
-        let joins = |c: &Incoming| !n.critical && !is_own(&n) && !is_own(c) && notify::same_conversation(&c.app, &c.summary, &n.app, &n.summary);
+        // (a script's cards are each their own: `--id` is how one replaces another)
+        let joins = |c: &Incoming| !n.critical && !is_own(&n) && !is_own(c) && !is_script(&n) && !is_script(c) && notify::same_conversation(&c.app, &c.summary, &n.app, &n.summary);
         if let Some(old) = self.notif.as_ref().filter(|c| joins(c)).map(|c| c.id) {
             self.pending.push(Command::NotificationClosed { id: old, reason: CloseReason::Expired });
             self.rename_card(old, n.id);
@@ -235,6 +246,8 @@ impl Island {
         // a place in the stack, unless others are already waiting for one
         if self.waiting.is_empty() && self.cards_shown() < STACK_MAX {
             self.put_on_screen(n);
+        } else if is_script(&n) {
+            self.waiting.push_back(n);
         } else {
             let folded = notify::enqueue(
                 &mut self.queue,
@@ -242,7 +255,7 @@ impl Island {
                 8,
             );
             if folded {
-                self.waiting.retain(|w| w.app != n.app);
+                self.waiting.retain(|w| is_script(w) || w.app != n.app);
             }
             self.waiting.push_back(n);
         }
@@ -278,13 +291,17 @@ impl Island {
     /// The cards whose time is up go, the others of the stack move up, and those waiting take the free places.
     pub(super) fn turn_over_cards(&mut self) {
         let replying = self.reply.as_ref().map(|r| r.id);
-        if self.notif.as_ref().is_some_and(|n| replying != Some(n.id)) && self.now >= self.notif_until {
+        // a card that stays, and asks nothing, gives way to one waiting for a place once it has had a card's usual time
+        let crowded = !self.waiting.is_empty() && self.cards_shown() >= STACK_MAX;
+        let early = STAY_MS - self.cfg.notification_ms;
+        let ends = |n: &Incoming, until: i64| if crowded && n.stay && n.actions.is_empty() { until - early } else { until };
+        if self.notif.as_ref().is_some_and(|n| replying != Some(n.id) && self.now >= ends(n, self.notif_until)) {
             self.close_notif(CloseReason::Expired);
         }
         let now = self.now;
         let pending = &mut self.pending;
         self.below.retain(|b| {
-            let stays = now < b.until || replying == Some(b.n.id);
+            let stays = now < ends(&b.n, b.until) || replying == Some(b.n.id);
             if !stays {
                 pending.push(Command::NotificationClosed { id: b.n.id, reason: CloseReason::Expired });
             }
@@ -325,8 +342,12 @@ impl Island {
         let default = if n.critical { self.cfg.notification_ms * 2 } else { self.cfg.notification_ms };
         // the sender's timeout wins, within reason: 0 (never) means "until dismissed", capped at 30 s on screen
         let ms = match n.expire_ms {
+            _ if n.stay => STAY_MS,
+            // a script says exactly how long
+            Some(ms) if is_script(&n) && ms > 0 => ms.clamp(500, 60_000),
             Some(0) => 30_000,
-            Some(ms) if ms > 0 => ms.clamp(2000, 30_000),
+            // a card read to the end gets the time it asks for
+            Some(ms) if ms > 0 => ms.clamp(2000, if n.full { 60_000 } else { 30_000 }),
             _ => default,
         };
         Shown { until: self.now + ms, n, group: 1 }
@@ -339,7 +360,10 @@ impl Island {
         if live && n.actions.iter().any(|a| a.key == "default") {
             c.push(Command::InvokeAction { id: n.id, key: "default".into() });
         }
-        c.push(Command::FocusApp { desktop_entry: n.desktop_entry.clone(), app: n.app.clone() });
+        // a script's card has an app to go to only when it names one
+        if !is_script(n) || !n.desktop_entry.is_empty() {
+            c.push(Command::FocusApp { desktop_entry: n.desktop_entry.clone(), app: n.app.clone() });
+        }
         c
     }
 
@@ -441,10 +465,8 @@ impl Island {
         if let Some(t) = forecast.as_ref().and_then(|f| f.rain_from_ms) {
             head.push(format!("rain from {}", crate::clock::civil(t, off).hhmm()));
         }
-        let mut lines: Vec<String> = items.iter().take(3).map(|i| format!("{} {}", when(i), i.title)).collect();
-        if items.len() > 3 {
-            lines.push(format!("+{} more", items.len() - 3));
-        }
+        // one thing to a line, all of them: this card is read to the end
+        let mut lines: Vec<String> = items.iter().map(|i| format!("{} {}", when(i), i.title)).collect();
         // a commuter wants the time to leave before anything else, when it is still ahead
         if let Some((leave, _)) = self.leave_plan(items).filter(|(l, _)| *l > self.now) {
             lines.insert(0, format!("Leave {}", crate::clock::civil(leave, off).hhmm()));
@@ -472,18 +494,18 @@ impl Island {
             let at = usize::from(lines.first().is_some_and(|l| l.starts_with("Leave")));
             lines.insert(at, format!("Bring {}", bring.join(", ")));
         }
-        // the nearest deadline, as what it is: "Reti exam in 3 days"
-        if let Some(d) = soon.first() {
+        // the deadlines of the week, nearest first, each as what it is: "Reti exam in 3 days"
+        for d in &soon {
             let left = d.day - self.day_number(self.now);
             lines.push(format!("{} {}", d.text, match left { i64::MIN..=-1 => "was yesterday".to_string(), 0 => "is today".to_string(), 1 => "is tomorrow".to_string(), n => format!("in {n} days") }));
         }
         if lines.is_empty() {
-            lines.push(self.open_todos().iter().take(2).map(|(_, t)| t.text.clone()).collect::<Vec<_>>().join(" · "));
+            lines.extend(self.open_todos().iter().map(|(_, t)| t.text.clone()));
         }
         if let Some(f) = &forecast {
             lines.push(island_core::weather::forecast_line(f, |ms| crate::clock::civil(ms, off).hhmm()));
         }
-        Some((format!("{heading} · {}", head.join(", ")), lines.join(" · ")))
+        Some((format!("{heading} · {}", head.join(", ")), lines.join("\n")))
     }
 
     /// "17:42 train +12 min" when the pinned train has not left yet, the board was read in the last 20 minutes and it is late or
@@ -617,7 +639,7 @@ impl Island {
         } else {
             self.evening_id = self.next_own_id;
         }
-        let n = Incoming { id: self.next_own_id, app: "open-island".into(), summary, body, actions, expire_ms: Some(45_000), ..Default::default() };
+        let n = Incoming { id: self.next_own_id, app: "open-island".into(), summary, body, actions, expire_ms: Some(45_000), full: true, ..Default::default() };
         self.push(self.now, Input::Notification(n));
         true
     }

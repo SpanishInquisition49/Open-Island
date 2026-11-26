@@ -2578,9 +2578,9 @@ fn the_cards_say_when_to_leave_and_a_card_comes_at_that_moment() {
     let mut i = commuter();
     i.tick(T0, 8.0);
     let (_, body) = i.evening_card().expect("tomorrow has a lecture");
-    assert!(body.starts_with("Leave 08:30 · 09:30 Reti domani"), "{body}");
+    assert!(body.starts_with("Leave 08:30\n09:30 Reti domani"), "{body}");
     let (_, morning) = i.morning_card().expect("today has lectures");
-    assert!(morning.starts_with("Leave 08:30 · "), "the video call is not a trip, Reti is: {morning}");
+    assert!(morning.starts_with("Leave 08:30\n"), "the video call is not a trip, Reti is: {morning}");
     assert!(card(&i).is_none());
     i.tick(T0 + 25 * 60_000, 8.0);
     assert!(card(&i).is_none(), "not yet");
@@ -3873,4 +3873,113 @@ fn going_from_an_open_page_down_to_the_card_keeps_the_page_open() {
     card_frames(&mut i, &f, 1500);
     assert_eq!(i.current_face(), Face::IdleHover, "the page stays");
     assert!(i.over_card(), "and the card is still under the pointer");
+}
+
+fn scripted(n: u32) -> Incoming {
+    Incoming { id: SCRIPT_ID_BASE + n, app: "open-island".into(), summary: format!("s{n}"), kind: Some(island_core::notify::Kind::Ok), ..Default::default() }
+}
+
+fn question(n: u32) -> Incoming {
+    let b = |k: &str| NotifAction { key: k.into(), label: k.into() };
+    Incoming { stay: true, actions: vec![b("no"), b("yes")], ..scripted(n) }
+}
+
+#[test]
+fn a_scripts_cards_never_fold_into_one_another() {
+    let mut i = Island::new(Config::default());
+    for n in 1..=5 {
+        i.push(T0, Input::Notification(Incoming { summary: "same".into(), ..scripted(n) }));
+    }
+    assert_eq!((placed(&i).len(), i.waiting.len()), (STACK_MAX, 2), "three up, both others wait their turn");
+}
+
+#[test]
+fn a_newer_card_of_the_same_id_takes_the_place_of_a_waiting_one() {
+    let mut i = Island::new(Config::default());
+    for n in 1..=4 {
+        i.push(T0, Input::Notification(scripted(n)));
+    }
+    i.push(T0, Input::Notification(Incoming { summary: "newer".into(), ..scripted(4) }));
+    assert_eq!(i.waiting.len(), 1);
+    assert_eq!(i.waiting[0].summary, "newer");
+    // and on screen it keeps its place, with its own time
+    i.push(T0, Input::Notification(Incoming { expire_ms: Some(20_000), ..scripted(2) }));
+    assert_eq!(placed(&i).len(), STACK_MAX);
+    assert_eq!(i.below.iter().find(|b| b.n.id == SCRIPT_ID_BASE + 2).unwrap().until, T0 + 20_000);
+}
+
+#[test]
+fn a_card_that_stays_outlasts_the_others_but_gives_way_to_one_waiting() {
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::Notification(Incoming { stay: true, ..scripted(1) }));
+    run(&mut i, 60_000);
+    assert_eq!(placed(&i), [SCRIPT_ID_BASE + 1], "still there after a minute");
+    i.push(i.now, Input::Notification(question(2)));
+    i.push(i.now, Input::Notification(question(3)));
+    i.push(i.now, Input::Notification(scripted(4)));
+    run(&mut i, 200);
+    assert_eq!(placed(&i), [2, 3, 4].map(|n| SCRIPT_ID_BASE + n), "the one that asks nothing makes room; questions do not");
+}
+
+#[test]
+fn a_held_back_card_tells_whoever_asked_and_a_question_shows_anyway() {
+    let mut i = Island::new(Config::default());
+    i.data.dnd = true;
+    i.push(T0, Input::Notification(scripted(1)));
+    assert!(placed(&i).is_empty());
+    assert!(i.pending.contains(&Command::NotificationClosed { id: SCRIPT_ID_BASE + 1, reason: CloseReason::Expired }));
+    i.push(T0, Input::Notification(question(2)));
+    assert_eq!(placed(&i), [SCRIPT_ID_BASE + 2]);
+}
+
+#[test]
+fn a_question_is_answered_by_its_buttons_only() {
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::Notification(question(1)));
+    run(&mut i, 100);
+    i.activate(Action::OnCard(SCRIPT_ID_BASE + 1, Box::new(Action::NotifOpen)));
+    assert_eq!(placed(&i), [SCRIPT_ID_BASE + 1], "a click on its body does nothing");
+    i.pending.clear();
+    let cmds = i.activate(Action::OnCard(SCRIPT_ID_BASE + 1, Box::new(Action::NotifAction("yes".into()))));
+    let all: Vec<Command> = i.pending.iter().cloned().chain(cmds).collect();
+    assert_eq!(all, [Command::InvokeAction { id: SCRIPT_ID_BASE + 1, key: "yes".into() }, Command::NotificationClosed { id: SCRIPT_ID_BASE + 1, reason: CloseReason::Dismissed }], "the answer comes before the card is gone");
+    assert!(placed(&i).is_empty());
+}
+
+#[test]
+fn a_card_can_be_dismissed_from_outside() {
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::Notification(scripted(1)));
+    i.push(T0, Input::DismissCard);
+    assert!(placed(&i).is_empty());
+    assert!(i.pending.contains(&Command::NotificationClosed { id: SCRIPT_ID_BASE + 1, reason: CloseReason::Dismissed }));
+}
+
+/// The ids of the cards that have a place on screen, top to bottom.
+fn placed(i: &Island) -> Vec<u32> {
+    i.notif.iter().map(|n| n.id).chain(i.below.iter().map(|b| b.n.id)).collect()
+}
+
+#[test]
+fn the_days_agenda_is_shown_whole() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    // eight tasks left behind: the card names every one
+    let yesterday = i.today_day() - 1;
+    for n in 0..8 {
+        i.todos.push(Todo { uid: format!("t{n}"), text: format!("task number {n} with a name long enough to matter"), due: Some(yesterday), ..Default::default() });
+    }
+    let (card, _) = i.with_leftovers(i.agenda_card("Today", &[]), true);
+    let (_, body) = card.expect("a card");
+    for n in 0..8 {
+        assert!(body.contains(&format!("task number {n} ")), "{n} missing: {body}");
+    }
+    assert!(i.show_morning());
+    let frame = card_frames(&mut i, &f, 200);
+    let c = i.cards.live().next().expect("the card");
+    let (_, y, _, h, _) = c.rect.expect("drawn");
+    assert!(h > 150.0, "the card grew to fit its lines: {h}");
+    assert!(frame.surface.1 >= y + h, "and the surface has room for it: {} < {}", frame.surface.1, y + h);
+    assert_eq!(i.notif_until - c.born, 45_000);
 }

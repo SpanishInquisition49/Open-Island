@@ -171,8 +171,36 @@ pub fn set_calendars(o: &mut serde_json::Map<String, serde_json::Value>, calenda
     o.insert("calendars".into(), calendars.iter().map(CalendarSource::to_json).collect::<Vec<_>>().into());
 }
 
+/// A named look for the cards of scripts (`open-island notify --preset <name>`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CardPreset {
+    pub kind: Option<island_core::notify::Kind>,
+    pub icon: Option<String>,
+    pub color: Option<(u8, u8, u8)>,
+    pub seconds: Option<f64>,
+    pub sound: Option<String>,
+}
+
+fn card_presets(v: &serde_json::Value) -> Vec<(String, CardPreset)> {
+    let Some(o) = v.get("card_presets").and_then(|x| x.as_object()) else { return vec![] };
+    o.iter()
+        .map(|(name, p)| {
+            let text = |k: &str| p.get(k).and_then(|x| x.as_str());
+            let preset = CardPreset {
+                kind: text("kind").and_then(island_core::notify::Kind::parse),
+                icon: text("icon").map(str::to_string),
+                color: text("color").and_then(island_core::progress::parse_color),
+                seconds: p.get("seconds").and_then(|x| x.as_f64()),
+                sound: text("sound").map(expand_home),
+            };
+            (name.clone(), preset)
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug)]
 pub struct Settings {
+    pub card_presets: Vec<(String, CardPreset)>,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     /// Where home is (latitude, longitude, a name for it): set by hand, nothing follows it. Used to find the station near home.
@@ -214,6 +242,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            card_presets: vec![],
             latitude: None,
             home: None,
             longitude: None,
@@ -293,6 +322,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
             })
             .collect();
     }
+    s.card_presets = card_presets(&v);
     s.font = v.get("font").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
     s.take_over_notifications = v.get("take_over_notifications").and_then(|x| x.as_bool()).unwrap_or(true);
     s.study_folders = v.get("study_folders").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|f| f.as_str()).map(str::to_string).take(8).collect()).unwrap_or_default();

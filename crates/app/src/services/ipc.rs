@@ -8,6 +8,10 @@ use std::io::{BufRead, BufReader, Write};
 
 /// The socket's name; OPEN_ISLAND_SOCKET adds a suffix so a second island (a test run) can live next to the first.
 fn socket_name() -> String {
+    // a test must never reach the island the user is running
+    if cfg!(test) {
+        return format!("open-island-test-{}.sock", std::process::id());
+    }
     match std::env::var("OPEN_ISLAND_SOCKET") {
         Ok(suffix) if !suffix.is_empty() => format!("open-island-{suffix}.sock"),
         _ => "open-island.sock".to_string(),
@@ -79,6 +83,10 @@ pub(crate) fn parse(line: &str) -> Option<Input> {
                 ..Default::default()
             })
         }
+        // `card <json>`: what `open-island ok ...` sends; `dismiss [name]`: takes a card away
+        "card" => Input::Notification(super::cards::post(payload)?.0.card),
+        "dismiss" if payload.is_empty() => Input::DismissCard,
+        "dismiss" => Input::NotificationClosed(super::cards::take(payload)?),
         "hits" => Input::DumpHits,
         // `send <path>[<tab><path>...]`: files to send to a device on the network
         "send" if !payload.is_empty() => Input::SendFiles(payload.split('\t').map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()),
@@ -240,6 +248,30 @@ pub fn start(rep: Reporter) {
                 while reader.read_line(&mut line).unwrap_or(0) > 0 {
                     if let Some(spec) = line.trim().strip_prefix("watch ") {
                         super::watchpid::start(&rep, spec);
+                    } else if let Some(json) = line.trim().strip_prefix("card ") {
+                        match super::cards::post(json) {
+                            Some((posted, sound)) => {
+                                if let Some(file) = sound {
+                                    super::sound::play(&file);
+                                }
+                                rep.input(Input::Notification(posted.card));
+                                // a question: the script waits on this connection for what was pressed
+                                if let Some(answer) = posted.answer {
+                                    let word = match answer.recv_timeout(super::cards::WAIT_LIMIT) {
+                                        Ok(super::cards::Answer::Yes) => "yes",
+                                        Ok(super::cards::Answer::No) => "no",
+                                        Err(_) => "none",
+                                    };
+                                    let _ = reader.get_mut().write_all(format!("{word}\n").as_bytes());
+                                }
+                            }
+                            None => log::warn!("a card with no title was asked for"),
+                        }
+                    // a name the island does not know is nothing to take away, not a mistake
+                    } else if line.trim().starts_with("dismiss ") {
+                        if let Some(input) = parse(&line) {
+                            rep.input(input);
+                        }
                     } else if let Some(input) = parse(&line) {
                         track(&input);
                         rep.input(input);
@@ -255,6 +287,16 @@ pub fn start(rep: Reporter) {
     });
 }
 
+/// Sends a message that is answered with one line, and waits for it. None when no island is running.
+pub fn ask(line: &str) -> Option<String> {
+    let name = socket_name().to_ns_name::<GenericNamespaced>().ok()?;
+    let mut conn = interprocess::local_socket::Stream::connect(name).ok()?;
+    conn.write_all(format!("{line}\n").as_bytes()).ok()?;
+    let mut answer = String::new();
+    BufReader::new(conn).read_line(&mut answer).ok()?;
+    Some(answer.trim().to_string())
+}
+
 /// Sends one message to a running island (the `msg` subcommand). Returns false when none is running.
 pub fn send(line: &str) -> bool {
     let Ok(name) = socket_name().to_ns_name::<GenericNamespaced>() else { return false };
@@ -265,6 +307,40 @@ pub fn send(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whole way over a real socket: a question goes out, the island's button press comes back to the asker.
+    #[test]
+    fn a_question_is_answered_over_the_socket() {
+        use crate::services::{cards, Msg};
+        use island_ui::model::{CloseReason, Command};
+        use std::time::Duration;
+        let (tx, rx) = std::sync::mpsc::channel();
+        start(Reporter { tx, waker: std::sync::Arc::new(|| {}) });
+        // (other tests of this process talk to the same socket meanwhile: only this test's cards count)
+        let next = || loop {
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(Msg::Input(Input::Notification(n))) if ["Merge?", "named"].contains(&n.summary.as_str()) => break Input::Notification(n),
+                Ok(Msg::Input(i @ (Input::NotificationClosed(_) | Input::DismissCard))) => break i,
+                Ok(_) => {}
+                Err(e) => panic!("an input: {e}"),
+            }
+        };
+        for (press, expected) in [(Some("yes"), "yes"), (Some("no"), "no"), (None, "none")] {
+            let asker = std::thread::spawn(|| ask(r#"card {"title":"Merge?","yes":"Merge","no":"Later","id":"pr"}"#));
+            let Input::Notification(card) = next() else { panic!("the card") };
+            if let Some(key) = press {
+                assert!(cards::on_command(&Command::InvokeAction { id: card.id, key: key.into() }));
+            }
+            assert!(cards::on_command(&Command::NotificationClosed { id: card.id, reason: CloseReason::Dismissed }));
+            assert_eq!(asker.join().unwrap().as_deref(), Some(expected));
+        }
+        assert!(send(r#"card {"title":"named","id":"x"}"#));
+        let Input::Notification(card) = next() else { panic!("the card") };
+        assert!(send("dismiss x"));
+        assert!(matches!(next(), Input::NotificationClosed(id) if id == card.id));
+        assert!(send("dismiss nothing") && send("dismiss"));
+        assert!(matches!(next(), Input::DismissCard), "the unknown name said nothing");
+    }
 
     #[test]
     fn parses_messages() {

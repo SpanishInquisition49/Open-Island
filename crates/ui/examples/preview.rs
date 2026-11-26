@@ -184,6 +184,28 @@ fn stack_case(i: &mut Island, _: &mut Data) {
     }
 }
 
+/// The cards a script asks for: the four kinds, then a question, a button, an icon of one's own and a card that waits.
+fn script_case(i: &mut Island, which: u32) {
+    use island_core::notify::Kind;
+    let card = |n: u32, kind: Kind, summary: &str, body: &str| Incoming { id: island_ui::island::SCRIPT_ID_BASE + n, app: "open-island".into(), kind: Some(kind), summary: summary.into(), body: body.into(), expire_ms: Some(30_000), ..Default::default() };
+    let act = |k: &str, l: &str| island_ui::model::NotifAction { key: k.into(), label: l.into() };
+    let cards = match which {
+        0 => vec![card(1, Kind::Ok, "Build finished", "make test: 246 passed in 3.2s"), card(2, Kind::Fail, "Deploy failed", "staging: health check timed out after 30s"), card(3, Kind::Warn, "Disk almost full", "12 GB left")],
+        1 => vec![
+            Incoming { stay: true, expire_ms: None, actions: vec![act("no", "Later"), act("yes", "Merge")], ..card(1, Kind::Ok, "Merge drip #23?", "checks green, 1 approval") },
+            Incoming { actions: vec![act("open", "View run")], ..card(2, Kind::Info, "Release 1.4 is out", "api · 2m 14s") },
+            Incoming { stay: true, expire_ms: None, icon: Some("bolt".into()), tint: Some((0xd9, 0x77, 0x57)), ..card(3, Kind::Info, "api needs you", "Claude needs your permission to use Bash") },
+        ],
+        _ => vec![
+            Incoming { icon: Some("bolt".into()), tint: Some((0xbf, 0x5a, 0xf2)), ..card(1, Kind::Ok, "Shipped to prod", "api 1.4.2, 14 files changed") },
+            Incoming { id: 2, app: "Mail".into(), kind: None, ..card(2, Kind::Info, "Segreteria", "Il calendario è stato aggiornato.") },
+        ],
+    };
+    for c in cards {
+        i.push(NOW, Input::Notification(c));
+    }
+}
+
 fn main() {
     let dir = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "preview".into()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -239,6 +261,9 @@ fn main() {
             i.push(NOW, Input::Notification(Incoming { id: 1, app: "Mail".into(), summary: "Segreteria studenti: aggiornamento sul calendario degli appelli straordinari".into(), body: "Gentile studente, ti informiamo che il calendario degli appelli è stato aggiornato: controlla le nuove date sul portale prima di venerdì, perché le iscrizioni chiudono una settimana prima di ogni prova e non sarà possibile iscriversi dopo.".into(), ..Default::default() }));
             i.push(NOW, Input::Notification(Incoming { id: 2, app: "Telegram".into(), summary: "Anna".into(), critical: true, ..Default::default() }));
         })),
+        ("script-kinds", Box::new(|i, _| script_case(i, 0))),
+        ("script-ask", Box::new(|i, _| script_case(i, 1))),
+        ("script-icon", Box::new(|i, _| script_case(i, 2))),
         // three cards stacked and one waiting; the second and third dropping in; the middle one going
         ("notif-stack", Box::new(stack_case)),
         ("notif-stack-in-a", Box::new(stack_case)),
@@ -298,6 +323,17 @@ fn main() {
             i.restore_todos(vec![island_ui::island::Todo { text: "Chiamare Anna".into(), ..Default::default() }]);
             // the card comes by itself on the first frame after the data is in
             i.cfg.evening_recap_min = 60;
+            i.cfg.evening_weekends = true;
+        })),
+        // a full day: the morning card names everything, to the end
+        ("morning-card", Box::new(|i, d| {
+            let day = NOW / 86_400_000 * 86_400_000;
+            let ev = |t: &str, h: i64, m: i64| island_core::calendar::Event { id: t.into(), title: t.into(), start_ms: day + (h * 60 + m) * 60_000, end_ms: day + (h * 60 + m + 90) * 60_000, all_day: false, url: None, color: None, calendar: "Uni".into(), location: String::new() };
+            d.events = vec![ev("Reti di calcolatori", 15, 30), ev("Algorithm Engineering, esercitazione in laboratorio con consegna del progetto", 17, 0), ev("Models for Programming Paradigms", 18, 30), ev("Ricevimento", 20, 0), ev("Calcetto", 21, 30)];
+            i.restore_todos(["Consegnare il report di laboratorio", "Restituire il libro in biblioteca", "Scrivere al relatore per fissare l'incontro", "Comprare il latte"].iter().map(|t| island_ui::island::Todo { text: t.to_string(), due: Some(NOW / 86_400_000 - 1), ..Default::default() }).collect());
+            // the morning card comes only before 14:00: here it is six hours earlier than elsewhere
+            d.utc_offset_secs -= 6 * 3600;
+            i.cfg.morning_recap_min = 60;
             i.cfg.evening_weekends = true;
         })),
         ("page-today-student", Box::new(|i, d| {
@@ -539,6 +575,12 @@ fn main() {
                 f = i.tick(t, 8.0);
                 i.draw(&mut Scene::new(), &fonts, size, scale);
             }
+        }
+        // a card's height is known once it has been drawn: the next frame gives it room
+        if i.has_card() {
+            let t = i.now;
+            i.draw(&mut Scene::new(), &fonts, (f.surface.0.ceil().max(520.0), f.surface.1.ceil()), scale);
+            f = i.tick(t, 0.0);
         }
         let (sw, sh) = (f.surface.0.ceil().max(520.0) as u32, f.surface.1.ceil().max(90.0) as u32);
         let mut scene = Scene::new();

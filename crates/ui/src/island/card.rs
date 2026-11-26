@@ -15,15 +15,17 @@ const CARD_MAX_H: f64 = 118.0;
 const SPACING_MS: i64 = 700;
 /// How long the cards below take to close a gap, from the moment the drop above them starts to rise.
 const SETTLE_MS: i64 = 450;
+/// How long the dot of a card that waits keeps pinging before it rests (frames cost power).
+pub(crate) const PING_FOR_MS: i64 = 12_000;
 /// A pointer resting on the stack holds it this long after it last moved.
 const HOLD_MS: i64 = 5000;
 /// A card the pointer leaves stays at least this much longer.
 const AFTER_HOLD_MS: i64 = 1500;
 
 /// The room the surface keeps under the pill for `cards` cards: their places, the overshoot, and the small drop that
-/// counts the waiting ones.
-pub(crate) fn zone_height(cards: usize) -> f64 {
-    GAP + cards.max(1) as f64 * (CARD_MAX_H + STACK_GAP) + 46.0
+/// counts the waiting ones. `taller` is how much the cards shown whole stand above the usual tallest.
+pub(crate) fn zone_height(cards: usize, taller: f64) -> f64 {
+    GAP + cards.max(1) as f64 * (CARD_MAX_H + STACK_GAP) + taller + 46.0
 }
 
 /// A notification that has a place on screen.
@@ -63,6 +65,11 @@ impl Card {
         (now - self.born) as f64 / 1000.0
     }
 
+    /// It waits for the user and asks nothing: a dot where the countdown would be.
+    pub fn waits(&self) -> bool {
+        self.n.stay && self.n.actions.is_empty()
+    }
+
     fn moving(&self, now: i64) -> bool {
         self.leaving || now < self.born || now - self.changed_at < 250 || self.anim.as_ref().is_none_or(|a| self.age(now) < a.end().max(a.cue() + 0.5))
     }
@@ -84,8 +91,14 @@ impl Cards {
         self.stack.iter().filter(|c| !c.leaving)
     }
 
-    pub fn any_live(&self) -> bool {
-        self.live().next().is_some()
+    /// Whether something on a card moves slowly: a countdown draining, or a waiting dot that still pings.
+    pub fn any_ticking(&self, now: i64) -> bool {
+        self.live().any(|c| !c.n.stay || (c.waits() && now - c.born.max(c.changed_at) < PING_FOR_MS))
+    }
+
+    /// How much the drawn cards stand above the usual tallest, all together.
+    pub fn taller(&self) -> f64 {
+        self.stack.iter().filter_map(|c| c.anim.as_ref()).map(|a| (a.size().h - CARD_MAX_H).max(0.0)).sum()
     }
 
     /// Where the cards that take the pointer are.
@@ -136,7 +149,7 @@ impl Cards {
 
 /// Whether two notifications would be drawn the same.
 fn same_words(a: &Incoming, b: &Incoming) -> bool {
-    a.id == b.id && a.app == b.app && a.summary == b.summary && a.body == b.body
+    a.id == b.id && a.app == b.app && a.summary == b.summary && a.body == b.body && a.kind == b.kind && a.tint == b.tint && a.icon == b.icon && a.stay == b.stay && a.actions == b.actions
 }
 
 impl Island {
@@ -146,8 +159,13 @@ impl Island {
     }
 
     pub(crate) fn over_card(&self) -> bool {
-        let Some((x, y)) = self.pointer else { return false };
-        self.cards.rects().any(|(cx, cy, cw, ch, _)| x >= cx && x <= cx + cw && y >= cy && y <= cy + ch)
+        self.card_under_pointer().is_some()
+    }
+
+    /// The notification whose card the pointer is on.
+    pub(super) fn card_under_pointer(&self) -> Option<u32> {
+        let (x, y) = self.pointer?;
+        self.cards.live().find(|c| c.rect.is_some_and(|(cx, cy, cw, ch, _)| x >= cx && x <= cx + cw && y >= cy && y <= cy + ch)).map(|c| c.n.id)
     }
 
     pub(super) fn card_pointer_moved(&mut self) {

@@ -230,7 +230,7 @@ impl App {
 
     pub fn exec(&mut self, cmds: Vec<Command>) {
         for c in cmds {
-            if self.settings_command(&c) {
+            if self.settings_command(&c) || crate::services::cards::on_command(&c) {
                 continue;
             }
             if matches!(c, Command::PlaySound) && !self.island.cfg.timer_sound {
@@ -385,6 +385,8 @@ impl App {
     pub fn right_click(&mut self) {
         let now = self.now();
         self.island.right_click(now);
+        let cmds = self.island.take_commands();
+        self.exec(cmds);
     }
 
     pub fn middle_click(&mut self) {

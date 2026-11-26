@@ -179,6 +179,12 @@ impl Island {
 
     pub fn right_click(&mut self, now: i64) {
         self.now = now;
+        // anywhere on a card: take it away
+        if let Some(id) = self.card_under_pointer() {
+            let cmds = self.on_card(id, Action::Dismiss);
+            self.pending.extend(cmds);
+            return;
+        }
         // on a to-do row: its menu, not "close the page"
         if let Some((x, y)) = self.pointer {
             if let Some(Action::TodoDone(n)) = self.hit_at(x, y).map(|h| h.action.clone()) {
@@ -668,6 +674,8 @@ impl Island {
                 self.notif_until = 0;
                 return self.activate(Action::Open(Page::Notifs));
             }
+            // a question is answered by its buttons: a stray click on it must not count as "nobody answered"
+            Action::NotifOpen if self.notif.as_ref().is_some_and(|n| is_script(n) && n.actions.iter().any(|a| a.key == "yes")) => {}
             Action::NotifOpen => {
                 if let Some(n) = self.notif.clone() {
                     self.pending.extend(Self::open_commands(&n, true));

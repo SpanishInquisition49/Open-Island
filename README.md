@@ -144,9 +144,41 @@ kept for offline use and when they were fetched, and the currency rates: what ea
 A notification does not take over the pill: a drop forms inside it, falls on a liquid neck that pinches off and spreads into a card just below, then is gathered up and
 swallowed again when it goes. The card shows the icon or picture, the title and the sender, up to three lines of text, and on the right a ring that drains with the time
 left, or the buttons the sender offers. With the pointer on it the countdown waits (for up to 5 s after the pointer last moved), the icon becomes a close button and the
-ring becomes snooze; a click on the card opens the sender. Up to three cards stack, each new one dripping from the last: the pointer on any of them holds them all,
+ring becomes snooze; a click on the card opens the sender, a right click anywhere on it takes it away. A card without a picture or an app icon shows its kind's mark
+(information, success, warning, failure; a critical one is a red warning, and the `category` hint `*.complete` or `*.error` makes it a success or a failure). Up to three cards stack, each new one dripping from the last: the pointer on any of them holds them all,
 a card that goes is drawn back into the one above and those below move up, and a small drop under the stack counts the ones waiting for a place. The motion and the look are
 ported from [drip](https://github.com/jrnxf/drip) (see `THIRD-PARTY-NOTICES.md`).
+
+## Cards from scripts
+
+The command line follows [drip](https://drip.jrnxf.co/)'s:
+
+```sh
+open-island ok "Build finished" -d "246 passed in 3.2s"       # also: fail, warn, info, notify
+open-island fail "Deploy failed" --stay                        # until clicked, ten minutes at most
+open-island info "Deploying" --id deploy; sleep 2
+open-island ok "Deployed" --id deploy                          # takes the first card's place
+open-island ok "Report ready" --open report.html --button "View report"
+open-island warn "Merge #23?" --yes Merge --no Later && gh pr merge 23
+open-island run make test                                      # a card when it ends, with the time it took
+make log | tail -1 | open-island info                          # the first line piped in is the title
+open-island dismiss [--id deploy]
+```
+
+A question waits for its button: exit status 0 for yes, 1 for no, 5 when nobody answers (it went, was dismissed, or was replaced), 3 when no island is
+running, so only a clear yes goes on after `&&`. A question stays until answered unless `--seconds` (0.5 to 60) gives it a countdown; one is shown even in do not
+disturb, other cards from scripts are held back then. A card that stays shows a white dot instead of the ring, and gives way when others are waiting for a place.
+`--icon <name>` (the island's icons) and `--color <name|#rrggbb>` change the look; `--sound <file>` plays a sound. Looks you use often can be named:
+
+```json
+"card_presets": { "deploy": { "kind": "ok", "icon": "bolt", "color": "purple", "seconds": 8, "sound": "~/Music/t.ogg" } }
+```
+
+then `open-island notify --preset deploy "Shipped"`.
+
+**Coding agents.** With the hooks of `open-island agent setup claude` in `~/.claude/settings.json`, a session that needs you gets a card named after its folder;
+one asking for a permission or an answer stays until the agent goes on (`PostToolUse` is what clears it as soon as an approved tool has run). `open-island agent --done`
+in the `Stop` hook also says when a turn ends. The card only tells: permissions are answered in the terminal.
 
 ## Conversations, not piles of cards
 
@@ -477,8 +509,9 @@ home 43.7085, 10.4036                      # or an address: home Via Roma 1, Pis
 If the pinned train is late or cancelled and has not left yet (the board read in the last 20 minutes), the evening card opens with "18:50 train +12 min" before anything else; on time is not news.
 Set a time (Options > Day > "Evening", or `"evening_recap_time": "18:30"` in the configuration, or
 `open-island msg set evening_recap_time 18:30`) and at that time, once a day, a card shows tomorrow: how many events,
-reminders and to-dos, and the first ones with their times ("Tomorrow · 3 events, 1 to do: 09:30 Reti di calcolatori · ..."). It stays
-45 seconds, a click opens the Today page. It comes on weekdays only unless "Recap on weekends" is on, it is skipped when
+reminders and to-dos under the heading, then one line each for all of them with their times, the deadlines of the week and the rest. The
+card grows to fit: nothing on it is cut or summed up as "+2 more". It stays
+45 seconds (longer with the pointer moving on it), a click opens the Today page. It comes on weekdays only unless "Recap on weekends" is on, it is skipped when
 there is nothing to say, a restart does not repeat it, and when the machine was off at that time it comes at the first
 moment after it (until 23:30). In the options the first step from "off" lands on 18:00. The bar's `recap` (or `tomorrow`,
 `domani`) shows it on demand.
