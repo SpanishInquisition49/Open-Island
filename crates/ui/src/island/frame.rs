@@ -230,23 +230,39 @@ impl Island {
         }
     }
 
-    pub(super) fn update_quiet(&mut self, now: i64) {
+    /// Every reason there is right now to hold notifications without being asked, the most telling first.
+    fn quiet_reasons(&self, now: i64) -> Vec<&'static str> {
         let p = self.data.privacy;
         let in_meeting = self.cfg.quiet_in_meetings
             && self.data.events.iter().any(|e| !e.all_day && e.start_ms <= now && now < e.end_ms && e.end_ms - e.start_ms <= 3 * 3_600_000);
-        self.auto_quiet = if in_meeting {
-            Some("meeting")
-        } else if self.cfg.quiet_on_screen_share && p.screen {
-            Some("screen share")
-        } else if self.cfg.quiet_on_mic && p.mic {
-            Some("microphone")
-        } else if self.data.focus.as_ref().is_some_and(|f| f.active) {
-            Some("focus")
-        } else if self.deep_work(now) {
-            Some("deep work")
-        } else {
-            None
-        };
+        [
+            ("meeting", in_meeting),
+            ("screen share", self.cfg.quiet_on_screen_share && p.screen),
+            ("microphone", self.cfg.quiet_on_mic && p.mic),
+            ("focus", self.data.focus.as_ref().is_some_and(|f| f.active)),
+            ("deep work", self.deep_work(now)),
+        ]
+        .into_iter()
+        .filter_map(|(reason, holds)| holds.then_some(reason))
+        .collect()
+    }
+
+    /// Do not disturb switched by the person (the button, the command bar, the control socket). Off means off: the reasons
+    /// the island has of its own right now are set aside too, for as long as each lasts. Returns what to tell the daemon.
+    pub(super) fn set_dnd(&mut self, on: bool) -> Command {
+        self.data.dnd = on;
+        let holding = self.quiet_reasons(self.now);
+        self.quiet_set_aside = if on { Vec::new() } else { holding.clone() };
+        self.auto_quiet = holding.into_iter().find(|r| !self.quiet_set_aside.contains(r));
+        self.dnd_sent = self.quiet();
+        Command::SetDnd(self.dnd_sent)
+    }
+
+    pub(super) fn update_quiet(&mut self, now: i64) {
+        let holding = self.quiet_reasons(now);
+        // one that has ended counts again the next time it comes
+        self.quiet_set_aside.retain(|r| holding.contains(r));
+        self.auto_quiet = holding.into_iter().find(|r| !self.quiet_set_aside.contains(r));
         match (self.quiet(), self.quiet_since) {
             (true, None) => self.quiet_since = Some(now),
             (false, Some(since)) => {

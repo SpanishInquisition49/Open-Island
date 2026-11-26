@@ -786,10 +786,10 @@ impl Island {
                     return vec![Command::ForgetClipboard(t)];
                 }
             }
+            // what the button shows lit, a press puts out, whoever lit it
             Action::ToggleDnd => {
-                self.data.dnd = !self.data.dnd;
-                self.dnd_sent = self.quiet();
-                return vec![Command::SetDnd(self.dnd_sent)];
+                let on = !self.quiet();
+                return vec![self.set_dnd(on)];
             }
             Action::SeekBar | Action::VolumeBar | Action::BrightnessBar => {}
         }

@@ -1846,6 +1846,76 @@ fn rain_or_a_low_battery_before_an_event_comes_as_one_card() {
 }
 
 #[test]
+fn pressing_a_lit_dnd_turns_it_off_also_when_the_island_lit_it_by_itself() {
+    let mut i = Island::new(Config::default());
+    let share = |i: &mut Island, on: bool| {
+        i.data.privacy.screen = on;
+        run(i, 500);
+    };
+    share(&mut i, true);
+    assert!(i.quiet(), "lit by the screen share");
+    i.take_commands();
+    let told = i.activate(Action::ToggleDnd);
+    assert!(!i.quiet() && !i.data.dnd, "off, and nothing switched on behind it");
+    assert_eq!(told, [Command::SetDnd(false)], "the daemon plays sounds again");
+    run(&mut i, 2000);
+    assert!(!i.quiet(), "and it stays off while the same reason lasts");
+    i.push(i.now, Input::Notification(Incoming { id: 1, app: "Chat".into(), summary: "m".into(), ..Default::default() }));
+    assert!(i.notif.is_some(), "shown");
+    share(&mut i, false);
+    assert!(!i.quiet(), "nothing is left behind when the reason ends");
+    share(&mut i, true);
+    assert_eq!(i.auto_quiet_reason(), Some("screen share"), "the next time it holds them again");
+}
+
+#[test]
+fn turning_dnd_off_silences_every_reason_there_is_but_not_the_next_one() {
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::SetDnd(true));
+    i.data.privacy.screen = true;
+    i.data.privacy.mic = true;
+    run(&mut i, 500);
+    i.activate(Action::ToggleDnd);
+    run(&mut i, 500);
+    assert!(!i.quiet(), "the manual one, the share and the call behind it: all off");
+    // one that was not there when it was switched off does hold
+    i.data.focus = Some(Focus { active: true, ..Default::default() });
+    run(&mut i, 500);
+    assert_eq!(i.auto_quiet_reason(), Some("focus"));
+    // and by hand it can be switched on at any time, which forgets what was silenced
+    i.activate(Action::ToggleDnd);
+    i.data.focus = None;
+    run(&mut i, 500);
+    i.activate(Action::ToggleDnd);
+    assert!(i.quiet() && i.data.dnd);
+    i.activate(Action::ToggleDnd);
+    assert!(!i.quiet());
+}
+
+#[test]
+fn dnd_typed_in_the_bar_or_sent_from_outside_switches_it() {
+    let mut i = Island::new(Config::default());
+    run(&mut i, 100);
+    i.push(i.now, Input::RunLine("dnd on".into()));
+    assert!(i.data.dnd && i.quiet(), "on");
+    assert_eq!(i.dnd_changed(), Some(true), "and written down");
+    i.take_commands();
+    i.push(i.now, Input::RunLine("dnd off".into()));
+    assert!(!i.data.dnd && !i.quiet(), "off");
+    assert_eq!(i.dnd_changed(), Some(false));
+    assert!(i.take_commands().contains(&Command::SetDnd(false)));
+    // over an automatic reason too
+    for off in [Input::RunLine("dnd off".into()), Input::SetDnd(false)] {
+        let mut i = Island::new(Config::default());
+        i.data.privacy.screen = true;
+        run(&mut i, 500);
+        i.push(i.now, off);
+        run(&mut i, 500);
+        assert!(!i.quiet(), "asked off, it is off");
+    }
+}
+
+#[test]
 fn twenty_minutes_on_work_apps_hold_the_notifications_until_the_person_leaves() {
     let mut i = Island::new(Config::default());
     let n = |id: u32| Input::Notification(Incoming { id, app: "Telegram".into(), summary: format!("m{id}"), ..Default::default() });

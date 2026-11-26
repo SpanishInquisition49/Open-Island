@@ -770,6 +770,8 @@ pub struct Island {
     dnd_seen: bool,
     /// Why notifications are held without the user having asked (a meeting, the microphone, a screen share).
     pub(crate) auto_quiet: Option<&'static str>,
+    /// The reasons for it that were switched off by hand, until each of them ends.
+    quiet_set_aside: Vec<&'static str>,
     /// When the notifications were first held, for the recap that comes when they are let through again.
     quiet_since: Option<i64>,
     recap_id: u32,
@@ -921,6 +923,7 @@ impl Island {
             pending: vec![],
             dnd_seen: false,
             auto_quiet: None,
+            quiet_set_aside: Vec::new(),
             quiet_since: None,
             recap_id: 0,
             dnd_sent: false,

@@ -77,9 +77,8 @@ impl Island {
                 }
             }
             Input::SetDnd(on) => {
-                self.data.dnd = on;
-                self.dnd_sent = self.quiet();
-                self.pending.push(Command::SetDnd(self.dnd_sent));
+                let tell = self.set_dnd(on);
+                self.pending.push(tell);
             }
             Input::Spectrum(v) => {
                 self.spectrum = v;
@@ -771,7 +770,10 @@ impl Island {
             Cmd::Timer { secs, label } => self.start_named_timer(secs, label),
             Cmd::Pomodoro => self.start_pomodoro(),
             Cmd::Stopwatch => self.push(now, Input::StartStopwatch),
-            Cmd::Dnd(on) => self.pending.push(Command::SetDnd(on)),
+            Cmd::Dnd(on) => {
+                let tell = self.set_dnd(on);
+                self.pending.push(tell);
+            }
             Cmd::Focus { minutes } => self.pending.push(Command::StartFocus(minutes)),
             Cmd::Remind { secs, text } => {
                 self.reminders.push(Reminder { due_ms: now + secs * 1000, text: text.clone(), ..Default::default() });
