@@ -57,24 +57,54 @@ fn shellexpand_home(p: &str) -> std::path::PathBuf {
 #[derive(Clone)]
 pub struct Face {
     data: FontData,
-    bytes: Arc<Vec<u8>>,
+    bytes: Bytes,
     index: u32,
 }
 
-impl Face {
-    fn new(bytes: Vec<u8>, index: u32) -> Option<Self> {
-        Self::shared(Arc::new(bytes), index)
-    }
+/// The bytes of a font file, shared by the faces that read them.
+type Bytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
 
-    /// A face over bytes that other faces share (the faces of one .ttc file).
-    fn shared(bytes: Arc<Vec<u8>>, index: u32) -> Option<Self> {
-        skrifa::FontRef::from_index(&bytes, index).ok()?;
-        let blob = Blob::new(bytes.clone() as Arc<dyn AsRef<[u8]> + Send + Sync>);
+/// A font file's bytes, mapped rather than read: only the parts that are looked at take memory, and the system can drop
+/// them again. Some of these files are tens of megabytes (the CJK ones), of which a few glyphs are used. Read the usual
+/// way when it cannot be mapped.
+fn file_bytes(path: &std::path::Path) -> Option<Bytes> {
+    let file = std::fs::File::open(path).ok()?;
+    // SAFETY: the map is read only. A file cut short while mapped would end the program with a bus error; installed
+    // fonts are replaced by writing a new file and renaming it over the old one, which leaves the mapped one whole.
+    match unsafe { memmap2::Mmap::map(&file) } {
+        Ok(map) => Some(Arc::new(map)),
+        Err(_) => std::fs::read(path).ok().map(|b| Arc::new(b) as Bytes),
+    }
+}
+
+/// The face `id` of the database, over the bytes of its file; `files` holds the files already open.
+fn open_face(db: &fontdb::Database, id: fontdb::ID, files: &mut HashMap<std::path::PathBuf, Bytes>) -> Option<Face> {
+    let info = db.face(id)?;
+    // a .ttc holds many faces, and one file serves several weights: open it once and share it
+    let bytes = match &info.source {
+        fontdb::Source::File(p) | fontdb::Source::SharedFile(p, _) => match files.get(p) {
+            Some(b) => b.clone(),
+            None => {
+                let b = file_bytes(p)?;
+                files.insert(p.clone(), b.clone());
+                b
+            }
+        },
+        fontdb::Source::Binary(data) => data.clone(),
+    };
+    Face::shared(bytes, info.index)
+}
+
+impl Face {
+    /// A face over bytes that other faces may share.
+    fn shared(bytes: Bytes, index: u32) -> Option<Self> {
+        skrifa::FontRef::from_index((*bytes).as_ref(), index).ok()?;
+        let blob = Blob::new(bytes.clone());
         Some(Self { data: FontData::new(blob, index), bytes, index })
     }
 
     fn font(&self) -> skrifa::FontRef<'_> {
-        skrifa::FontRef::from_index(&self.bytes, self.index).expect("validated in new")
+        skrifa::FontRef::from_index((*self.bytes).as_ref(), self.index).expect("validated in new")
     }
 
     fn glyph(&self, c: char) -> Option<u32> {
@@ -102,21 +132,7 @@ impl Fallback {
     }
 
     fn push_face(&mut self, db: &fontdb::Database, id: fontdb::ID, weight: Weight) -> Option<usize> {
-        let info = db.face(id)?;
-        let index = info.index;
-        // a .ttc holds many faces: read the file once and share the bytes
-        let bytes = match &info.source {
-            fontdb::Source::File(p) | fontdb::Source::SharedFile(p, _) => match self.files.get(p) {
-                Some(b) => b.clone(),
-                None => {
-                    let b = Arc::new(std::fs::read(p).ok()?);
-                    self.files.insert(p.clone(), b.clone());
-                    b
-                }
-            },
-            _ => Arc::new(db.with_face_data(id, |d, _| d.to_vec())?),
-        };
-        let face = Face::shared(bytes, index)?;
+        let face = open_face(db, id, &mut self.files)?;
         let list = self.faces.entry(weight).or_default();
         list.push(face);
         Some(list.len() - 1)
@@ -150,8 +166,9 @@ impl Fallback {
                 if self.faces[&weight][slot].glyph(c).is_some() {
                     return Some(slot);
                 }
-                // no use for this character: keep the font out of the way of later lookups
+                // no use for this character: keep the font out of the way of later lookups, and close its file
                 self.faces.get_mut(&weight).map(Vec::pop);
+                self.files.retain(|_, b| Arc::strong_count(b) > 1);
             }
         }
         None
@@ -225,7 +242,7 @@ struct Fallback {
     /// (weight, character) -> (index in `faces`, glyph id), or None when no installed font has it.
     found: HashMap<(Weight, char), Option<(usize, u32)>>,
     /// The bytes of font files already read, shared between the faces of one file.
-    files: HashMap<std::path::PathBuf, Arc<Vec<u8>>>,
+    files: HashMap<std::path::PathBuf, Bytes>,
     /// Whole-database searches done (each loads fonts, so there is a limit).
     scans: usize,
 }
@@ -283,6 +300,7 @@ impl Fonts {
 
     pub fn from_db_with(db: &fontdb::Database, preferred: Option<&str>) -> Self {
         let mut text = HashMap::new();
+        let mut files = HashMap::new();
         let resolved = preferred.and_then(|p| resolve_family(db, p));
         let preferred_found = preferred.is_none() || resolved.is_some();
         let preferred = resolved.as_deref();
@@ -297,7 +315,7 @@ impl Fonts {
                     style: fontdb::Style::Normal,
                 };
                 if let Some(id) = db.query(&q) {
-                    if let Some(face) = Self::face_of(db, id) {
+                    if let Some(face) = open_face(db, id, &mut files) {
                         faces.push(face);
                     }
                 }
@@ -311,19 +329,15 @@ impl Fonts {
                     weight: fontdb::Weight(w),
                     ..Default::default()
                 };
-                if let Some(face) = db.query(&q).and_then(|id| Self::face_of(db, id)) {
+                if let Some(face) = db.query(&q).and_then(|id| open_face(db, id, &mut files)) {
                     faces.push(face);
                 }
             }
             text.insert(weight, faces);
         }
-        let icons = Face::new(TABLER.to_vec(), 0).expect("bundled icon font is valid");
+        let icons = Face::shared(Arc::new(TABLER), 0).expect("bundled icon font is valid");
         let icon_map = crate::icon_table::ICONS.iter().copied().collect();
         Self { text, icons, icon_map, preferred_found, family: resolved, db: db.clone(), fallback: Default::default() }
-    }
-
-    fn face_of(db: &fontdb::Database, id: fontdb::ID) -> Option<Face> {
-        db.with_face_data(id, |data, index| Face::new(data.to_vec(), index))?
     }
 
     /// True when at least one text font was found.

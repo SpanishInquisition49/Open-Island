@@ -1510,6 +1510,7 @@ dependencies = [
  "getrandom 0.3.4",
  "island-core",
  "log",
+ "memmap2",
  "png",
  "pollster",
  "skrifa",
