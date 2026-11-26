@@ -206,6 +206,80 @@ fn script_case(i: &mut Island, which: u32) {
     }
 }
 
+/// Brings an island to the start of one of the short animations, runs it `at` ms on and renders that instant.
+fn fx_case(g: &mut Gpu, fonts: &Fonts, scale: f64, dir: &std::path::Path, name: &str, kind: u32, at: i64) {
+    let mut i = Island::new(Config::default());
+    let mut d = data();
+    d.events = vec![];
+    i.data = d.clone();
+    let mut t = NOW;
+    let mut run = |i: &mut Island, ms: i64| {
+        let end = t + ms;
+        let mut frame = i.tick(t, 0.0);
+        i.draw(&mut Scene::new(), fonts, (frame.surface.0.max(560.0), frame.surface.1), scale);
+        while t < end {
+            t = (t + 8).min(end);
+            frame = i.tick(t, 8.0);
+            i.draw(&mut Scene::new(), fonts, (frame.surface.0.max(560.0), frame.surface.1), scale);
+        }
+        frame
+    };
+    run(&mut i, 600);
+    let act = |label: &str| island_core::progress::Activity { id: "send".into(), label: label.into(), detail: "2 files to Pixel".into(), icon: Some("send".into()), tint: None, frac: Some(0.7), file: None };
+    let code = || Incoming { id: 7, app: "Banca".into(), summary: "Codice di accesso".into(), body: "Your verification code is 482913".into(), expire_ms: Some(20_000), ..Default::default() };
+    match kind {
+        0 | 1 => {
+            i.push(i.now, Input::Progress("62 rsync backup".into()));
+            run(&mut i, 2000);
+            let done = if kind == 0 { Input::ProgressDone("backup".into()) } else { Input::ProgressFail("backup".into()) };
+            i.push(i.now, done);
+        }
+        2 => {
+            i.push(i.now, Input::SetDnd(true));
+            run(&mut i, 600);
+            for (n, app) in ["Telegram", "Mail", "Signal", "Calendar", "Zen"].iter().enumerate() {
+                i.push(i.now, Input::Notification(Incoming { id: n as u32 + 1, app: app.to_string(), summary: format!("m{n}"), ..Default::default() }));
+            }
+            i.push(i.now, Input::SetDnd(false));
+        }
+        3 => {
+            i.push(i.now, Input::Notification(code()));
+            run(&mut i, 1800);
+            // a click in the middle of the card
+            let (x, y, w, h) = i.input_rects()[1];
+            let now = i.now;
+            i.pointer_moved(now, x + w / 2.0, y + h / 2.0);
+            i.pointer_down(now, x + w / 2.0, y + h / 2.0);
+            i.pointer_up(now);
+        }
+        4 => i.push(i.now, Input::Notification(code())),
+        5 => i.push(i.now, Input::DeviceConnected(Device { id: "x".into(), name: "Nothing Ear".into(), kind: island_core::bluetooth::Kind::Earbuds, battery: Some(85) })),
+        6 | 7 => {
+            let (x, y, w, h) = i.input_rects()[0];
+            i.push(i.now, Input::FileDrag(Some((x + w * 0.3, y + h))));
+            run(&mut i, 500);
+            let (x, y, w, h) = i.input_rects()[0];
+            i.push(i.now, Input::FileDrag(Some((x + w * 0.3, y + h + 34.0))));
+            if kind == 7 {
+                run(&mut i, 600);
+                i.push(i.now, Input::FileDropped);
+                i.push(i.now, Input::SendFiles(vec!["/tmp/slides.pdf".into()]));
+            }
+        }
+        _ => {
+            i.push(i.now, Input::Activity(island_core::progress::State::Run, act("Sending to Pixel")));
+            run(&mut i, 2000);
+            i.push(i.now, Input::Activity(island_core::progress::State::Done, act("Sent")));
+        }
+    }
+    let frame = run(&mut i, at);
+    let (sw, sh) = (frame.surface.0.ceil().max(560.0) as u32, frame.surface.1.ceil().max(110.0) as u32);
+    let mut scene = Scene::new();
+    scene.fill(vello::peniko::Fill::NonZero, Affine::IDENTITY, Color::from_rgba8(0xf6, 0xed, 0xd0, 255), None, &vello::kurbo::Rect::new(0.0, 0.0, 4000.0, 4000.0));
+    i.draw(&mut scene, fonts, (sw as f64, sh as f64), scale);
+    render(g, &scene, (sw as f64 * scale) as u32, (sh as f64 * scale) as u32, &dir.join(format!("fx-{name}-{at:04}.png")));
+}
+
 fn main() {
     let dir = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "preview".into()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -564,6 +638,26 @@ fn main() {
             i.push(NOW, Input::OpenPage(island_core::face::Page::Notifs));
         })),
     ];
+    // the short animations, each caught at several moments (`fx_case`)
+    if let Some(only) = std::env::args().nth(2).filter(|a| a == "fx") {
+        let _ = only;
+        for (name, kind, times) in [
+            ("drop-done", 0, &[8, 120, 200, 300, 420, 900][..]),
+            ("drop-fail", 1, &[8, 200, 520, 580, 1000][..]),
+            ("burst", 2, &[60, 180, 600, 930, 1070, 1200, 1900][..]),
+            ("code", 3, &[0, 100, 220, 360, 520, 900][..]),
+            ("code-roll", 4, &[300, 420, 520, 900][..]),
+            ("ring", 5, &[300, 500, 800, 1600][..]),
+            ("catch", 6, &[60, 600][..]),
+            ("gulp", 7, &[100, 250, 320, 900][..]),
+            ("shot", 8, &[200, 330, 480, 650, 750][..]),
+        ] {
+            for at in times {
+                fx_case(&mut g, &fonts, scale, &dir, name, kind, *at);
+            }
+        }
+        return;
+    }
     for (name, setup) in cases {
         let mut i = Island::new(Config::default());
         let mut d = data();

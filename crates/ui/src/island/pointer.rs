@@ -700,6 +700,9 @@ impl Island {
             }
             Action::CopyCode(code) => {
                 self.code_copied = self.notif.as_ref().map(|n| (n.id, now + 2500));
+                if let Some(id) = self.notif.as_ref().map(|n| n.id) {
+                    self.fly_code(id, &code);
+                }
                 self.notif_until = self.notif_until.max(now + 2500);
                 return vec![Command::CopyCode(code)];
             }

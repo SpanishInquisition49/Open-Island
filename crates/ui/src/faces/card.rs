@@ -11,10 +11,20 @@ use vello::kurbo::{Arc as KArc, BezPath, Point, Stroke, Vec2};
 
 const PAD: f64 = 14.0;
 const ICON: f64 = 24.0;
+/// A device's battery: the room its ring takes round the icon, the ring, the room for the number at the right, and how
+/// long after the words appear it takes to fill.
+const RING_ICON: f64 = 36.0;
+const RING_R: f64 = 16.0;
+const PERCENT_W: f64 = 40.0;
+const FILL_S: f64 = 0.9;
+/// A digit of a one-time code rolls in: each starts this long after the one before, takes this long, and passes this
+/// many others on its way.
+const ROLL_STAGGER: f64 = 0.07;
+const ROLL_S: f64 = 0.45;
+const ROLL_PASSED: u32 = 3;
 const SPACE: f64 = 10.0;
 const RING: f64 = 20.0;
 const MIN_W: f64 = 200.0;
-const TEXT_X: f64 = PAD + ICON + SPACE;
 const TITLE_SIZE: f32 = 14.0;
 const TITLE_LINE: f64 = 17.0;
 const DETAIL_SIZE: f32 = 12.0;
@@ -75,6 +85,9 @@ struct Layout {
     buttons: Vec<(String, Action, f64)>,
     text_w: f64,
     text_h: f64,
+    /// The room of the icon, and where the words start.
+    icon_w: f64,
+    text_x: f64,
     size: Size,
 }
 
@@ -136,8 +149,10 @@ fn layout(fonts: &Fonts, c: &Card) -> Layout {
         })
         .collect();
     let snooze = if snoozes(n) { SNOOZE_SLOT } else { 0.0 };
-    let right = if buttons.is_empty() { RING } else { buttons.iter().map(|b| b.2).sum::<f64>() + BUTTON_GAP * (buttons.len() - 1) as f64 + snooze };
-    let column = (CARD_MAX_W - 140.0).min(CARD_MAX_W - TEXT_X - SPACE - right - PAD).max(80.0) as f32;
+    let icon_w = if n.ring.is_some() { RING_ICON } else { ICON };
+    let text_x = PAD + icon_w + SPACE;
+    let right = if n.ring.is_some() { PERCENT_W } else if buttons.is_empty() { RING } else { buttons.iter().map(|b| b.2).sum::<f64>() + BUTTON_GAP * (buttons.len() - 1) as f64 + snooze };
+    let column = (CARD_MAX_W - 140.0).min(CARD_MAX_W - text_x - SPACE - right - PAD).max(80.0) as f32;
 
     let own = n.app == "open-island" || crate::island::is_script(n);
     let headline = if n.summary.trim().is_empty() { n.app.as_str() } else { n.summary.as_str() };
@@ -183,12 +198,47 @@ fn layout(fonts: &Fonts, c: &Card) -> Layout {
         text_h += 10.0;
     }
     let text_w = text_w.min(column as f64).ceil();
-    let w = (TEXT_X + text_w + SPACE + right + PAD).clamp(MIN_W, CARD_MAX_W);
-    let h = 2.0 * 12.0 + text_h.max(ICON);
+    let w = (text_x + text_w + SPACE + right + PAD).clamp(MIN_W, CARD_MAX_W);
+    let h = 2.0 * 12.0 + text_h.max(icon_w);
     // one title line over one detail line stays round at the ends; more lines keep corners
     let tall = title.len() > 1 || detail.len() > 1 || (own_app_line && !detail.is_empty());
     let size = Size { w, h, corner: if tall { 30.0 } else { f64::INFINITY } };
-    Layout { title, app, detail, code, buttons, text_w, text_h, size }
+    Layout { title, app, detail, code, buttons, text_w, text_h, icon_w, text_x, size }
+}
+
+/// The code at (`x`, the middle of its line), its characters rolling into place one after another, `up` seconds after
+/// they started. Returns the width drawn.
+fn rolling_code(p: P, text: &str, x: f64, cy: f64, up: f64) -> f32 {
+    let mut before = String::new();
+    p.scene.push_clip_layer(Fill::NonZero, p.transform, &Rect::new(x - 2.0, cy - CODE_LINE / 2.0, x + 400.0, cy + CODE_LINE / 2.0));
+    for (n, ch) in text.chars().enumerate() {
+        let left = x + p.fonts.measure(&before, CODE_SIZE, SEMI) as f64;
+        before.push(ch);
+        let t = ((up - n as f64 * ROLL_STAGGER) / ROLL_S).clamp(0.0, 1.0);
+        let to_go = (1.0 - t).powi(3) * f64::from(ROLL_PASSED);
+        // the character itself, and those of its sort it passes on the way (a space just waits)
+        for k in 0..=ROLL_PASSED {
+            let y = cy + (to_go - f64::from(k)) * CODE_LINE;
+            if (y - cy).abs() >= CODE_LINE || (ch.is_whitespace() && k > 0) || (t <= 0.0) {
+                continue;
+            }
+            p.text(&passed(ch, k, n).to_string(), left, y, CODE_SIZE, SEMI, theme::FG, Align::Left, 40.0);
+        }
+    }
+    p.scene.pop_layer();
+    p.fonts.measure(text, CODE_SIZE, SEMI)
+}
+
+/// What shows `k` places before the `n`-th character `ch` as it rolls in: `ch` itself at 0, else another of its sort.
+fn passed(ch: char, k: u32, n: usize) -> char {
+    let step = (k * 3 + n as u32) % 7 + 1;
+    let shift = |first: u8, span: u32| if k == 0 { ch } else { char::from(first + ((u32::from(ch as u8 - first) + step) % span) as u8) };
+    match ch {
+        '0'..='9' => shift(b'0', 10),
+        'A'..='Z' => shift(b'A', 26),
+        'a'..='z' => shift(b'a', 26),
+        _ => ch,
+    }
 }
 
 /// An image faded with the content, in a rounded square.
@@ -240,10 +290,21 @@ impl Island {
                             self.cards.redirect_into(key, Some(key), into, now);
                         }
                     }
-                    None => {
-                        c.anim = Some(Animator::enter(size, from, top));
-                        c.anchor = above;
-                    }
+                    None => match c.arrival {
+                        // from a drop of its own: it hangs from the pill, if from anything
+                        Some(from) => {
+                            let mut a = Animator::travel(size, from.from, top);
+                            if from.shake {
+                                a.shake();
+                            }
+                            c.anim = Some(a);
+                            c.anchor = None;
+                        }
+                        None => {
+                            c.anim = Some(Animator::enter(size, from, top));
+                            c.anchor = above;
+                        }
+                    },
                 }
             }
             // a card keeps its place until its drop starts to rise, so none below runs into it
@@ -275,7 +336,7 @@ impl Island {
                     .iter()
                     .find(|o| o.key == key)
                     .and_then(|o| self.card_shape(o))
-                    .map(|o| Blob { cx: 0.0, cy: o.top + o.h / 2.0, half_w: o.w / 2.0, half_h: o.h / 2.0, radius: o.radius }),
+                    .map(|o| Blob { cx: o.x, cy: o.top + o.h / 2.0, half_w: o.w / 2.0, half_h: o.h / 2.0, radius: o.radius }),
             };
             if let Some(loops) = anchor.and_then(|a| droplet::neck(&a, &s, 0.7)) {
                 let mut path = BezPath::new();
@@ -291,7 +352,7 @@ impl Island {
                 }
                 scene.fill(Fill::NonZero, t, theme::BG, None, &path);
             } else {
-                scene.fill(Fill::NonZero, t, theme::BG, None, &RoundedRect::new(-s.w / 2.0, s.top, s.w / 2.0, s.top + s.h, s.radius));
+                scene.fill(Fill::NonZero, t, theme::BG, None, &RoundedRect::new(s.x - s.w / 2.0, s.top, s.x + s.w / 2.0, s.top + s.h, s.radius));
             }
         }
     }
@@ -300,6 +361,7 @@ impl Island {
     pub(super) fn draw_card_contents(&mut self, scene: &mut Scene, fonts: &Fonts, hits: &mut Vec<Hit<Action>>, base: Affine, w: f64, h: f64) {
         let pointer = self.pointer_local();
         let mut rects = vec![None; self.cards.stack.len()];
+        let mut codes = vec![None; self.cards.stack.len()];
         // the lowest card that stays and shows, for the count under it: (its bottom, how visible)
         let mut lowest = None;
         for (i, c) in self.cards.stack.iter().enumerate() {
@@ -307,14 +369,22 @@ impl Island {
             let live = !c.leaving;
             let age = c.age(self.now);
             let l = layout(fonts, c);
-            let body = rect(w / 2.0 - s.w / 2.0, h + s.top, s.w, s.h);
+            let body = rect(w / 2.0 + s.x - s.w / 2.0, h + s.top, s.w, s.h);
             let mut mine = Vec::new();
             scene.push_clip_layer(Fill::NonZero, base, &RoundedRect::from_rect(body, s.radius));
             {
                 let mut p = Painter { scene, fonts, hits: &mut mine, opacity: 0.0, pointer: if live { pointer } else { None }, transform: base, base: (1.0, base), since_enter: 10_000 };
-                self.card_content(&mut p, c, a, &s, &l, age, body, live);
+                codes[i] = self.card_content(&mut p, c, a, &s, &l, age, body, live);
             }
             scene.pop_layer();
+            // a drop that came with a colour of its own carries it until it opens
+            if let Some(tint) = c.arrival.and_then(|from| from.tint).filter(|_| live) {
+                let k = (1.0 - s.opened * 3.0).clamp(0.0, 1.0) as f32;
+                if k > 0.0 {
+                    let r = (s.w.min(s.h) / 2.0 - 4.0).max(1.0);
+                    scene.fill(Fill::NonZero, base, with_alpha(rgb(tint), k), None, &vello::kurbo::Circle::new(body.center(), r));
+                }
+            }
             if live {
                 if s.opened > 0.5 {
                     hits.extend(mine.into_iter().map(|hit| Hit { rect: hit.rect, action: Action::OnCard(c.n.id, Box::new(hit.action)) }));
@@ -324,8 +394,8 @@ impl Island {
                 lowest = Some((body.y1, a.content_opacity(age, 0.1, 0.25)));
             }
         }
-        for (c, r) in self.cards.stack.iter_mut().zip(rects) {
-            c.rect = r;
+        for ((c, r), code) in self.cards.stack.iter_mut().zip(rects).zip(codes) {
+            (c.rect, c.code_at) = (r, code);
         }
         // a small drop under the stack counts the ones that wait
         let more = self.waiting.len();
@@ -339,7 +409,7 @@ impl Island {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn card_content(&self, p: P, c: &Card, a: &Animator, s: &Shape, l: &Layout, age: f64, body: Rect, live: bool) {
+    fn card_content(&self, p: P, c: &Card, a: &Animator, s: &Shape, l: &Layout, age: f64, body: Rect, live: bool) -> Option<(f64, f64)> {
         let n = &c.n;
         // words replaced in place fade in again
         let fresh = ((self.now - c.changed_at) as f64 / 180.0).clamp(0.0, 1.0);
@@ -354,10 +424,25 @@ impl Island {
 
         // the icon
         p.opacity = at(0.0, 0.18);
-        let icon_cx = left + PAD + ICON / 2.0;
+        let icon_cx = left + PAD + l.icon_w / 2.0;
+        // how long its words have been up (from the start again when they are replaced)
+        let up = (age - a.cue()).min((self.now - c.changed_at) as f64 / 1000.0);
+        let filled = n.ring.map(|percent| {
+            let t = ((up - 0.05) / FILL_S).clamp(0.0, 1.0);
+            f64::from(percent) / 100.0 * (1.0 - (1.0 - t).powi(3))
+        });
+        if let Some(filled) = filled {
+            use std::f64::consts::{FRAC_PI_2, TAU};
+            let centre = Point::new(icon_cx, cy);
+            p.circle_stroke(centre.x, centre.y, RING_R, 3.0, with_alpha(accent, 0.25));
+            if filled > 0.001 {
+                stroke(p, &KArc::new(centre, Vec2::new(RING_R, RING_R), -FRAC_PI_2, filled * TAU, 0.0), 3.0, accent);
+            }
+        }
         match (&n.image, &n.app_icon, &n.icon) {
             (Some(img), ..) => faded_image(p, img, icon_cx - ICON / 2.0, cy - ICON / 2.0, ICON, ICON / 2.0),
             (None, Some(img), _) => faded_image(p, img, icon_cx - ICON / 2.0, cy - ICON / 2.0, ICON, 6.0),
+            (None, None, Some(name)) if n.ring.is_some() => p.icon(name, icon_cx, cy, 18.0, theme::FG),
             (None, None, Some(name)) => p.icon(name, icon_cx, cy, ICON as f32, accent),
             (None, None, None) => {
                 let kind = n.kind.unwrap_or(if n.critical { Kind::Warn } else { Kind::Info });
@@ -375,7 +460,8 @@ impl Island {
         p.hit(close, Action::Dismiss);
 
         // the words
-        let tx = left + TEXT_X;
+        let tx = left + l.text_x;
+        let mut code_at = None;
         let tmax = l.text_w as f32 + 1.0;
         let mut y = cy - l.text_h / 2.0;
         for (i, line) in l.title.iter().enumerate() {
@@ -395,7 +481,16 @@ impl Island {
         if let Some(code) = &l.code {
             y += SUB_GAP;
             p.opacity = at(first, 0.25);
-            let drawn = p.text(&island_core::codes::display(code), tx, y + CODE_LINE / 2.0, CODE_SIZE, SEMI, theme::FG, Align::Left, tmax);
+            let line = y + CODE_LINE / 2.0;
+            code_at = Some((tx, line));
+            let text = island_core::codes::display(code);
+            // while its digits are on their way into the pill, a faint copy stays behind
+            let flying = self.fx.flight.as_ref().is_some_and(|f| f.text == text && f.said(self.now) < 1.0);
+            if flying {
+                p.opacity *= 0.25;
+            }
+            let drawn = rolling_code(p, &text, tx, line, up - first);
+            p.opacity = at(first, 0.25);
             let copied = self.code_copied.is_some_and(|(id, until)| id == n.id && self.now < until);
             p.text(if copied { "Copied" } else { "tap to copy" }, tx + drawn as f64 + 8.0, y + CODE_LINE / 2.0 + 2.0, 10.0, REG, if copied { theme::GREEN } else { GREY }, Align::Left, tmax);
             y += CODE_LINE;
@@ -418,7 +513,9 @@ impl Island {
         // when the icon says who, the ring says what
         let mark = n.kind.filter(|_| n.image.is_some() || n.app_icon.is_some() || n.icon.is_some());
         let mut end = right - PAD;
-        if l.buttons.is_empty() {
+        if let Some(filled) = filled {
+            p.text(&format!("{}%", (filled * 100.0).round() as i32), end, cy, 15.0, SEMI, theme::FG, Align::Right, PERCENT_W as f32);
+        } else if l.buttons.is_empty() {
             let ring = Point::new(end - RING / 2.0, cy);
             if snoozes {
                 // snooze takes the ring's place under the pointer
@@ -477,6 +574,7 @@ impl Island {
                 p.hit(r, Action::Snooze);
             }
         }
+        code_at
     }
 
     /// The mark of a card that waits: a white dot that sends out a soft ping, for a while.

@@ -35,6 +35,8 @@ pub enum Face {
     TimerFull,
     Reply,
     Bar,
+    /// A file is being dragged over the island.
+    Catch,
 }
 
 impl Face {
@@ -75,6 +77,7 @@ impl Face {
             TimerFull => (320.0, 112.0),
             Reply => (430.0, 168.0),
             Bar => (430.0, 92.0),
+            Catch => (250.0, 40.0),
         }
     }
 
@@ -132,6 +135,8 @@ pub enum Page {
 pub struct Snapshot {
     pub barring: bool,
     pub replying: bool,
+    /// A file is over the island, or going down.
+    pub catching: bool,
     pub osd: bool,
     pub op: bool,
     pub update: bool,
@@ -154,6 +159,9 @@ pub fn choose(s: &Snapshot) -> (Face, Option<Side>) {
     }
     if s.replying {
         return (Reply, None);
+    }
+    if s.catching {
+        return (Catch, None);
     }
     // on the quick settings page the sliders change volume/brightness: their OSD would replace the page
     if s.osd && !(s.big && s.page == Some(Page::Qs)) {

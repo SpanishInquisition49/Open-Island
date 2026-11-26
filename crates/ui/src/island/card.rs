@@ -19,6 +19,8 @@ const SETTLE_MS: i64 = 450;
 pub(crate) const PING_FOR_MS: i64 = 12_000;
 /// A pointer resting on the stack holds it this long after it last moved.
 const HOLD_MS: i64 = 5000;
+/// How long after it appears, or changes, a card with something of its own that moves needs frames.
+const LIVELY_MS: i64 = 2000;
 /// A card the pointer leaves stays at least this much longer.
 const AFTER_HOLD_MS: i64 = 1500;
 
@@ -57,6 +59,10 @@ pub(crate) struct Card {
     pub held_ms: i64,
     /// Where the open card was last drawn: (x, y, width, height, radius) in surface coordinates.
     pub rect: Option<(f64, f64, f64, f64, f64)>,
+    /// It starts somewhere of its own instead of inside what is above it.
+    pub arrival: Option<effects::Arrival>,
+    /// Where its one-time code was last drawn: the left end and the middle of the line, in the pill's coordinates.
+    pub code_at: Option<(f64, f64)>,
 }
 
 impl Card {
@@ -71,7 +77,9 @@ impl Card {
     }
 
     fn moving(&self, now: i64) -> bool {
-        self.leaving || now < self.born || now - self.changed_at < 250 || self.anim.as_ref().is_none_or(|a| self.age(now) < a.end().max(a.cue() + 0.5))
+        // a battery ring fills, a code rolls in: both a little after the words, and again when they are replaced
+        let lively = (now - self.born < LIVELY_MS || now - self.changed_at < LIVELY_MS) && (self.n.ring.is_some() || notif_code(&self.n).is_some());
+        self.leaving || lively || now < self.born || now - self.changed_at < 250 || self.anim.as_ref().is_none_or(|a| self.age(now) < a.end().max(a.cue() + 0.5))
     }
 }
 
@@ -149,7 +157,7 @@ impl Cards {
 
 /// Whether two notifications would be drawn the same.
 fn same_words(a: &Incoming, b: &Incoming) -> bool {
-    a.id == b.id && a.app == b.app && a.summary == b.summary && a.body == b.body && a.kind == b.kind && a.tint == b.tint && a.icon == b.icon && a.stay == b.stay && a.actions == b.actions
+    a.id == b.id && a.app == b.app && a.summary == b.summary && a.body == b.body && a.kind == b.kind && a.tint == b.tint && a.icon == b.icon && a.stay == b.stay && a.actions == b.actions && a.ring == b.ring
 }
 
 impl Island {
@@ -241,12 +249,15 @@ impl Island {
             }
             // one at a time
             let after_last = self.cards.live().last().map(|c| c.born + SPACING_MS);
-            let born = after_last.into_iter().chain(settled_at).fold(now, i64::max);
+            let arrival = self.fx.take_arrival(n.id);
+            let born = after_last.into_iter().chain(settled_at).chain(arrival.map(|a| now + a.delay_ms)).fold(now, i64::max);
             // its time starts when it shows
             self.delay_card(n.id, born - now);
             self.cards.keys += 1;
-            self.cards.stack.push(Card { key: self.cards.keys, n: n.clone(), group, born, anim: None, anchor: None, leaving: false, changed_at: i64::MIN / 2, held_ms: 0, rect: None });
+            self.cards.stack.push(Card { key: self.cards.keys, n: n.clone(), group, born, anim: None, anchor: None, leaving: false, changed_at: i64::MIN / 2, held_ms: 0, rect: None, arrival, code_at: None });
         }
+        // whatever did not get a card now never will
+        self.fx.arrivals.clear();
     }
 
     /// Gives the notification `id` that much more time on screen.

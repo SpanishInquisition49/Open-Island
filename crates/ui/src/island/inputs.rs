@@ -109,7 +109,11 @@ impl Island {
                 self.announce_finished();
             }
             Input::ProgressClear => self.ops.clear(),
-            Input::DeviceConnected(d) => self.device_card(&d, false),
+            Input::DeviceConnected(d) => {
+                // some say their battery only a little after connecting: the card is made again when it comes
+                self.fx.awaiting_battery = d.battery.is_none().then(|| (d.id.clone(), now + BATTERY_WAIT_MS));
+                self.device_card(&d, false);
+            }
             Input::DeviceLow(d) => {
                 if !self.device_low_told.contains(&d.id) {
                     self.device_low_told.push(d.id.clone());
@@ -167,6 +171,8 @@ impl Island {
             }
             Input::CancelTimer => self.cancel_timer(),
             Input::Peek => self.expand_until = now + 3000,
+            Input::FileDrag(at) => self.file_drag(at),
+            Input::FileDropped => self.file_dropped(),
             Input::OpenPage(p) => {
                 self.activate(Action::Open(p));
                 self.expand_until = now + 5000;
@@ -1393,22 +1399,27 @@ impl Island {
                 if t.phase == Phase::Focus {
                     self.log_study((pomodoro::FOCUS / 60) as u32, &t.label);
                 }
-                match t.phase {
+                let card = match t.phase {
                     Phase::Focus => self.timer_card("Focus done", format!("Break: {}", duration::preset_label(secs)), None),
                     Phase::Break => self.timer_card("Break over", format!("Round {round}: back to focus"), None),
-                }
+                };
+                self.hand_drop(&liquid::Source::Timer, card, island_core::notify::Kind::Warn.color(), false);
                 let total = secs as i64 * 1000;
                 self.timer = Some(Timer { phase, round, start_ms: self.now, end_ms: Some(self.now + total), total_ms: total, ..t });
             }
             _ => {
                 let name = if t.label.is_empty() { duration::preset_label((t.total_ms / 1000) as u64) } else { t.label.clone() };
                 self.cancel_timer();
-                self.timer_card("Time's up", name, Some(t.label));
+                let card = self.timer_card("Time's up", name, Some(t.label));
+                self.hand_drop(&liquid::Source::Timer, card, island_core::notify::Kind::Warn.color(), false);
             }
         }
     }
 
 }
+
+/// How long after a device connects a battery it did not say is still news.
+const BATTERY_WAIT_MS: i64 = 20_000;
 
 /// 64 random bits from the operating system (the clock only if it fails, which is no place for a password but still a die).
 pub(super) fn os_random() -> u64 {

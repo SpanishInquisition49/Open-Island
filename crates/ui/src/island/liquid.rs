@@ -63,8 +63,21 @@ impl Bubble {
     }
 }
 
+/// What the hanging drop is filling for.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Source {
+    /// The running operation with this id.
+    Job(String),
+    /// The countdown in the pill.
+    Timer,
+}
+
+/// What there is to hang: for what, how full, in which colour, and the page a click opens.
+type Filling = (Source, f64, (u8, u8, u8), Page);
+
 /// The hanging drop.
 pub(crate) struct Fill {
+    pub source: Source,
     born: i64,
     left: Option<i64>,
     from: f64,
@@ -173,14 +186,14 @@ impl Island {
     }
 
     /// What the hanging drop shows: how far along, in which colour, and the page a click opens.
-    fn fill_source(&self) -> Option<(f64, (u8, u8, u8), Page)> {
+    fn fill_source(&self) -> Option<Filling> {
         if let Some(op) = self.ops.running().into_iter().find(|o| o.frac.is_some()) {
-            return Some((op.frac.unwrap_or(0.0).clamp(0.0, 1.0), op.tint.unwrap_or((0x0a, 0x84, 0xff)), Page::Op));
+            return Some((Source::Job(op.id.clone()), op.frac.unwrap_or(0.0).clamp(0.0, 1.0), op.tint.unwrap_or((0x0a, 0x84, 0xff)), Page::Op));
         }
         let t = self.timer.as_ref().filter(|t| t.mode != TimerMode::Stopwatch && t.total_ms > 0)?;
         // full at the start and empty at the end, as the ring of a card drains: what is left is what shows
         let left = (t.end_ms? - self.now).max(0);
-        Some(((left as f64 / t.total_ms as f64).clamp(0.0, 1.0), (0xff, 0x9f, 0x0a), Page::Timer))
+        Some((Source::Timer, (left as f64 / t.total_ms as f64).clamp(0.0, 1.0), (0xff, 0x9f, 0x0a), Page::Timer))
     }
 
     /// Hangs the drop when there is something to fill it with and the pill is at rest.
@@ -197,8 +210,8 @@ impl Island {
         }
         let (w, slot) = (self.spring.w.pos, self.bubble_slot());
         match (source, self.fill.as_mut()) {
-            (Some((level, tint, page)), Some(f)) if f.left.is_none() => {
-                (f.tint, f.page) = (tint, page);
+            (Some((source, level, tint, page)), Some(f)) if f.left.is_none() => {
+                (f.source, f.tint, f.page) = (source, tint, page);
                 if (level - f.to).abs() > STEP {
                     (f.from, f.to, f.changed) = (f.level(now), level, now);
                 } else if now - f.changed >= LEVEL_MS {
@@ -206,7 +219,7 @@ impl Island {
                 }
             }
             // a new one, also in place of one on its way back
-            (Some((level, tint, page)), _) => self.fill = Some(Fill { born: now, left: None, from: 0.0, to: level, changed: now, tint, page, held: None, rect: None }),
+            (Some((source, level, tint, page)), _) => self.fill = Some(Fill { source, born: now, left: None, from: 0.0, to: level, changed: now, tint, page, held: None, rect: None }),
             (None, Some(f)) => {
                 if f.left.is_none() {
                     (f.left, f.rect) = (Some(now), None);
@@ -219,6 +232,19 @@ impl Island {
             }
             (None, None) => {}
         }
+    }
+
+    /// What the drop was filling for has ended and `card` says how: when that card is the next to show, the drop itself
+    /// goes on to become it, in the colour of the end.
+    pub(super) fn hand_drop(&mut self, source: &Source, card: u32, tint: (u8, u8, u8), shake: bool) {
+        let hangs = self.fill.as_ref().is_some_and(|f| f.source == *source && f.left.is_none() && f.held.is_none() && f.out(self.now) > 0.9);
+        // behind other cards, or in the queue, it could not get there
+        if !hangs || !self.cards.stack.is_empty() || self.notif.as_ref().is_none_or(|n| n.id != card) {
+            return;
+        }
+        let from = (-self.spring.w.pos / 2.0 - DROP_GAP - DROP_D / 2.0, -self.spring.h.pos / 2.0);
+        self.fx.arrivals.push(effects::Arrival { card, from, delay_ms: 0, tint: Some(tint), shake });
+        self.fill = None;
     }
 
     pub(super) fn fill_moving(&self) -> bool {

@@ -6,6 +6,10 @@ use super::*;
 use island_core::clipact;
 use island_core::notify::Kind;
 
+/// A battery under these is said in orange, and in red.
+const RING_LOW: u8 = 40;
+const RING_EMPTY: u8 = 20;
+
 /// Ids of the cards that take the place of an older one of the same sort (a second plug-in replaces the first).
 const EVENT_ID: u32 = OWN_ID_BASE + 900_000;
 const POWER_ID: u32 = EVENT_ID + 1;
@@ -31,10 +35,11 @@ impl Island {
     }
 
     /// A countdown or a phase ran out. `again` is the name of a countdown that can be given one more minute.
-    pub(super) fn timer_card(&mut self, summary: &str, body: String, again: Option<String>) {
+    pub(super) fn timer_card(&mut self, summary: &str, body: String, again: Option<String>) -> u32 {
         let id = self.next_card_id();
         let actions = again.map(|label| vec![action(format!("open-island:timer:{label}"), "+1 min")]).unwrap_or_default();
         self.announce(Incoming { id, summary: summary.into(), body, icon: Some("bell-ringing".into()), tint: Some(Kind::Warn.color()), actions, expire_ms: Some(10_000), ..Default::default() });
+        id
     }
 
     pub(super) fn power_event_card(&mut self, ev: PowerEvent) {
@@ -51,9 +56,17 @@ impl Island {
     pub(super) fn device_card(&mut self, d: &Device, low: bool) {
         let percent = d.battery.map(|b| b.min(100));
         let state = if low { "Low battery" } else { "Connected" };
-        let body = percent.map_or(state.to_string(), |p| format!("{state} · {p}%"));
-        let tint = if low || percent.is_some_and(|p| p <= 20) { Kind::Fail.color() } else { Kind::Info.color() };
-        self.announce(Incoming { id: DEVICE_ID, summary: d.name.clone(), body, icon: Some(d.kind.icon().into()), tint: Some(tint), progress: percent, expire_ms: Some(if low { 8000 } else { 3500 }), ..Default::default() });
+        let body = state.to_string();
+        // the ring round the icon and its number say the battery: the line under the name only says what happened
+        let tint = match percent {
+            Some(p) if low || p <= RING_EMPTY => Kind::Fail.color(),
+            Some(p) if p <= RING_LOW => Kind::Warn.color(),
+            Some(_) => Kind::Ok.color(),
+            None if low => Kind::Fail.color(),
+            None => Kind::Info.color(),
+        };
+        let ms = if low { 8000 } else if percent.is_some() { 4500 } else { 3500 };
+        self.announce(Incoming { id: DEVICE_ID, summary: d.name.clone(), body, icon: Some(d.kind.icon().into()), tint: Some(tint), ring: percent, expire_ms: Some(ms), ..Default::default() });
     }
 
     pub(super) fn rain_card(&mut self, minutes: i32) {
@@ -70,10 +83,24 @@ impl Island {
         self.announce(Incoming { id, summary: e.title.clone(), body, icon: Some("calendar-event".into()), tint: Some(Kind::Info.color()), actions, expire_ms: Some(10_000), ..Default::default() });
     }
 
+    /// The battery a device did not say when it connected has come: its card again, now with the ring.
+    pub(super) fn late_battery(&mut self) {
+        let Some((id, until)) = self.fx.awaiting_battery.clone() else { return };
+        if let Some(d) = self.data.devices.iter().find(|d| d.id == id && d.battery.is_some()).cloned() {
+            self.fx.awaiting_battery = None;
+            self.device_card(&d, false);
+        } else if self.now >= until {
+            self.fx.awaiting_battery = None;
+        }
+    }
+
     /// The card for a long job that has just ended, when one has: its bubble goes, the card says how it went.
     pub(super) fn announce_finished(&mut self) {
         while let Some(op) = self.ops.take_finished() {
             let failed = op.state == progress::State::Fail;
+            let sent = !failed && op.id == "send" && op.label == "Sent";
+            let source = liquid::Source::Job(op.id.clone());
+            let colour = if failed { Kind::Fail.color() } else { op.tint.unwrap_or(Kind::Ok.color()) };
             let summary = if op.label.is_empty() { if failed { "Failed" } else { "Done" }.to_string() } else { op.label };
             let mut actions = vec![];
             if let Some(file) = op.file.filter(|_| !failed) {
@@ -85,6 +112,10 @@ impl Island {
             let ms = if failed || !actions.is_empty() { 10_000 } else { 5000 };
             let id = self.next_card_id();
             self.announce(Incoming { id, summary, body: op.detail, kind: Some(if failed { Kind::Fail } else { Kind::Ok }), tint: op.tint.filter(|_| !failed), icon: op.icon, actions, expire_ms: Some(ms), ..Default::default() });
+            self.hand_drop(&source, id, colour, failed);
+            if sent {
+                self.shoot();
+            }
         }
     }
 

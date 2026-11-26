@@ -1,6 +1,9 @@
 //! Part of `Island` (see `mod.rs`).
 
 use super::*;
+
+/// What the summary of the held notifications says after their number.
+const HELD_BACK: &str = "held back";
 use super::card;
 
 impl Island {
@@ -39,6 +42,10 @@ impl Island {
             Face::Activity => h = 14.0 + 34.0 + 8.0 + 6.0 * 30.0 + 10.0,
             Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
             Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
+            Face::Catch => {
+                let swell = self.fx.catch.as_ref().map_or(0.0, |c| c.swell(self.now));
+                (w, h) = (w + 40.0 * swell, h + 12.0 * swell);
+            }
             Face::MediaMini | Face::TimerMini | Face::MeetMini => {
                 w += self.icon_count(true) as f64 * ICON_W;
                 if face == Face::MediaMini {
@@ -168,6 +175,7 @@ impl Island {
         let snap = Snapshot {
             barring: self.bar.is_some(),
             replying: self.reply.is_some(),
+            catching: self.fx.catch.is_some(),
             osd: self.osd.is_some() && now < self.osd_until,
             op: self.ops.op.is_some(),
             update: false,
@@ -209,10 +217,17 @@ impl Island {
         }
         apps.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
         let body = apps.iter().take(4).map(|(a, c)| if *c > 1 { format!("{a} {c}") } else { a.clone() }).collect::<Vec<_>>().join(" · ");
+        // each of the held ones as a drop of its own, in the order they came (the history is newest first)
+        let mut held: Vec<effects::Held> = self.history.iter().filter(|(n, at)| *at >= since && !is_own(n)).take(effects::BURST_MAX).map(|(n, _)| effects::Held { app: n.app.clone(), icon: n.app_icon.clone().or_else(|| n.image.clone()) }).collect();
+        held.reverse();
         self.next_own_id += 1;
         self.recap_id = self.next_own_id;
         let n = Incoming { id: self.recap_id, app: "open-island".into(), summary: format!("{total} {what}"), body, expire_ms: Some(8000), ..Default::default() };
         self.push(self.now, Input::Notification(n));
+        // back from do not disturb they come out one by one (coming back to the machine is told by the card alone)
+        if what == HELD_BACK {
+            self.burst(self.recap_id, held);
+        }
     }
 
     pub(super) fn update_quiet(&mut self, now: i64) {
@@ -236,7 +251,7 @@ impl Island {
             (true, None) => self.quiet_since = Some(now),
             (false, Some(since)) => {
                 self.quiet_since = None;
-                self.recap(since, "held back");
+                self.recap(since, HELD_BACK);
             }
             _ => {}
         }
@@ -528,6 +543,7 @@ impl Island {
         self.trips(now);
         self.map_needs(now);
         self.heads_up(now);
+        self.late_battery();
         self.culprit_card(now);
         self.sample_battery(now);
         self.power_card(now);
@@ -710,6 +726,7 @@ impl Island {
         if self.extra_timers.iter().any(|t| t.end_ms.is_some_and(|e| now >= e)) {
             self.ring_extra_timers();
         }
+        self.update_effects(dt_ms);
         // track change: peek the player
         let track = self.data.media.as_ref().map(|m| m.track_id.clone());
         if track != self.last_track {
@@ -819,7 +836,7 @@ impl Island {
         let levels_moving = self.ease_levels(dt_ms) | self.ease_media_button(dt_ms);
         let waiting_for_hover = (self.hovering && now - self.hover_since < HOVER_INTENT_MS + 60) || now < self.hover_left + HOVER_GRACE_MS + 60;
         let marquee = self.marquee_on.replace(false);
-        let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving || marquee || self.card_moving() || self.bubbles_moving() || self.fill_moving();
+        let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving || marquee || self.card_moving() || self.bubbles_moving() || self.fill_moving() || self.fx.moving();
         let equalizer = self.data.media.as_ref().is_some_and(|m| m.playing) && matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric);
         let expiring = snap.osd || self.notif.is_some() || self.edit.is_some() || self.reply.is_some() || self.kb.is_some() || self.bar.is_some();
         let next_ms: u32 = if moving {
@@ -862,6 +879,14 @@ impl Island {
             sw = sw.max(card::CARD_MAX_W + slot);
             sh += card::zone_height(self.cards_shown().max(self.cards.stack.len()), self.cards.taller());
         }
+        if self.fx.shot.is_some() {
+            sw = sw.max(group_w + 2.0 * effects::SHOT_ROOM);
+        }
+        if self.fx.catch.is_some() {
+            // the drop that reaches for the file, and the area that takes it
+            sw = sw.max(group_w + 2.0 * (effects::REACH + 24.0));
+            sh += effects::REACH + 30.0;
+        }
         if self.fill.is_some() {
             // the drop hangs at the left: as much room on the right keeps the pill where it is
             sw = sw.max(group_w + 2.0 * liquid::DROP_ROOM);
@@ -886,6 +911,7 @@ impl Island {
         let mut v = vec![self.pill_rect()];
         v.extend(self.cards.rects().map(|(x, y, w, h, _)| (x, y, w, h)));
         v.extend(self.fill.as_ref().and_then(|f| f.rect));
+        v.extend(self.catch_rect());
         v
     }
 

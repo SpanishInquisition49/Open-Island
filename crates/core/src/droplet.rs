@@ -69,6 +69,18 @@ const GATHER: Curve = Curve::new(0.22, 0.0);
 const GATHER_DELAY: f64 = 0.03;
 const RISE: Curve = Curve::new(0.4, 0.0);
 const RESIZE: Curve = Curve::new(0.4, 0.1);
+/// How a drop that starts off to one side comes under the pill, and how long after it starts to fall.
+const SLIDE: Curve = Curve::new(0.5, 0.12);
+const SLIDE_DELAY: f64 = 0.15;
+/// A drop this close to the middle has arrived: it may open.
+const ARRIVED: f64 = 14.0;
+/// How strongly a drop that hangs beside the pill is still joined to it.
+const HANGING_BLEND: f64 = 18.0;
+/// The tremble of a card that brings bad news: how far, how many times a second, how fast it dies, how long it lasts.
+const SHAKE: f64 = 9.0;
+const SHAKE_HZ: f64 = 7.0;
+const SHAKE_DECAY: f64 = 6.0;
+const SHAKE_FOR: f64 = 0.6;
 /// How a card of the stack glides into a gap.
 const SETTLE: Curve = Curve::new(0.45, 0.12);
 /// How long after the drop starts to rise it is gone for good.
@@ -113,6 +125,8 @@ pub struct Size {
 /// The card at one instant.
 #[derive(Clone, Copy, Debug)]
 pub struct Shape {
+    /// Its middle, to the right of the pill's (0 but for a drop on its way from the side, or one that trembles).
+    pub x: f64,
     /// Its top edge, below the pill's bottom (negative while inside the pill).
     pub top: f64,
     pub w: f64,
@@ -152,6 +166,9 @@ pub struct Animator {
     top: f64,
     /// When the gathered drop starts to rise on the way out.
     rise: Option<f64>,
+    x: Value,
+    /// When it starts to tremble.
+    shake_at: Option<f64>,
     centre: Value,
     w: Value,
     h: Value,
@@ -192,7 +209,41 @@ impl Animator {
         h.animate(size.h, GROW, loose);
         opened.animate(1.0, GROW, loose);
         let cue = first_time(loose, |t| GROW.progress(t - loose) >= TEXT_OPEN);
-        Self { size, top, rise: None, centre, w, h, opened, blend, content_w: Value::new(size.w), cue, left_at: None, end: loose + 0.8 }
+        Self { size, top, rise: None, x: Value::new(0.0), shake_at: None, centre, w, h, opened, blend, content_w: Value::new(size.w), cue, left_at: None, end: loose + 0.8 }
+    }
+
+    /// A card born at time 0 from a drop that already exists, its middle at (`x`, `y`) from the middle of the pill's
+    /// bottom edge: it falls from where it is, slides under the pill and only there opens to `size` with its top at `top`.
+    pub fn travel(size: Size, (x, y): (f64, f64), top: f64) -> Self {
+        let pill = Anchor::pill(0.0);
+        let end_centre = top + size.h / 2.0;
+        let mut centre = Value::new(y);
+        let mut side = Value::new(x);
+        centre.animate(end_centre, FALL, 0.0);
+        side.animate(0.0, SLIDE, SLIDE_DELAY);
+        let (mut w, mut h) = (Value::new(DROP), Value::new(DROP));
+        let (loose_at, hanging) = (pill.bottom + BLEND / 3.0, y - DROP / 2.0 < pill.bottom + BLEND / 3.0);
+        let loose = first_time(0.0, |t| centre.at(t) - DROP / 2.0 >= loose_at);
+        let mut blend = Value::new(if hanging { HANGING_BLEND } else { 0.0 });
+        blend.animate(0.0, LET_GO, loose);
+        let open = first_time(loose, |t| side.at(t).abs() <= ARRIVED);
+        let mut opened = Value::new(0.0);
+        w.animate(size.w, GROW, open);
+        h.animate(size.h, GROW, open);
+        opened.animate(1.0, GROW, open);
+        let cue = first_time(open, |t| GROW.progress(t - open) >= TEXT_OPEN);
+        Self { size, top, rise: None, x: side, shake_at: None, centre, w, h, opened, blend, content_w: Value::new(size.w), cue, left_at: None, end: open + 0.8 }
+    }
+
+    /// Makes the card tremble from side to side as its words appear.
+    pub fn shake(&mut self) {
+        self.shake_at = Some(self.cue);
+        self.end = self.end.max(self.cue + SHAKE_FOR);
+    }
+
+    fn side(&self, t: f64) -> f64 {
+        let tremble = self.shake_at.map(|at| t - at).filter(|s| (0.0..SHAKE_FOR).contains(s)).map_or(0.0, |s| SHAKE * (2.0 * PI * SHAKE_HZ * s).sin() * (-SHAKE_DECAY * s).exp());
+        self.x.at(t) + tremble
     }
 
     pub fn size(&self) -> Size {
@@ -283,7 +334,7 @@ impl Animator {
         let h = (self.h.at(t) * stretch).max(1.0);
         let w = (self.w.at(t) / stretch).max(1.0);
         let radius = (w / 2.0).min(h / 2.0).min(self.size.corner);
-        Shape { top: self.centre.at(t) - h / 2.0, w, h, radius, opened, blend: self.blend.at(t).max(0.0), content_w: self.content_w.at(t) }
+        Shape { x: self.side(t), top: self.centre.at(t) - h / 2.0, w, h, radius, opened, blend: self.blend.at(t).max(0.0), content_w: self.content_w.at(t) }
     }
 
     /// How visible a part of the content is that comes `delay` after the cue and takes `over` to fade in.
@@ -334,16 +385,16 @@ pub fn neck(anchor: &Blob, s: &Shape, cell: f64) -> Option<Vec<Vec<(f64, f64)>>>
     if s.blend <= 0.01 || s.top >= floor + s.blend || s.top + s.h <= floor - s.blend || cell <= 0.0 {
         return None;
     }
-    let drop = Blob { cx: 0.0, cy: s.top + s.h / 2.0, half_w: s.w / 2.0, half_h: s.h / 2.0, radius: s.radius };
+    let drop = Blob { cx: s.x, cy: s.top + s.h / 2.0, half_w: s.w / 2.0, half_h: s.h / 2.0, radius: s.radius };
     // just inside the anchor, unless the melt reaches its round ends: then from above everything the drop changes
     let inside = floor - 4.0;
     let straight = anchor.half_w - anchor.radius.min(anchor.half_w).min(anchor.half_h);
-    let top = if s.w / 2.0 + s.blend > straight { (s.top - s.blend - 1.0).min(inside).max(anchor.cy - anchor.half_h) } else { inside };
+    let top = if s.x.abs() + s.w / 2.0 + s.blend > straight { (s.top - s.blend - 1.0).min(inside).max(anchor.cy - anchor.half_h) } else { inside };
     let half = s.w / 2.0 + s.blend + 2.0 * cell;
     let bottom = (s.top + s.h).max(floor) + s.blend + 2.0 * cell;
     let columns = (2.0 * half / cell).ceil() as usize + 1;
     let rows = ((bottom - top) / cell).ceil() as usize + 1;
-    let x0 = -((columns - 1) as f64) * cell / 2.0;
+    let x0 = s.x - (columns - 1) as f64 * cell / 2.0;
     // the border is held outside, so every loop closes
     let mut values = vec![1.0; columns * rows];
     for row in 1..rows.saturating_sub(1) {
@@ -442,7 +493,7 @@ mod tests {
     fn a_drop_leaving_sideways_melts_into_the_end_it_leaves() {
         // a pill 150 x 28 from x = 0, a drop just past its right end
         let pill = Blob { cx: 75.0, cy: 0.0, half_w: 75.0, half_h: 14.0, radius: 14.0 };
-        let drop = Shape { top: 154.0, w: 28.0, h: 28.0, radius: 14.0, opened: 0.0, blend: 18.0, content_w: 28.0 };
+        let drop = Shape { x: 0.0, top: 154.0, w: 28.0, h: 28.0, radius: 14.0, opened: 0.0, blend: 18.0, content_w: 28.0 };
         let loops = neck_sideways(&pill, &drop, 0.7).expect("close enough to melt");
         let points: Vec<(f64, f64)> = loops.concat();
         let right = points.iter().map(|p| p.0).fold(f64::MIN, f64::max);
@@ -515,7 +566,7 @@ mod tests {
 
     #[test]
     fn the_neck_joins_pill_and_drop_and_pinches_off() {
-        let shape = |top: f64, blend: f64| Shape { top, w: DROP, h: DROP, radius: DROP / 2.0, opened: 0.0, blend, content_w: 0.0 };
+        let shape = |top: f64, blend: f64| Shape { x: 0.0, top, w: DROP, h: DROP, radius: DROP / 2.0, opened: 0.0, blend, content_w: 0.0 };
         let joined = neck(&PILL, &shape(3.0, BLEND), 1.0).expect("close enough to melt");
         assert_eq!(joined.len(), 1, "one body");
         let apart = neck(&PILL, &shape(20.0, BLEND), 1.0).expect("still within the blend");
@@ -529,7 +580,7 @@ mod tests {
 
     #[test]
     fn a_wide_drop_against_a_narrow_pill_is_traced_without_a_step() {
-        let s = Shape { top: -10.0, w: 140.0, h: 30.0, radius: 15.0, opened: 0.5, blend: BLEND, content_w: 0.0 };
+        let s = Shape { x: 0.0, top: -10.0, w: 140.0, h: 30.0, radius: 15.0, opened: 0.5, blend: BLEND, content_w: 0.0 };
         let l = neck(&PILL, &s, 1.0).unwrap();
         assert!(l.iter().flatten().any(|(_, y)| *y < -20.0), "traced from the pill's top");
     }
@@ -548,6 +599,42 @@ mod tests {
         assert!(a.rise_at().is_some_and(|r| r > 3.0 && r < a.end()));
         let s = a.shape(a.end());
         assert!(s.top + s.h < first.bottom + 2.0 && s.top > GAP, "swallowed by the card above: {s:?}");
+    }
+
+    #[test]
+    fn a_drop_hanging_beside_the_pill_goes_down_before_it_goes_across() {
+        // a pill 150 x 28: the drop hangs at its left, level with it
+        let from = (-75.0 - 4.0 - DROP / 2.0, -14.0);
+        let a = Animator::travel(SIZE, from, GAP);
+        let s = a.shape(0.0);
+        assert!((s.x - from.0).abs() < 1e-9 && (s.top + s.h / 2.0 - from.1).abs() < 1.0 && s.blend > 1.0, "it starts where it hung, still joined: {s:?}");
+        for i in 0..800 {
+            let s = a.shape(i as f64 * 0.001);
+            // never back into the pill: while it is level with it, it stays at its side
+            assert!(s.top >= 0.0 || s.x + s.w / 2.0 <= -75.0, "{i} ms: {s:?}");
+            assert!(s.opened < 0.05 || s.x.abs() < 20.0, "it opens under the middle: {i} ms {s:?}");
+        }
+        let s = a.shape(a.end());
+        assert!(s.x.abs() < 0.5 && (s.top - GAP).abs() < 0.2 && (s.w - SIZE.w).abs() < 0.2 && s.blend < 0.01, "{s:?}");
+        let joined = neck(&PILL, &a.shape(0.0), 1.0).expect("a neck to the side");
+        assert!(joined.iter().flatten().any(|(x, _)| *x < -95.0), "round the drop where it is");
+    }
+
+    #[test]
+    fn a_drop_already_loose_opens_at_once() {
+        let a = Animator::travel(SIZE, (0.0, GAP + DROP / 2.0), GAP);
+        assert_eq!(a.shape(0.0).blend, 0.0);
+        assert!(a.shape(0.1).w > DROP + 10.0 && a.cue() < 0.5, "{} {:?}", a.cue(), a.shape(0.1));
+    }
+
+    #[test]
+    fn a_shaken_card_trembles_and_comes_to_rest_in_the_middle() {
+        let mut a = Animator::enter(SIZE, Anchor::pill(28.0), GAP);
+        a.shake();
+        let xs: Vec<f64> = (0..600).map(|i| a.shape(a.cue() + i as f64 * 0.001).x).collect();
+        assert!(xs.iter().any(|x| *x > 3.0) && xs.iter().any(|x| *x < -2.0), "both ways");
+        assert_eq!(a.shape(a.cue() - 0.01).x, 0.0);
+        assert_eq!(a.shape(a.end() + 0.1).x, 0.0);
     }
 
     #[test]

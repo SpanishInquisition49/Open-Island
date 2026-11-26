@@ -365,31 +365,36 @@ delegate_registry!(Wl);
 delegate_data_device!(Wl);
 
 impl Wl {
-    /// The file drag now over the island, when it carries files: accepted as a copy.
-    fn drag_over(&mut self) {
+    /// The file drag now over the island, when it carries files: accepted as a copy. `at` is the pointer on the surface.
+    fn drag_over(&mut self, at: (f64, f64)) {
         let Some(offer) = self.data_device.as_ref().and_then(|d| d.data().drag_offer()) else { return };
         if offer.with_mime_types(|m| m.iter().any(|t| t == URI_LIST)) {
             offer.set_actions(DndAction::Copy, DndAction::Copy);
             offer.accept_mime_type(offer.serial, Some(URI_LIST.to_string()));
-            // the pill opens so the drop has a target to see
-            self.app.input(island_ui::model::Input::Peek);
+            // the pill reaches for it, so the drop has a target to see
+            self.app.input(island_ui::model::Input::FileDrag(Some(at)));
             self.dirty = true;
         }
     }
 }
 
 impl DataDeviceHandler for Wl {
-    fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64, _: &wl_surface::WlSurface) {
-        self.drag_over();
+    fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, x: f64, y: f64, _: &wl_surface::WlSurface) {
+        self.drag_over((x, y));
     }
-    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
-    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64) {
-        self.drag_over();
+    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+        self.app.input(island_ui::model::Input::FileDrag(None));
+        self.dirty = true;
+    }
+    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, x: f64, y: f64) {
+        self.drag_over((x, y));
     }
     fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
     fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
         let Some(offer) = self.data_device.as_ref().and_then(|d| d.data().drag_offer()) else { return };
         let Ok(mut pipe) = offer.receive(URI_LIST.to_string()) else { return };
+        self.app.input(island_ui::model::Input::FileDropped);
+        self.dirty = true;
         let tx = self.drop_tx.clone();
         // the file manager writes the list when it is ready: read it away from the event loop
         std::thread::spawn(move || {

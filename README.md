@@ -195,6 +195,23 @@ at the left of the pill**: it fills up with the job (blue or the job's colour) a
 its page; it gives way to open pages.
 Switch it off with `progress_drop` (Options > Island > "Progress drop"). Volume and brightness still change the pill itself.
 
+## Little animations
+
+Each plays once, for the event that starts it, and asks for no frames afterwards.
+
+- **The drop becomes the card.** When a countdown or a job with a percentage ends, the drop that hung at the left of the pill lets go, slides under it and opens into
+  the card that says how it went, carrying the colour of the end until it does (a failed one trembles as it opens). Behind another card the new one drops from it as
+  usual.
+- **Files.** A file dragged over the island (Wayland) is reached for: the pill says "Drop to send" and stretches a neck with a drop towards the pointer; let go and it
+  is drawn in, the pill swells, and the device list opens. When the files have gone, a small drop leaves the right end of the pill.
+- **One-time codes** roll in a digit at a time; a click on the card sends them into the pill, which says "Copied".
+- **Back from do not disturb** (or from any of the automatic quiet states), what was held comes out of the pill drop by drop, each with its app's icon or initial (six
+  at most), and the drops gather into the card that sums them up. Coming back to the machine is told by that card alone.
+- **A device that connects** shows its battery as a ring that fills round its icon while the number counts up (green, orange at 40%, red at 20%); a battery that
+  arrives a few seconds after the connection brings the card up to date.
+
+`cargo run -p island-ui --example preview -- out/ fx` renders moments of each to PNG.
+
 ## Conversations, not piles of cards
 
 Notifications are grouped by conversation (the same app and the same title: a chat or a sender, a site).

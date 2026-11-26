@@ -580,6 +580,8 @@ pub struct Island {
     pub(crate) bubbles: Vec<liquid::Bubble>,
     /// The drop beside the pill that shows a progress or a countdown.
     pub(crate) fill: Option<liquid::Fill>,
+    /// The short animations of single events.
+    pub(crate) fx: effects::Effects,
     pub cfg: Config,
     pub data: Data,
     pub now: i64,
@@ -878,6 +880,7 @@ impl Island {
             next_own_id: OWN_ID_BASE,
             bubbles: Vec::new(),
             fill: None,
+            fx: Default::default(),
             kb: None,
             page_stack: vec![],
             slide: 0.0,
@@ -935,6 +938,7 @@ impl Island {
 }
 
 pub(crate) mod card;
+pub(crate) mod effects;
 mod events;
 pub(crate) mod liquid;
 use card::{Shown, STACK_MAX};
@@ -946,6 +950,8 @@ mod power;
 mod study;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_effects;
 
 trait OpRunning {
     fn is_some_and_running(&self) -> bool;

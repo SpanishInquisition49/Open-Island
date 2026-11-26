@@ -55,7 +55,7 @@ impl Island {
             let r = (h / 2.0).min(width / 2.0).min(30.0);
             let blend = BUBBLE_BLEND * (1.0 - smooth(0.6, 0.95, out));
             let anchor = Blob { cx: before.0 + before.1 / 2.0, cy: 0.0, half_w: before.1 / 2.0, half_h: h / 2.0, radius };
-            let drop = Shape { top: left, w: h, h: width, radius: r, opened: out.clamp(0.0, 1.0), blend, content_w: width };
+            let drop = Shape { x: 0.0, top: left, w: h, h: width, radius: r, opened: out.clamp(0.0, 1.0), blend, content_w: width };
             match droplet::neck_sideways(&anchor, &drop, 0.7) {
                 Some(loops) => {
                     // melting swells what overlaps: nothing may stand out of the two shapes taken together
@@ -120,7 +120,7 @@ impl Island {
             return;
         }
         // solved leaving the right end, then mirrored
-        let shape = Shape { top: w - centre - d / 2.0, w: d, h: d, radius: d / 2.0, opened: out.clamp(0.0, 1.0), blend: DROP_BLEND, content_w: d };
+        let shape = Shape { x: 0.0, top: w - centre - d / 2.0, w: d, h: d, radius: d / 2.0, opened: out.clamp(0.0, 1.0), blend: DROP_BLEND, content_w: d };
         let anchor = Blob { cx: w / 2.0, cy: 0.0, half_w: w / 2.0, half_h: h / 2.0, radius };
         match droplet::neck_sideways(&anchor, &shape, 0.6) {
             Some(loops) => {

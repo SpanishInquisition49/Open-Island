@@ -6,7 +6,7 @@ use island_core::pomodoro::Phase;
 
 const T0: i64 = 1_800_000_000_000;
 
-fn fonts() -> Fonts {
+pub(super) fn fonts() -> Fonts {
     Fonts::from_db(&fontdb::Database::new())
 }
 
@@ -613,13 +613,15 @@ fn a_connecting_device_gets_a_card_and_a_low_battery_warns_once_until_it_recover
     i.push(T0, Input::DeviceConnected(headphones(Some(80))));
     run(&mut i, 600);
     assert_eq!((i.current_face(), up(&i)), (Face::Idle, vec!["Sony XM5"]));
-    assert_eq!(i.notif.as_ref().unwrap().body, "Connected · 80%");
+    let n = i.notif.as_ref().unwrap();
+    assert_eq!((n.body.as_str(), n.ring), ("Connected", Some(80)));
     run(&mut i, 4000);
     assert!(up(&i).is_empty(), "it goes away by itself");
     i.data.devices = vec![headphones(Some(12))];
     i.push(i.now, Input::DeviceLow(headphones(Some(12))));
     run(&mut i, 600);
-    assert_eq!(i.notif.as_ref().unwrap().body, "Low battery · 12%");
+    let n = i.notif.as_ref().unwrap();
+    assert_eq!((n.body.as_str(), n.ring), ("Low battery", Some(12)));
     run(&mut i, 9000);
     i.push(i.now, Input::DeviceLow(headphones(Some(11))));
     run(&mut i, 600);

@@ -357,6 +357,8 @@ pub struct Incoming {
     pub stay: bool,
     /// Its text is shown whole, a line of the body to a line of the card (the day's agenda): the card grows to fit it.
     pub full: bool,
+    /// A device's battery (0..=100): the card shows a ring that fills up to it round the icon.
+    pub ring: Option<u8>,
 }
 
 impl Incoming {
@@ -439,6 +441,10 @@ pub enum Input {
     Focused { app: String, title: String },
     /// Files to send: opens the page that lists the devices (from `open-island send`, or a file dropped on the island).
     SendFiles(Vec<String>),
+    /// A file drag is over the island (the pointer in surface coordinates), or has left it (None).
+    FileDrag(Option<(f64, f64)>),
+    /// The dragged file was let go over the island (its path follows as `SendFiles`).
+    FileDropped,
     /// A shell started a command: it becomes a progress pill when it runs longer than `after_secs`.
     CommandStart { id: String, label: String, after_secs: u32 },
     /// The shell command ended with this exit code.

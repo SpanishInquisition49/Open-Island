@@ -58,6 +58,7 @@ impl Island {
         self.draw_card_shapes(scene, base, w, h, radius);
         self.draw_bubble_shapes(scene, fonts, base, w, h, radius);
         self.draw_fill_shape(scene, base, w, h, radius);
+        self.draw_effect_shapes(scene, base, w, h, radius);
 
         // the pill
         scene.fill(Fill::NonZero, base, theme::BG, None, &RoundedRect::new(0.0, 0.0, w, h, radius));
@@ -107,6 +108,7 @@ impl Island {
 
         self.draw_bubble_contents(scene, fonts, &mut hits, base, w, h);
         self.draw_fill(scene, &mut hits, base, w);
+        self.draw_effect_contents(scene, fonts, base, w, h, radius);
         self.hits = hits;
     }
 
@@ -160,6 +162,7 @@ impl Island {
             Face::Activity => self.face_activity(p, w, h),
             Face::Map => self.face_map(p, w, h),
             Face::Bar => self.face_bar(p, w, h),
+            Face::Catch => self.face_catch(p, w, h),
             Face::Osd => self.face_osd(p, w, h),
             Face::Progress => self.face_progress(p, w, h),
             Face::MeetMini => self.face_meet_mini(p, w, h),
@@ -760,6 +763,7 @@ impl Island {
 }
 
 mod card;
+mod effects;
 mod liquid;
 mod organizer;
 mod pages_a;
