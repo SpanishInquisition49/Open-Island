@@ -244,6 +244,50 @@ impl Island {
         vec![]
     }
 
+    /// Does `action` on the card of the notification `id`: that card takes the first place while it is done, so that
+    /// everything acts on it, and the first one comes back after.
+    fn on_card(&mut self, id: u32, action: Action) -> Vec<Command> {
+        if self.notif.as_ref().is_some_and(|n| n.id == id) {
+            return self.on_first_card(action);
+        }
+        let Some(k) = self.below.iter().position(|b| b.n.id == id) else { return vec![] };
+        let target = self.below.remove(k);
+        let first = self.take_front();
+        self.set_front(Some(target));
+        let cmds = self.on_first_card(action);
+        let after = self.take_front();
+        // a reply being typed stays first: that is where it is sent from
+        let replying = self.reply.as_ref().is_some_and(|r| r.id == id);
+        match after {
+            Some(card) if card.n.id == id && replying => {
+                self.set_front(Some(card));
+                if let Some(first) = first {
+                    self.below.insert(k, first);
+                }
+            }
+            other => {
+                self.set_front(first);
+                // the card itself, still there, goes back to its place; a card the action made goes to the end
+                match other {
+                    Some(card) if card.n.id == id => self.below.insert(k.min(self.below.len()), card),
+                    Some(card) => self.below.push(card),
+                    None => {}
+                }
+            }
+        }
+        cmds
+    }
+
+    /// A press on a card is not a press on the pill: the pill opens only when the press leads to one of its pages.
+    fn on_first_card(&mut self, action: Action) -> Vec<Command> {
+        let (page, expand_until) = (self.page, self.expand_until);
+        let cmds = self.activate(action);
+        if self.page == page {
+            self.expand_until = expand_until;
+        }
+        cmds
+    }
+
     /// Moves to the next (1) or previous (-1) page in the dock's order, wrapping around.
     pub(crate) fn cycle_page(&mut self, dir: i32) {
         let pages = self.pages();
@@ -347,7 +391,9 @@ impl Island {
 
     pub(super) fn activate(&mut self, a: Action) -> Vec<Command> {
         let now = self.now;
-        self.expand_until = self.expand_until.max(now + 4000);
+        if !matches!(a, Action::OnCard(..)) {
+            self.expand_until = self.expand_until.max(now + 4000);
+        }
         match a {
             Action::Cmd(c @ (Command::MediaNext | Command::MediaPrevious)) => {
                 self.skip_press = if c == Command::MediaNext { 1.0 } else { -1.0 };
@@ -470,6 +516,7 @@ impl Island {
                 }
             }
             Action::Dismiss | Action::NextNotif => self.close_notif(CloseReason::Dismissed),
+            Action::OnCard(id, inner) => return self.on_card(id, *inner),
             Action::OptionsTab(t) => self.options_tab = t.min(crate::options::TABS.len() - 1),
             Action::MuteApp(n) => {
                 if let Some((inc, _)) = self.history.get(n) {

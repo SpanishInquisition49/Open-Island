@@ -170,21 +170,23 @@ fn a_second_command_waits_for_the_pill_to_be_free() {
 fn notifications_queue_and_do_not_disturb() {
     let mut i = Island::new(Config::default());
     let n = |id: u32, app: &str, crit: bool| Input::Notification(Incoming { id, app: app.into(), summary: format!("n{id}"), critical: crit, ..Default::default() });
-    i.push(T0, n(1, "a", false));
-    i.push(T0, n(2, "b", false));
-    assert_eq!(i.queue.len(), 1);
+    for (id, app) in [(1, "a"), (2, "b"), (3, "c"), (4, "d")] {
+        i.push(T0, n(id, app, false));
+    }
+    assert_eq!((i.below.len(), i.queue.len()), (2, 1), "three have a card, the fourth waits");
     run(&mut i, 600);
-    assert!(i.has_card() && i.current_face() == Face::Idle, "the card drops under the pill, which stays as it is");
+    assert!(i.has_card() && i.current_face() == Face::Idle, "the cards drop under the pill, which stays as it is");
     assert_eq!(i.notif.as_ref().unwrap().id, 1);
-    run(&mut i, 5500);
-    assert_eq!(i.notif.as_ref().map(|n| n.id), Some(2), "the next one is shown");
+    run(&mut i, 4500);
+    assert_eq!(i.notif.as_ref().map(|n| n.id), Some(2), "the next one moves up");
+    assert!(i.below.iter().any(|b| b.n.id == 4) && i.waiting.is_empty(), "and the one that waited has its place");
     i.data.dnd = true;
-    run(&mut i, 6000);
-    i.push(i.now, n(3, "c", false));
+    run(&mut i, 10_000);
+    i.push(i.now, n(5, "e", false));
     assert!(i.notif.is_none(), "do not disturb hides it");
-    i.push(i.now, n(4, "d", true));
-    assert_eq!(i.notif.as_ref().map(|n| n.id), Some(4), "but not a critical one");
-    assert_eq!(i.history.len(), 4, "everything lands in the history");
+    i.push(i.now, n(6, "f", true));
+    assert_eq!(i.notif.as_ref().map(|n| n.id), Some(6), "but not a critical one");
+    assert_eq!(i.history.len(), 6, "everything lands in the history");
 }
 
 #[test]
@@ -1581,7 +1583,9 @@ fn quick_settings_hide_what_the_machine_does_not_have() {
 
 /// Presses the middle of the first drawn control with this action.
 fn press(i: &mut Island, action: Action) -> bool {
-    let Some(h) = i.hits.iter().find(|h| h.action == action).map(|h| h.rect) else { return false };
+    // a card's controls say which card they are on
+    let is = |a: &Action| *a == action || matches!(a, Action::OnCard(_, inner) if **inner == action);
+    let Some(h) = i.hits.iter().find(|h| is(&h.action)).map(|h| h.rect) else { return false };
     let cmds = i.pointer_down(i.now, h.center().x + i.pill_origin.0, h.center().y + i.pill_origin.1);
     i.pending.extend(cmds);
     true
@@ -2896,12 +2900,12 @@ fn messages_of_one_conversation_join_the_card_on_screen_instead_of_queueing() {
     assert!(i.queue.is_empty() && i.waiting.is_empty(), "nothing waits for its turn");
     let closed: Vec<u32> = i.pending.iter().filter_map(|c| if let Command::NotificationClosed { id, .. } = c { Some(*id) } else { None }).collect();
     assert_eq!(closed, [1, 2], "the earlier ones are closed towards their sender");
-    // someone else in the same app waits, as before, and does not change the count
+    // someone else in the same app has a card of their own, and does not change the count
     i.push(i.now, Input::Notification(message(4, "Telegram", "Marco", "hey")));
-    assert_eq!((i.notif.as_ref().map(|n| n.id), i.waiting.len(), i.notif_group), (Some(3), 1, 3));
+    assert_eq!((i.notif.as_ref().map(|n| n.id), i.below.len(), i.notif_group), (Some(3), 1, 3));
     // a critical message of the same conversation is not folded away
     i.push(i.now, Input::Notification(Incoming { critical: true, ..message(5, "Telegram", "Anna", "urgente") }));
-    assert_eq!(i.notif.as_ref().map(|n| n.id), Some(3), "it waits like any other, but it is queued, not merged");
+    assert_eq!((i.notif.as_ref().map(|n| n.id), i.below.iter().map(|b| b.n.id).collect::<Vec<_>>()), (Some(3), vec![4, 5]), "it has a card like any other, it is not merged");
     // a new card starts again from one
     i.close_notif(CloseReason::Dismissed);
     i.tick(i.now + 100, 8.0);
@@ -3673,18 +3677,141 @@ fn a_card_drops_under_the_pill_takes_the_pointer_and_goes_back_in() {
     assert!(!i.has_card());
 }
 
+/// A card from an app of its own, so that none joins another.
+fn from_app(id: u32) -> Incoming {
+    Incoming { app: format!("app{id}"), ..incoming(id) }
+}
+
+/// The ids of the cards that stay, top to bottom.
+fn stacked(i: &Island) -> Vec<u32> {
+    i.cards.live().map(|c| c.n.id).collect()
+}
+
 #[test]
-fn the_next_card_waits_for_the_one_before_and_keeps_its_whole_time() {
+fn three_cards_stack_one_under_another_and_the_rest_wait() {
     let f = fonts();
     let mut i = Island::new(Config::default());
-    i.push(T0, Input::Notification(incoming(1)));
-    i.push(T0, Input::Notification(Incoming { app: "mail".into(), ..incoming(2) }));
+    for id in 1..=5 {
+        i.push(T0, Input::Notification(from_app(id)));
+    }
+    card_frames(&mut i, &f, 16);
+    assert_eq!(stacked(&i), [1, 2, 3]);
+    assert_eq!(i.waiting.len(), 2);
+    let born: Vec<i64> = i.cards.live().map(|c| c.born).collect();
+    assert!(born[1] >= born[0] + 700 && born[2] >= born[1] + 700, "one at a time: {born:?}");
+    assert!(i.below[1].until >= born[2] + i.cfg.notification_ms - 16, "its time starts when it shows");
+    let fr = card_frames(&mut i, &f, 2600);
+    let r = i.input_rects();
+    assert_eq!(r.len(), 4, "the pill and three cards");
+    for pair in r[1..].windows(2) {
+        assert!((pair[1].1 - (pair[0].1 + pair[0].3 + 10.0)).abs() < 1.0, "one below another: {r:?}");
+    }
+    let last = r[3];
+    assert!(last.1 + last.3 <= fr.surface.1 && fr.surface.1 <= MAX_SURFACE.1, "{r:?} in {:?}", fr.surface);
+}
+
+#[test]
+fn when_a_card_goes_those_below_move_up_and_a_waiting_one_comes() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    for id in 1..=4 {
+        i.push(T0, Input::Notification(from_app(id)));
+    }
+    card_frames(&mut i, &f, 3000);
+    let first = i.input_rects()[1];
+    // the middle one is closed: the others stay
+    i.activate(Action::OnCard(2, Box::new(Action::Dismiss)));
+    assert_eq!(closes(&mut i), vec![(2, CloseReason::Dismissed)]);
+    card_frames(&mut i, &f, 100);
+    let gone = i.cards.stack.iter().find(|c| c.leaving).unwrap();
+    let rises = gone.born + (gone.anim.as_ref().unwrap().rise_at().unwrap() * 1000.0) as i64;
+    assert!(i.cards.live().last().unwrap().born >= rises + 450, "the new one waits for the stack to close up");
+    card_frames(&mut i, &f, 1500);
+    assert_eq!(stacked(&i), [1, 3, 4], "the one that waited goes to the bottom");
+    assert!(i.waiting.is_empty());
+    assert!((i.input_rects()[2].1 - (first.1 + first.3 + 10.0)).abs() < 1.0, "the third moved up: {:?}", i.input_rects());
+    // then the first expires and the rest move up again
+    card_frames(&mut i, &f, 700);
+    assert_eq!(closes(&mut i), vec![(1, CloseReason::Expired)]);
     card_frames(&mut i, &f, 1000);
+    assert_eq!(stacked(&i), [3, 4]);
+    assert!((i.input_rects()[1].1 - first.1).abs() < 1.0, "{:?}", i.input_rects());
+    card_frames(&mut i, &f, 9000);
+    assert!(!i.has_card() && i.notif.is_none() && i.below.is_empty());
+}
+
+#[test]
+fn an_action_on_a_lower_card_is_that_cards_own() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    let act = vec![NotifAction { key: "open".into(), label: "Open".into() }];
+    i.push(T0, Input::Notification(from_app(1)));
+    i.push(T0, Input::Notification(Incoming { actions: act, ..from_app(2) }));
+    card_frames(&mut i, &f, 2000);
+    let hit = i.hits.iter().find(|h| h.action == Action::OnCard(2, Box::new(Action::NotifAction("open".into())))).expect("its button").clone();
+    let (x, y) = (hit.rect.center().x + i.pill_origin.0, hit.rect.center().y + i.pill_origin.1);
+    let cmds = i.pointer_down(i.now, x, y);
+    i.pending.extend(cmds);
+    let cmds = i.take_commands();
+    assert_eq!(cmds[..2], [Command::InvokeAction { id: 2, key: "open".into() }, Command::NotificationClosed { id: 2, reason: CloseReason::Dismissed }]);
+    assert_eq!(i.notif.as_ref().map(|n| n.id), Some(1), "the first one stays");
+    assert!(i.below.is_empty());
+    run(&mut i, 500);
+    assert_eq!(i.current_face(), Face::Idle, "a press on a card does not open the pill");
+    // a card that stays after what was done on it keeps its place
+    i.push(i.now, Input::Notification(Incoming { body: "482913 is your code".into(), summary: "Your verification code".into(), ..from_app(3) }));
+    i.activate(Action::OnCard(3, Box::new(Action::CopyCode("482913".into()))));
+    assert_eq!((i.notif.as_ref().map(|n| n.id), i.below.iter().map(|b| b.n.id).collect::<Vec<_>>()), (Some(1), vec![3]));
+}
+
+#[test]
+fn a_reply_to_a_lower_card_takes_only_that_card_into_the_pill() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    let reply = vec![NotifAction { key: "inline-reply".into(), label: "Reply".into() }];
+    i.push(T0, Input::Notification(from_app(1)));
+    i.push(T0, Input::Notification(Incoming { actions: reply, ..from_app(2) }));
+    card_frames(&mut i, &f, 2000);
+    i.push(i.now, Input::StartReply);
+    card_frames(&mut i, &f, 6000);
+    assert_eq!(i.reply.as_ref().map(|r| r.id), Some(2));
+    assert!(stacked(&i).is_empty(), "the other ran out of time, the one being answered is in the pill");
+    assert_eq!(i.notif.as_ref().map(|n| n.id), Some(2), "and waits");
+    i.activate(Action::ReplyCancel);
+    assert!(i.notif.is_none());
+}
+
+#[test]
+fn a_message_of_a_conversation_on_a_lower_card_joins_it() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::Notification(from_app(1)));
+    i.push(T0, Input::Notification(from_app(2)));
+    card_frames(&mut i, &f, 2000);
+    let born = i.cards.live().nth(1).unwrap().born;
+    i.push(i.now, Input::Notification(Incoming { id: 9, body: "Again".into(), ..from_app(2) }));
+    card_frames(&mut i, &f, 500);
+    assert_eq!(stacked(&i), [1, 9]);
+    let c = i.cards.live().nth(1).unwrap();
+    assert_eq!((c.born, c.group), (born, 2), "the same card, now standing for two");
+    assert_eq!(closes(&mut i), vec![(2, CloseReason::Expired)]);
+}
+
+#[test]
+fn a_card_going_into_one_that_goes_too_is_not_left_in_mid_air() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    for id in 1..=2 {
+        i.push(T0, Input::Notification(from_app(id)));
+    }
+    card_frames(&mut i, &f, 2000);
+    i.activate(Action::OnCard(2, Box::new(Action::Dismiss)));
+    card_frames(&mut i, &f, 40);
     i.activate(Action::Dismiss);
     card_frames(&mut i, &f, 16);
-    let c = i.cards.live.as_ref().expect("the next one is lined up");
-    assert!(c.n.id == 2 && c.born > i.now, "after the first has gone in");
-    assert!(i.notif_until >= c.born + i.cfg.notification_ms - 16);
+    assert!(i.cards.stack.iter().all(|c| c.leaving && c.anchor.is_none()), "both now go into the pill");
+    card_frames(&mut i, &f, 2000);
+    assert!(!i.has_card());
 }
 
 #[test]
@@ -3693,11 +3820,11 @@ fn an_update_changes_the_card_where_it_is() {
     let mut i = Island::new(Config::default());
     i.push(T0, Input::Notification(incoming(1)));
     card_frames(&mut i, &f, 1500);
-    let (born, width) = (i.cards.live.as_ref().unwrap().born, i.input_rects()[1].2);
+    let (born, width) = (i.cards.live().next().unwrap().born, i.input_rects()[1].2);
     i.push(i.now, Input::Notification(Incoming { body: "A much longer line, which needs a wider card than the one before".into(), ..incoming(1) }));
     card_frames(&mut i, &f, 1000);
-    assert_eq!(i.cards.live.as_ref().unwrap().born, born, "the same card");
-    assert!(i.cards.gone.is_none() && i.input_rects()[1].2 > width + 50.0);
+    assert_eq!(i.cards.live().next().unwrap().born, born, "the same card");
+    assert!(i.cards.stack.len() == 1 && i.input_rects()[1].2 > width + 50.0);
 }
 
 #[test]
@@ -3708,10 +3835,11 @@ fn the_pointer_on_a_card_holds_its_countdown_for_a_while() {
     card_frames(&mut i, &f, 4000);
     let (x, y, w, h) = i.input_rects()[1];
     i.pointer_moved(i.now, x + w / 2.0, y + h / 2.0);
-    let left = i.card_time_left();
+    let time_left = |i: &Island| i.cards.live().next().map_or(0.0, |c| i.card_time_left(c));
+    let left = time_left(&i);
     card_frames(&mut i, &f, 4000);
     assert!(i.notif.is_some(), "held past its five seconds");
-    assert!((i.card_time_left() - left).abs() < 0.05, "the ring stands still: {left} -> {}", i.card_time_left());
+    assert!((time_left(&i) - left).abs() < 0.05, "the ring stands still: {left} -> {}", time_left(&i));
     assert!(!i.hovering, "the card is not the pill: no page opens");
     i.pointer_left(i.now);
     card_frames(&mut i, &f, 1000);

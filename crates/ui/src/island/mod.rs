@@ -241,6 +241,8 @@ pub enum Action {
     /// Hide the notification on screen and bring it back in ten minutes.
     Snooze,
     NotifAction(String),
+    /// Something done on one card of the stack (its notification's id).
+    OnCard(u32, Box<Action>),
     Open(Page),
     CalPrev,
     CalNext,
@@ -536,7 +538,7 @@ pub struct Cal {
 
 /// A window this big holds every page (with its overshoot and the side bubble): a platform that cannot resize its
 /// window without a hitch keeps one of this size and only changes which part of it takes the pointer.
-pub const MAX_SURFACE: (f64, f64) = (820.0, 840.0);
+pub const MAX_SURFACE: (f64, f64) = (820.0, 1080.0);
 
 /// Result of a tick: how big the window surface must be, and whether another frame is needed soon.
 #[derive(Clone, Copy, Debug)]
@@ -632,7 +634,9 @@ pub struct Island {
     pub(crate) timer_done_text: (String, String),
     pub(crate) notif: Option<Incoming>,
     notif_until: i64,
-    /// The notification card under the pill.
+    /// The cards on screen besides the first one (`notif`), at most `STACK_MAX` - 1.
+    pub(crate) below: Vec<card::Shown>,
+    /// The notification cards under the pill, as they are drawn.
     pub(crate) cards: card::Cards,
     pub(crate) reply: Option<Reply>,
     pub(crate) bar: Option<Bar>,
@@ -709,7 +713,7 @@ pub struct Island {
     caldav_draft: (Option<String>, Option<String>),
     pub(crate) note: Option<(String, i64)>,
     pub(crate) queue: Vec<notify::Notification>,
-    waiting: std::collections::VecDeque<Incoming>,
+    pub(crate) waiting: std::collections::VecDeque<Incoming>,
     pub(crate) history: Vec<(Incoming, i64)>,
     pub(crate) osd: Option<Osd>,
     /// What the bars show: the level eased towards the real one, so a level that arrives in steps moves smoothly.
@@ -820,6 +824,7 @@ impl Island {
             timer_done_text: Default::default(),
             notif: None,
             notif_until: 0,
+            below: Vec::new(),
             cards: Default::default(),
             reply: None,
             bar: None,
@@ -931,6 +936,7 @@ impl Island {
 }
 
 pub(crate) mod card;
+use card::{Shown, STACK_MAX};
 mod frame;
 mod inputs;
 mod organizer;

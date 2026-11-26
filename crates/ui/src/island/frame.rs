@@ -709,25 +709,10 @@ impl Island {
         if self.reply.as_ref().is_some_and(|r| now > r.until) {
             self.end_reply(false);
         }
-        self.hold_card();
-        if self.notif.is_some() && self.reply.is_none() && now >= self.notif_until {
-            self.close_notif(CloseReason::Expired);
-        }
-        // whatever took the card off the screen (expiry, the x, a click), the next waiting one comes up
-        // closed by its sender or by a press: its card goes back in before the next one takes its place
-        if self.notif.is_none() {
-            self.leave_card();
-        }
-        if self.notif.is_none() && self.reply.is_none() {
-            if let Some(n) = self.waiting.pop_front() {
-                self.queue.retain(|q| q.id != n.id);
-                self.show_notif(n);
-            }
-        }
-        if self.notif.is_none() && self.waiting.is_empty() {
-            self.queue.clear();
-        }
-        self.sync_card();
+        self.hold_cards();
+        // expiry, the places in the stack, and the ones waiting for a place
+        self.turn_over_cards();
+        self.sync_cards();
         if self.timer.as_ref().and_then(|t| t.end_ms).is_some_and(|e| now >= e) {
             self.on_timer_end();
         }
@@ -858,8 +843,8 @@ impl Island {
             // live bars: every new spectrum (it comes 30 times a second) wakes a frame by itself, so no timer is needed
             // while they arrive (a timer at 16 ms drew each of them twice); the made-up animation needs one, at 30 fps
             if !self.spectrum.is_empty() && now - self.spectrum_at < 200 { 120 } else { 33 }
-        } else if self.cards.live.is_some() {
-            33 // the ring drains
+        } else if self.cards.any_live() {
+            33 // the rings drain
         } else if expiring {
             120
         } else if self.timer.is_some() || self.ops.op.is_some_and_running() {
@@ -888,7 +873,7 @@ impl Island {
             // room for the card under the pill, centred on the pill however many small pills sit beside it
             let slot = self.side_slot(self.shown_side.is_some() || self.want_side.is_some(), self.shown_more.len().max(self.want_more.len()));
             sw = sw.max(card::CARD_MAX_W + slot);
-            sh += card::CARD_ZONE_H;
+            sh += card::zone_height(self.cards_shown().max(self.cards.stack.len()));
         }
         Frame { surface: (sw + 8.0, sh + TOP_MARGIN + 4.0), animating, next_ms }
     }
@@ -904,11 +889,11 @@ impl Island {
         self.pointer
     }
 
-    /// The parts of the surface that should take pointer input (the pill with its bubbles, and the card under it), in
+    /// The parts of the surface that should take pointer input (the pill with its bubbles, and the cards under it), in
     /// surface coordinates: (x, y, width, height). The rest of the surface is transparent and must click through.
     pub fn input_rects(&self) -> Vec<(f64, f64, f64, f64)> {
         let mut v = vec![self.pill_rect()];
-        v.extend(self.cards.rect.map(|(x, y, w, h, _)| (x, y, w, h)));
+        v.extend(self.cards.rects().map(|(x, y, w, h, _)| (x, y, w, h)));
         v
     }
 
@@ -923,7 +908,7 @@ impl Island {
                 v.push((self.pill_origin.0 + w + BUBBLE_GAP + n as f64 * (BUBBLE_W + BUBBLE_GAP), self.pill_origin.1, BUBBLE_W, h, r));
             }
         }
-        v.extend(self.cards.rect);
+        v.extend(self.cards.rects());
         v
     }
 

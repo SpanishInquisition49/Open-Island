@@ -144,16 +144,17 @@ kept for offline use and when they were fetched, and the currency rates: what ea
 A notification does not take over the pill: a drop forms inside it, falls on a liquid neck that pinches off and spreads into a card just below, then is gathered up and
 swallowed again when it goes. The card shows the icon or picture, the title and the sender, up to three lines of text, and on the right a ring that drains with the time
 left, or the buttons the sender offers. With the pointer on it the countdown waits (for up to 5 s after the pointer last moved), the icon becomes a close button and the
-ring becomes snooze; a click on the card opens the sender. The motion and the look are
+ring becomes snooze; a click on the card opens the sender. Up to three cards stack, each new one dripping from the last: the pointer on any of them holds them all,
+a card that goes is drawn back into the one above and those below move up, and a small drop under the stack counts the ones waiting for a place. The motion and the look are
 ported from [drip](https://github.com/jrnxf/drip) (see `THIRD-PARTY-NOTICES.md`).
 
 ## Conversations, not piles of cards
 
 Notifications are grouped by conversation (the same app and the same title: a chat or a sender, a site).
 
-- **On screen**: a new message of the conversation whose card is showing joins that card instead of waiting for its turn: the card shows the latest words and
+- **On screen**: a new message of the conversation whose card is showing joins that card instead of taking a card of its own: the card shows the latest words and
   "Telegram · 3 new", its timer starts again, and the earlier messages are closed towards their sender (so five messages in a lecture are one card, not five in a row).
-  Messages of other conversations of the same app still wait their turn, and a critical one is never folded into another.
+  Messages of other conversations of the same app have cards of their own, and a critical one is never folded into another.
 - **In the history**: the Notifications page shows a conversation as one row ("Telegram · now · 3 messages", the sender and then the latest words). A click on the row opens the app
   and clears the whole conversation; the x removes all of it. A conversation is the consecutive messages, within half an hour of each other; a different sender or a long
   silence starts a new row.

@@ -178,6 +178,12 @@ fn card_case(i: &mut Island, _: &mut Data) {
     i.push(NOW, Input::Notification(Incoming { id: 1, app: "Telegram".into(), summary: "Marco".into(), body: "Ci vediamo alle 18 in aula?".into(), ..Default::default() }));
 }
 
+fn stack_case(i: &mut Island, _: &mut Data) {
+    for (id, app, who, text) in [(1, "Telegram", "Marco", "Ci vediamo alle 18 in aula?"), (2, "Mail", "Segreteria", "Il calendario degli appelli è stato aggiornato."), (3, "Signal", "Anna", "Porto io il caffè"), (4, "Slack", "CI", "build verde")] {
+        i.push(NOW, Input::Notification(Incoming { id, app: app.into(), summary: who.into(), body: text.into(), expire_ms: Some(30_000), ..Default::default() }));
+    }
+}
+
 fn main() {
     let dir = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "preview".into()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -233,6 +239,14 @@ fn main() {
             i.push(NOW, Input::Notification(Incoming { id: 1, app: "Mail".into(), summary: "Segreteria studenti: aggiornamento sul calendario degli appelli straordinari".into(), body: "Gentile studente, ti informiamo che il calendario degli appelli è stato aggiornato: controlla le nuove date sul portale prima di venerdì, perché le iscrizioni chiudono una settimana prima di ogni prova e non sarà possibile iscriversi dopo.".into(), ..Default::default() }));
             i.push(NOW, Input::Notification(Incoming { id: 2, app: "Telegram".into(), summary: "Anna".into(), critical: true, ..Default::default() }));
         })),
+        // three cards stacked and one waiting; the second and third dropping in; the middle one going
+        ("notif-stack", Box::new(stack_case)),
+        ("notif-stack-in-a", Box::new(stack_case)),
+        ("notif-stack-in-b", Box::new(stack_case)),
+        ("notif-stack-in-c", Box::new(stack_case)),
+        ("notif-stack-leave-a", Box::new(stack_case)),
+        ("notif-stack-leave-b", Box::new(stack_case)),
+        ("notif-stack-leave-c", Box::new(stack_case)),
         ("bar-empty", Box::new(|i, _| i.push(NOW, Input::OpenBar))),
         ("bar-remind", Box::new(|i, _| { i.push(NOW, Input::OpenBar); i.push(NOW, Input::Key(KeyInput::Text("remind 20m Call Anna".into()))) })),
         ("bar-sum", Box::new(|i, _| { i.push(NOW, Input::OpenBar); i.push(NOW, Input::Key(KeyInput::Text("5 km in mi".into()))) })),
@@ -507,10 +521,10 @@ fn main() {
         // pages need a page request; "home" and "meeting" go through the hover-less path
         let hold = name == "lyrics-scroll" || name == "page-sys-opening" || name == "media-transition" || name.contains("full") || name.starts_with("focus-full") || name.contains("lyrics") || name == "home" || name == "home-rain" || name == "qs-devices" || name.starts_with("page-");
         let frames = if name == "media-transition" { 26 } else if name == "page-sys-opening" { 38 } else if name == "lyrics-scroll" { 40 } else { 400 };
-        let frames = match name { "notif-drop-a" => 12, "notif-drop-b" => 24, "notif-drop-c" => 36, "notif-drop-d" => 52, _ => frames };
+        let frames = match name { "notif-stack-in-a" => 100, "notif-stack-in-b" => 122, "notif-stack-in-c" => 195, "notif-drop-a" => 12, "notif-drop-b" => 24, "notif-drop-c" => 36, "notif-drop-d" => 52, _ => frames };
         let mut f = settle(&mut i, &d, frames, hold);
         // these need the card to have been on screen before something happens to it
-        if name.starts_with("notif-leave") || name == "notif-hover" {
+        if name.starts_with("notif-leave") || name.starts_with("notif-stack-leave") || name == "notif-hover" {
             let size = (f.surface.0.ceil().max(520.0), f.surface.1.ceil());
             i.draw(&mut Scene::new(), &fonts, size, scale);
             let mut t = NOW + frames as i64 * 8;
@@ -518,9 +532,9 @@ fn main() {
                 let (x, y, w, h) = i.input_rects()[1];
                 i.pointer_moved(t, x + w - 24.0, y + h / 2.0);
             } else {
-                i.push(t, Input::NotificationClosed(1));
+                i.push(t, Input::NotificationClosed(if name.starts_with("notif-stack") { 2 } else { 1 }));
             }
-            for _ in 0..match name { "notif-leave-a" => 18, "notif-leave-b" => 40, _ => 4 } {
+            for _ in 0..match name { "notif-leave-a" => 18, "notif-leave-b" => 40, "notif-stack-leave-a" => 26, "notif-stack-leave-b" => 44, "notif-stack-leave-c" => 220, _ => 4 } {
                 t += 8;
                 f = i.tick(t, 8.0);
                 i.draw(&mut Scene::new(), &fonts, size, scale);

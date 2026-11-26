@@ -18,8 +18,10 @@ pub const DROP: f64 = 26.0;
 pub const SEED: f64 = 12.0;
 /// How far apart the drop and the pill still pull on each other (the neck pinches off at a third of it).
 pub const BLEND: f64 = 24.0;
-/// The room between the pill's bottom and the open capsule.
+/// The room between the pill's bottom and the first open capsule.
 pub const GAP: f64 = 12.0;
+/// The room between two cards of the stack.
+pub const STACK_GAP: f64 = 10.0;
 /// How far open a capsule is when its text starts to fade in.
 pub const TEXT_OPEN: f64 = 0.8;
 /// Each wrapped line fades in this long after the line above it.
@@ -67,6 +69,8 @@ const GATHER: Curve = Curve::new(0.22, 0.0);
 const GATHER_DELAY: f64 = 0.03;
 const RISE: Curve = Curve::new(0.4, 0.0);
 const RESIZE: Curve = Curve::new(0.4, 0.1);
+/// How a card of the stack glides into a gap.
+const SETTLE: Curve = Curve::new(0.45, 0.12);
 /// How long after the drop starts to rise it is gone for good.
 const SWALLOWED_AFTER: f64 = 0.45;
 
@@ -122,9 +126,32 @@ pub struct Shape {
     pub content_w: f64,
 }
 
+/// What a drop comes out of and goes back into: the pill, or the card above it in the stack. Where it rests.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Anchor {
+    pub bottom: f64,
+    pub height: f64,
+}
+
+impl Anchor {
+    /// A pill `height` tall (its bottom is the origin).
+    pub fn pill(height: f64) -> Self {
+        Self { bottom: 0.0, height }
+    }
+
+    /// Where the middle of a drop is that hides just inside the bottom edge.
+    fn inside(self, room: f64) -> f64 {
+        self.bottom - self.height.min(room) / 2.0
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Animator {
     size: Size,
+    /// Where the open capsule's top is heading.
+    top: f64,
+    /// When the gathered drop starts to rise on the way out.
+    rise: Option<f64>,
     centre: Value,
     w: Value,
     h: Value,
@@ -147,10 +174,10 @@ fn first_time(start: f64, done: impl Fn(f64) -> bool) -> f64 {
 }
 
 impl Animator {
-    /// A card born at time 0 inside a pill `pill_h` tall, which falls and opens to `size`.
-    pub fn enter(size: Size, pill_h: f64) -> Self {
-        let start = -(pill_h.min(DROP + 2.0)) / 2.0;
-        let end_centre = GAP + size.h / 2.0;
+    /// A card born at time 0 inside `from`, which falls and opens to `size` with its top at `top`.
+    pub fn enter(size: Size, from: Anchor, top: f64) -> Self {
+        let start = from.inside(DROP + 2.0);
+        let end_centre = top + size.h / 2.0;
         let mut centre = Value::new(start);
         let (mut w, mut h) = (Value::new(SEED), Value::new(SEED));
         let (mut opened, mut blend) = (Value::new(0.0), Value::new(0.0));
@@ -158,14 +185,14 @@ impl Animator {
         h.animate(DROP, FEED, 0.0);
         centre.animate(end_centre, FALL, 0.0);
         blend.animate(BLEND, MELT_IN, 0.0);
-        // the neck pinches off when the drop is a third of the blend below the pill; only then does it spread
-        let loose = first_time(0.0, |t| start + (end_centre - start) * FALL.progress(t) - DROP / 2.0 >= BLEND / 3.0);
+        // the neck pinches off when the drop is a third of the blend below what it hangs from; only then does it spread
+        let loose = first_time(0.0, |t| start + (end_centre - start) * FALL.progress(t) - DROP / 2.0 >= from.bottom + BLEND / 3.0);
         blend.animate(0.0, LET_GO, loose);
         w.animate(size.w, GROW, loose);
         h.animate(size.h, GROW, loose);
         opened.animate(1.0, GROW, loose);
         let cue = first_time(loose, |t| GROW.progress(t - loose) >= TEXT_OPEN);
-        Self { size, centre, w, h, opened, blend, content_w: Value::new(size.w), cue, left_at: None, end: loose + 0.8 }
+        Self { size, top, rise: None, centre, w, h, opened, blend, content_w: Value::new(size.w), cue, left_at: None, end: loose + 0.8 }
     }
 
     pub fn size(&self) -> Size {
@@ -186,21 +213,41 @@ impl Animator {
         self.end
     }
 
+    /// Where the open capsule's top is heading.
+    pub fn top(&self) -> f64 {
+        self.top
+    }
+
+    /// When the drop of a card on its way out starts to rise: until then it keeps its place in the stack.
+    pub fn rise_at(&self) -> Option<f64> {
+        self.rise
+    }
+
+    /// Glides the open capsule so that its top is at `top`: the stack closing a gap or making room.
+    pub fn move_to(&mut self, top: f64, at: f64) {
+        if top == self.top || self.left_at.is_some() {
+            return;
+        }
+        self.top = top;
+        self.centre.animate(top + self.size.h / 2.0, SETTLE, at);
+        self.end = self.end.max(at + 0.8);
+    }
+
     /// Springs the open capsule to a new size, its top held where it is.
     pub fn resize(&mut self, size: Size, at: f64) {
         if size == self.size || self.left_at.is_some() {
             return;
         }
         self.size = size;
-        self.centre.animate(GAP + size.h / 2.0, RESIZE, at);
+        self.centre.animate(self.top + size.h / 2.0, RESIZE, at);
         self.w.animate(size.w, RESIZE, at);
         self.h.animate(size.h, RESIZE, at);
         self.content_w.animate(size.w, RESIZE, at);
         self.end = self.end.max(at + 0.7);
     }
 
-    /// Gathers the capsule into a drop, which then rises into a pill `pill_h` tall.
-    pub fn exit(&mut self, at: f64, pill_h: f64) {
+    /// Gathers the capsule into a drop, which then rises into `into`.
+    pub fn exit(&mut self, at: f64, into: Anchor) {
         if self.left_at.is_some() {
             return;
         }
@@ -213,9 +260,18 @@ impl Animator {
         let rise = first_time(gather, |t| (w.at(t) - DROP).abs().max((h.at(t) - DROP).abs()) <= 2.0);
         self.blend.animate(BLEND, Curve::new(0.3, 0.0), rise);
         // aimed past its resting place, so that it is swallowed at speed instead of easing in
-        self.centre.animate(-(pill_h.min(DROP + 4.0)) / 2.0, RISE, rise);
+        self.centre.animate(into.inside(DROP + 4.0), RISE, rise);
         self.blend.animate(0.0, Curve::new(0.25, 0.0), rise + 0.2);
+        self.rise = Some(rise);
         self.end = rise + SWALLOWED_AFTER;
+    }
+
+    /// Aims a drop on its way out somewhere else: what it was going into moved, or left too.
+    pub fn redirect(&mut self, into: Anchor, at: f64) {
+        let Some(rise) = self.rise else { return };
+        let at = at.max(rise);
+        self.centre.animate(into.inside(DROP + 4.0), RISE, at);
+        self.end = self.end.max(at + SWALLOWED_AFTER);
     }
 
     pub fn shape(&self, t: f64) -> Shape {
@@ -270,21 +326,21 @@ pub fn smooth_min(a: f64, b: f64, blend: f64) -> f64 {
     a.min(b) - h * h * h * blend / 6.0
 }
 
-/// The outline of the pill (`width` x `height`, ending at y = 0) melted with the drop, as closed loops: only the part
-/// near the drop is traced, from a line inside the pill down; the pill drawn over it covers the cut. None when the two
+/// The outline of `anchor` (the pill, or the card above) melted with the drop, as closed loops: only the part near the
+/// drop is traced, from a line inside the anchor down; the anchor drawn on its own covers the cut. None when the two
 /// are too far apart to melt (the drop is then a plain rounded rectangle).
-pub fn neck(width: f64, height: f64, radius: f64, s: &Shape, cell: f64) -> Option<Vec<Vec<(f64, f64)>>> {
-    if s.blend <= 0.01 || s.top >= s.blend || s.top + s.h <= -s.blend || cell <= 0.0 {
+pub fn neck(anchor: &Blob, s: &Shape, cell: f64) -> Option<Vec<Vec<(f64, f64)>>> {
+    let floor = anchor.cy + anchor.half_h;
+    if s.blend <= 0.01 || s.top >= floor + s.blend || s.top + s.h <= floor - s.blend || cell <= 0.0 {
         return None;
     }
-    let pill = Blob { cx: 0.0, cy: -height / 2.0, half_w: width / 2.0, half_h: height / 2.0, radius };
     let drop = Blob { cx: 0.0, cy: s.top + s.h / 2.0, half_w: s.w / 2.0, half_h: s.h / 2.0, radius: s.radius };
-    // just inside the pill, unless the melt reaches its round ends: then from above everything the drop changes
-    let inside = -4.0;
-    let straight = pill.half_w - radius.min(pill.half_w).min(pill.half_h);
-    let top = if s.w / 2.0 + s.blend > straight { (s.top - s.blend - 1.0).min(inside).max(-height) } else { inside };
+    // just inside the anchor, unless the melt reaches its round ends: then from above everything the drop changes
+    let inside = floor - 4.0;
+    let straight = anchor.half_w - anchor.radius.min(anchor.half_w).min(anchor.half_h);
+    let top = if s.w / 2.0 + s.blend > straight { (s.top - s.blend - 1.0).min(inside).max(anchor.cy - anchor.half_h) } else { inside };
     let half = s.w / 2.0 + s.blend + 2.0 * cell;
-    let bottom = (s.top + s.h).max(0.0) + s.blend + 2.0 * cell;
+    let bottom = (s.top + s.h).max(floor) + s.blend + 2.0 * cell;
     let columns = (2.0 * half / cell).ceil() as usize + 1;
     let rows = ((bottom - top) / cell).ceil() as usize + 1;
     let x0 = -((columns - 1) as f64) * cell / 2.0;
@@ -294,7 +350,7 @@ pub fn neck(width: f64, height: f64, radius: f64, s: &Shape, cell: f64) -> Optio
         let y = top + row as f64 * cell;
         for column in 1..columns - 1 {
             let x = x0 + column as f64 * cell;
-            values[row * columns + column] = smooth_min(pill.distance(x, y), drop.distance(x, y), s.blend);
+            values[row * columns + column] = smooth_min(anchor.distance(x, y), drop.distance(x, y), s.blend);
         }
     }
     Some(loops(&values, columns, rows).into_iter().map(|l| l.into_iter().map(|(x, y)| (x0 + x * cell, top + y * cell)).collect()).collect())
@@ -375,6 +431,7 @@ mod tests {
     use super::*;
 
     const SIZE: Size = Size { w: 300.0, h: 52.0, corner: f64::INFINITY };
+    const PILL: Blob = Blob { cx: 0.0, cy: -14.0, half_w: 75.0, half_h: 14.0, radius: 14.0 };
 
     #[test]
     fn a_spring_starts_at_zero_ends_at_one_and_bounces_only_when_asked() {
@@ -391,7 +448,7 @@ mod tests {
 
     #[test]
     fn the_drop_starts_inside_the_pill_and_ends_as_the_open_capsule_below_it() {
-        let a = Animator::enter(SIZE, 28.0);
+        let a = Animator::enter(SIZE, Anchor::pill(28.0), GAP);
         let s = a.shape(0.0);
         assert!(s.top >= -28.0 && s.top + s.h <= 0.0, "hidden whole inside the pill: {s:?}");
         let s = a.shape(a.end() + 1.0);
@@ -404,8 +461,8 @@ mod tests {
 
     #[test]
     fn leaving_gathers_the_capsule_and_hides_it_in_the_pill() {
-        let mut a = Animator::enter(SIZE, 28.0);
-        a.exit(3.0, 28.0);
+        let mut a = Animator::enter(SIZE, Anchor::pill(28.0), GAP);
+        a.exit(3.0, Anchor::pill(28.0));
         assert!(a.end() > 3.0 && a.end() < 4.5, "{}", a.end());
         let s = a.shape(a.end());
         assert!(s.top + s.h < 2.0, "inside the pill again: {s:?}");
@@ -415,9 +472,9 @@ mod tests {
 
     #[test]
     fn leaving_halfway_in_does_not_jump() {
-        let mut a = Animator::enter(SIZE, 28.0);
+        let mut a = Animator::enter(SIZE, Anchor::pill(28.0), GAP);
         let before = a.shape(0.25);
-        a.exit(0.25, 28.0);
+        a.exit(0.25, Anchor::pill(28.0));
         let after = a.shape(0.2501);
         assert!((after.top - before.top).abs() < 0.5 && (after.w - before.w).abs() < 0.5, "{before:?} {after:?}");
         assert!(a.shape(a.end()).top + a.shape(a.end()).h < 2.0);
@@ -425,7 +482,7 @@ mod tests {
 
     #[test]
     fn resizing_keeps_the_top_still() {
-        let mut a = Animator::enter(SIZE, 28.0);
+        let mut a = Animator::enter(SIZE, Anchor::pill(28.0), GAP);
         a.resize(Size { w: 420.0, h: 90.0, corner: 30.0 }, 2.0);
         for t in [2.05, 2.2, 3.5] {
             assert!((a.shape(t).top - GAP).abs() < 0.2, "{:?}", a.shape(t));
@@ -437,12 +494,12 @@ mod tests {
     #[test]
     fn the_neck_joins_pill_and_drop_and_pinches_off() {
         let shape = |top: f64, blend: f64| Shape { top, w: DROP, h: DROP, radius: DROP / 2.0, opened: 0.0, blend, content_w: 0.0 };
-        let joined = neck(150.0, 28.0, 14.0, &shape(3.0, BLEND), 1.0).expect("close enough to melt");
+        let joined = neck(&PILL, &shape(3.0, BLEND), 1.0).expect("close enough to melt");
         assert_eq!(joined.len(), 1, "one body");
-        let apart = neck(150.0, 28.0, 14.0, &shape(20.0, BLEND), 1.0).expect("still within the blend");
+        let apart = neck(&PILL, &shape(20.0, BLEND), 1.0).expect("still within the blend");
         assert_eq!(apart.len(), 2, "pinched off: the pill and the drop");
-        assert!(neck(150.0, 28.0, 14.0, &shape(40.0, BLEND), 1.0).is_none(), "too far to melt");
-        assert!(neck(150.0, 28.0, 14.0, &shape(3.0, 0.0), 1.0).is_none());
+        assert!(neck(&PILL, &shape(40.0, BLEND), 1.0).is_none(), "too far to melt");
+        assert!(neck(&PILL, &shape(3.0, 0.0), 1.0).is_none());
         for (x, y) in joined.into_iter().flatten() {
             assert!(x.is_finite() && y.is_finite() && x.abs() < 100.0 && (-5.0..60.0).contains(&y), "{x} {y}");
         }
@@ -451,7 +508,38 @@ mod tests {
     #[test]
     fn a_wide_drop_against_a_narrow_pill_is_traced_without_a_step() {
         let s = Shape { top: -10.0, w: 140.0, h: 30.0, radius: 15.0, opened: 0.5, blend: BLEND, content_w: 0.0 };
-        let l = neck(150.0, 28.0, 14.0, &s, 1.0).unwrap();
+        let l = neck(&PILL, &s, 1.0).unwrap();
         assert!(l.iter().flatten().any(|(_, y)| *y < -20.0), "traced from the pill's top");
+    }
+
+    #[test]
+    fn a_second_card_drops_out_of_the_first_and_goes_back_into_it() {
+        let first = Anchor { bottom: GAP + SIZE.h, height: SIZE.h };
+        let top = first.bottom + STACK_GAP;
+        let mut a = Animator::enter(SIZE, first, top);
+        let s = a.shape(0.0);
+        assert!(s.top >= GAP && s.top + s.h <= first.bottom, "hidden inside the card above: {s:?}");
+        assert!((a.shape(a.end()).top - top).abs() < 0.2);
+        let card = Blob { cx: 0.0, cy: GAP + SIZE.h / 2.0, half_w: SIZE.w / 2.0, half_h: SIZE.h / 2.0, radius: SIZE.h / 2.0 };
+        assert!((0..200).any(|i| neck(&card, &a.shape(i as f64 * 0.004), 1.0).is_some_and(|l| l.len() == 1)), "a neck joins them on the way");
+        a.exit(3.0, first);
+        assert!(a.rise_at().is_some_and(|r| r > 3.0 && r < a.end()));
+        let s = a.shape(a.end());
+        assert!(s.top + s.h < first.bottom + 2.0 && s.top > GAP, "swallowed by the card above: {s:?}");
+    }
+
+    #[test]
+    fn the_stack_closes_a_gap_and_a_rising_drop_follows_what_it_goes_into() {
+        let mut a = Animator::enter(SIZE, Anchor::pill(28.0), 80.0);
+        a.move_to(GAP, 2.0);
+        assert_eq!(a.top(), GAP);
+        assert!((a.shape(a.end()).top - GAP).abs() < 0.2);
+        let mut b = Animator::enter(SIZE, Anchor { bottom: 64.0, height: 52.0 }, 74.0);
+        b.exit(2.0, Anchor { bottom: 64.0, height: 52.0 });
+        b.redirect(Anchor::pill(28.0), 2.05);
+        let s = b.shape(b.end());
+        assert!(s.top + s.h < 2.0, "it went on into the pill: {s:?}");
+        b.move_to(500.0, 2.1);
+        assert!(b.top() < 100.0, "a card on its way out is not moved about");
     }
 }

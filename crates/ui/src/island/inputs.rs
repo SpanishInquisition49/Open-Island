@@ -18,6 +18,7 @@ impl Island {
                 if self.reply.as_ref().is_some_and(|r| r.id == id) {
                     self.reply = None;
                 }
+                self.below.retain(|b| b.n.id != id);
                 self.waiting.retain(|n| n.id != id);
             }
             Input::Key(k) => self.on_key(k),
@@ -203,22 +204,37 @@ impl Island {
         if (self.quiet() || !self.cfg.show_notifications) && !n.critical && !is_own(&n) {
             return;
         }
+        // an update replaces the card on screen
         if self.notif.as_ref().is_some_and(|c| c.id == n.id) {
-            self.notif = Some(n); // an update replaces the card on screen
+            self.notif = Some(n);
             self.notif_until = self.now + self.cfg.notification_ms;
             return;
         }
-        // another message of the conversation on screen joins its card instead of waiting for its turn
-        if let Some(cur) = self.notif.as_ref().filter(|c| !n.critical && !is_own(&n) && !is_own(c) && c.id != n.id && notify::same_conversation(&c.app, &c.summary, &n.app, &n.summary)) {
-            let old = cur.id;
+        if let Some(b) = self.below.iter_mut().find(|b| b.n.id == n.id) {
+            b.n = n;
+            b.until = self.now + self.cfg.notification_ms;
+            return;
+        }
+        // another message of a conversation on screen joins its card instead of taking a card of its own
+        let joins = |c: &Incoming| !n.critical && !is_own(&n) && !is_own(c) && notify::same_conversation(&c.app, &c.summary, &n.app, &n.summary);
+        if let Some(old) = self.notif.as_ref().filter(|c| joins(c)).map(|c| c.id) {
             self.pending.push(Command::NotificationClosed { id: old, reason: CloseReason::Expired });
+            self.rename_card(old, n.id);
             let count = self.notif_group + 1;
             self.show_notif(n);
             self.notif_group = count;
             return;
         }
-        if self.notif.is_none() {
-            self.show_notif(n);
+        if let Some(k) = self.below.iter().position(|b| joins(&b.n)) {
+            let (old, count) = (self.below[k].n.id, self.below[k].group + 1);
+            self.pending.push(Command::NotificationClosed { id: old, reason: CloseReason::Expired });
+            self.rename_card(old, n.id);
+            self.below[k] = Shown { group: count, ..self.timed(n) };
+            return;
+        }
+        // a place in the stack, unless others are already waiting for one
+        if self.waiting.is_empty() && self.cards_shown() < STACK_MAX {
+            self.put_on_screen(n);
         } else {
             let folded = notify::enqueue(
                 &mut self.queue,
@@ -229,6 +245,62 @@ impl Island {
                 self.waiting.retain(|w| w.app != n.app);
             }
             self.waiting.push_back(n);
+        }
+    }
+
+    /// How many cards are on screen.
+    pub(super) fn cards_shown(&self) -> usize {
+        self.notif.is_some() as usize + self.below.len()
+    }
+
+    pub(super) fn put_on_screen(&mut self, n: Incoming) {
+        if self.notif.is_none() {
+            self.show_notif(n);
+        } else {
+            let card = self.timed(n);
+            self.below.push(card);
+        }
+    }
+
+    /// Takes the first card's place away (to be put back, or given to another).
+    pub(super) fn take_front(&mut self) -> Option<Shown> {
+        let n = self.notif.take()?;
+        Some(Shown { n, until: std::mem::take(&mut self.notif_until), group: self.notif_group })
+    }
+
+    pub(super) fn set_front(&mut self, card: Option<Shown>) {
+        match card {
+            Some(c) => (self.notif, self.notif_until, self.notif_group) = (Some(c.n), c.until, c.group),
+            None => (self.notif, self.notif_until, self.notif_group) = (None, 0, 1),
+        }
+    }
+
+    /// The cards whose time is up go, the others of the stack move up, and those waiting take the free places.
+    pub(super) fn turn_over_cards(&mut self) {
+        let replying = self.reply.as_ref().map(|r| r.id);
+        if self.notif.as_ref().is_some_and(|n| replying != Some(n.id)) && self.now >= self.notif_until {
+            self.close_notif(CloseReason::Expired);
+        }
+        let now = self.now;
+        let pending = &mut self.pending;
+        self.below.retain(|b| {
+            let stays = now < b.until || replying == Some(b.n.id);
+            if !stays {
+                pending.push(Command::NotificationClosed { id: b.n.id, reason: CloseReason::Expired });
+            }
+            stays
+        });
+        if self.notif.is_none() && !self.below.is_empty() {
+            let next = self.below.remove(0);
+            self.set_front(Some(next));
+        }
+        while self.reply.is_none() && self.cards_shown() < STACK_MAX {
+            let Some(n) = self.waiting.pop_front() else { break };
+            self.queue.retain(|q| q.id != n.id);
+            self.put_on_screen(n);
+        }
+        if self.cards_shown() == 0 && self.waiting.is_empty() {
+            self.queue.clear();
         }
     }
 
@@ -244,6 +316,12 @@ impl Island {
     }
 
     pub(super) fn show_notif(&mut self, n: Incoming) {
+        let card = self.timed(n);
+        self.set_front(Some(card));
+    }
+
+    /// A card for `n` with the time it has on screen from now.
+    fn timed(&self, n: Incoming) -> Shown {
         let default = if n.critical { self.cfg.notification_ms * 2 } else { self.cfg.notification_ms };
         // the sender's timeout wins, within reason: 0 (never) means "until dismissed", capped at 30 s on screen
         let ms = match n.expire_ms {
@@ -251,9 +329,7 @@ impl Island {
             Some(ms) if ms > 0 => ms.clamp(2000, 30_000),
             _ => default,
         };
-        self.notif_until = self.now + ms;
-        self.notif = Some(n);
-        self.notif_group = 1;
+        Shown { until: self.now + ms, n, group: 1 }
     }
 
     /// What a click on a notification does: the sender's default action (while the notification is live), and
@@ -273,10 +349,19 @@ impl Island {
             self.pending.push(Command::NotificationClosed { id: n.id, reason });
         }
         self.notif_until = 0;
-        self.leave_card();
     }
 
     pub(super) fn start_reply(&mut self) {
+        // the shortcut answers the newest card that can be answered, when the first one cannot
+        if self.notif.as_ref().is_none_or(|n| n.reply_action().is_none()) {
+            if let Some(k) = self.below.iter().rposition(|b| b.n.reply_action().is_some()) {
+                let other = self.below.remove(k);
+                if let Some(front) = self.take_front() {
+                    self.below.insert(k, front);
+                }
+                self.set_front(Some(other));
+            }
+        }
         let Some(n) = self.notif.clone() else { return };
         let Some(a) = n.reply_action() else { return };
         self.reply = Some(Reply {

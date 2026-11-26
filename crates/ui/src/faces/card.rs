@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::island::card::{Card, CARD_MAX_W};
-use island_core::droplet::{self, Animator, Shape, Size, LINE_STAGGER};
+use island_core::droplet::{self, Animator, Blob, Shape, Size, GAP, LINE_STAGGER, STACK_GAP};
 use vello::kurbo::{Arc as KArc, BezPath, Point, Stroke, Vec2};
 
 const PAD: f64 = 14.0;
@@ -165,78 +165,128 @@ fn stroke(p: P, shape: &impl vello::kurbo::Shape, width: f64, color: Color) {
 }
 
 impl Island {
-    /// Brings the cards' motion up to date: it needs the fonts, so it happens as they are drawn.
+    /// Brings the cards' motion up to date and gives each its place in the stack: the sizes need the fonts, so it
+    /// happens as they are drawn.
     pub(super) fn measure_cards(&mut self, fonts: &Fonts) {
         let (now, pill_h) = (self.now, self.spring.h.pos);
-        let Some(c) = self.cards.live.as_mut() else { return };
-        if now < c.born {
-            return;
-        }
-        let size = layout(fonts, c).size;
-        let age = c.age(now);
-        match c.anim.as_mut() {
-            Some(a) => a.resize(size, age),
-            None => c.anim = Some(Animator::enter(size, pill_h)),
-        }
-    }
-
-    /// The black of the cards and of the neck that joins a drop to the pill. Drawn before the pill, which covers its end.
-    pub(super) fn draw_card_shapes(&self, scene: &mut Scene, base: Affine, w: f64, h: f64, radius: f64) {
-        for c in self.cards.gone.iter().chain(&self.cards.live) {
-            let Some(a) = c.anim.as_ref().filter(|_| self.now >= c.born) else { continue };
-            let s = a.shape(c.age(self.now));
-            let t = base * Affine::translate((w / 2.0, h));
-            match droplet::neck(w, h, radius, &s, 0.7) {
-                Some(loops) => {
-                    let mut path = BezPath::new();
-                    for l in loops {
-                        for (i, (x, y)) in l.into_iter().enumerate() {
-                            if i == 0 {
-                                path.move_to((x, y));
-                            } else {
-                                path.line_to((x, y));
-                            }
+        let mut top = GAP;
+        for i in 0..self.cards.stack.len() {
+            let c = &self.cards.stack[i];
+            if now < c.born {
+                continue;
+            }
+            let age = c.age(now);
+            if !c.leaving {
+                let size = layout(fonts, c).size;
+                let (above, from) = self.cards.anchor_above(i, pill_h);
+                let c = &mut self.cards.stack[i];
+                match c.anim.as_mut() {
+                    Some(a) => {
+                        let before = (a.top(), a.size().h);
+                        a.resize(size, age);
+                        a.move_to(top, age);
+                        // what is going into this card goes where it goes
+                        if before != (a.top(), a.size().h) {
+                            let into = droplet::Anchor { bottom: a.top() + a.size().h, height: a.size().h };
+                            let key = c.key;
+                            self.cards.redirect_into(key, Some(key), into, now);
                         }
-                        path.close_path();
                     }
-                    scene.fill(Fill::NonZero, t, theme::BG, None, &path);
+                    None => {
+                        c.anim = Some(Animator::enter(size, from, top));
+                        c.anchor = above;
+                    }
                 }
-                None => scene.fill(Fill::NonZero, t, theme::BG, None, &RoundedRect::new(-s.w / 2.0, s.top, s.w / 2.0, s.top + s.h, s.radius)),
+            }
+            // a card keeps its place until its drop starts to rise, so none below runs into it
+            if let Some(a) = &self.cards.stack[i].anim {
+                if a.rise_at().is_none_or(|rise| age < rise) {
+                    top += a.size().h + STACK_GAP;
+                }
             }
         }
     }
 
-    /// What the cards say; only the one on screen takes the pointer.
+    /// A card's shape at this moment, when it shows.
+    fn card_shape(&self, c: &Card) -> Option<Shape> {
+        c.anim.as_ref().filter(|_| self.now >= c.born).map(|a| a.shape(c.age(self.now)))
+    }
+
+    /// The black of the cards and of the necks that join a drop to the pill or to the card above. Drawn before the pill,
+    /// which covers where they meet it.
+    pub(super) fn draw_card_shapes(&self, scene: &mut Scene, base: Affine, w: f64, h: f64, radius: f64) {
+        let t = base * Affine::translate((w / 2.0, h));
+        for c in &self.cards.stack {
+            let Some(s) = self.card_shape(c) else { continue };
+            // what it hangs from, as it is now
+            let anchor = match c.anchor {
+                None => Some(Blob { cx: 0.0, cy: -h / 2.0, half_w: w / 2.0, half_h: h / 2.0, radius }),
+                Some(key) => self
+                    .cards
+                    .stack
+                    .iter()
+                    .find(|o| o.key == key)
+                    .and_then(|o| self.card_shape(o))
+                    .map(|o| Blob { cx: 0.0, cy: o.top + o.h / 2.0, half_w: o.w / 2.0, half_h: o.h / 2.0, radius: o.radius }),
+            };
+            if let Some(loops) = anchor.and_then(|a| droplet::neck(&a, &s, 0.7)) {
+                let mut path = BezPath::new();
+                for l in loops {
+                    for (i, (x, y)) in l.into_iter().enumerate() {
+                        if i == 0 {
+                            path.move_to((x, y));
+                        } else {
+                            path.line_to((x, y));
+                        }
+                    }
+                    path.close_path();
+                }
+                scene.fill(Fill::NonZero, t, theme::BG, None, &path);
+            } else {
+                scene.fill(Fill::NonZero, t, theme::BG, None, &RoundedRect::new(-s.w / 2.0, s.top, s.w / 2.0, s.top + s.h, s.radius));
+            }
+        }
+    }
+
+    /// What the cards say; only those that stay take the pointer.
     pub(super) fn draw_card_contents(&mut self, scene: &mut Scene, fonts: &Fonts, hits: &mut Vec<Hit<Action>>, base: Affine, w: f64, h: f64) {
         let pointer = self.pointer_local();
-        self.cards.rect = None;
-        for (live, c) in self.cards.gone.iter().map(|c| (false, c)).chain(self.cards.live.iter().map(|c| (true, c))) {
-            let Some(a) = c.anim.as_ref().filter(|_| self.now >= c.born) else { continue };
+        let mut rects = vec![None; self.cards.stack.len()];
+        // the lowest card that stays and shows, for the count under it: (its bottom, how visible)
+        let mut lowest = None;
+        for (i, c) in self.cards.stack.iter().enumerate() {
+            let (Some(s), Some(a)) = (self.card_shape(c), c.anim.as_ref()) else { continue };
+            let live = !c.leaving;
             let age = c.age(self.now);
-            let s = a.shape(age);
             let l = layout(fonts, c);
             let body = rect(w / 2.0 - s.w / 2.0, h + s.top, s.w, s.h);
-            let mut unused = Vec::new();
-            let sink = if live && s.opened > 0.5 { &mut *hits } else { &mut unused };
+            let mut mine = Vec::new();
             scene.push_clip_layer(Fill::NonZero, base, &RoundedRect::from_rect(body, s.radius));
             {
-                let mut p = Painter { scene, fonts, hits: sink, opacity: 0.0, pointer: if live { pointer } else { None }, transform: base, base: (1.0, base), since_enter: 10_000 };
+                let mut p = Painter { scene, fonts, hits: &mut mine, opacity: 0.0, pointer: if live { pointer } else { None }, transform: base, base: (1.0, base), since_enter: 10_000 };
                 self.card_content(&mut p, c, a, &s, &l, age, body, live);
             }
             scene.pop_layer();
             if live {
-                // where it takes the pointer: the capsule as it is drawn
-                self.cards.rect = Some((self.pill_origin.0 + body.x0, self.pill_origin.1 + body.y0, body.width(), body.height(), s.radius));
-                // a small drop under it counts the ones that wait
-                let more = self.queue.len();
-                let k = a.content_opacity(age, 0.1, 0.25);
-                if more > 0 && k > 0.0 {
-                    let (cx, cy, r) = (w / 2.0, body.y1 + 8.0 + 11.0, 11.0 * (0.5 + 0.5 * k));
-                    scene.fill(Fill::NonZero, base, theme::BG, None, &vello::kurbo::Circle::new((cx, cy), r));
-                    let mut p = Painter { scene, fonts, hits: &mut unused, opacity: k as f32, pointer: None, transform: base, base: (1.0, base), since_enter: 10_000 };
-                    p.text(&format!("+{more}"), cx, cy, 10.0, SEMI, theme::FG, Align::Center, 22.0);
+                if s.opened > 0.5 {
+                    hits.extend(mine.into_iter().map(|hit| Hit { rect: hit.rect, action: Action::OnCard(c.n.id, Box::new(hit.action)) }));
                 }
+                // where it takes the pointer: the capsule as it is drawn
+                rects[i] = Some((self.pill_origin.0 + body.x0, self.pill_origin.1 + body.y0, body.width(), body.height(), s.radius));
+                lowest = Some((body.y1, a.content_opacity(age, 0.1, 0.25)));
             }
+        }
+        for (c, r) in self.cards.stack.iter_mut().zip(rects) {
+            c.rect = r;
+        }
+        // a small drop under the stack counts the ones that wait
+        let more = self.waiting.len();
+        if let Some((bottom, k)) = lowest.filter(|(_, k)| more > 0 && *k > 0.0) {
+            let (cx, cy, r) = (w / 2.0, bottom + 8.0 + 11.0, 11.0 * (0.5 + 0.5 * k));
+            scene.fill(Fill::NonZero, base, theme::BG, None, &vello::kurbo::Circle::new((cx, cy), r));
+            let mut unused = Vec::new();
+            let mut p: Painter<Action> = Painter { scene, fonts, hits: &mut unused, opacity: k as f32, pointer: None, transform: base, base: (1.0, base), since_enter: 10_000 };
+            p.text(&format!("+{more}"), cx, cy, 10.0, SEMI, theme::FG, Align::Center, 22.0);
         }
     }
 
@@ -324,7 +374,7 @@ impl Island {
                     p.circle(ring.x, cy, 13.0, if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
                     p.icon("bell-z", ring.x, cy, 14.0, theme::FG);
                 } else {
-                    self.card_ring(p, ring, accent, live);
+                    self.card_ring(p, ring, accent, c, live);
                 }
                 p.hit(r, Action::Snooze);
             } else if controls && l.code.is_none() {
@@ -338,7 +388,7 @@ impl Island {
                 arrow.line_to(ring + Vec2::new(3.5, 1.5));
                 stroke(p, &arrow, 1.8, theme::FG);
             } else {
-                self.card_ring(p, ring, accent, live);
+                self.card_ring(p, ring, accent, c, live);
             }
         } else {
             for (i, (label, action, bw)) in l.buttons.iter().enumerate().rev() {
@@ -369,10 +419,10 @@ impl Island {
     }
 
     /// The countdown: a faint circle and over it the time left, from twelve o'clock, draining clockwise.
-    fn card_ring(&self, p: P, centre: Point, accent: Color, live: bool) {
+    fn card_ring(&self, p: P, centre: Point, accent: Color, c: &Card, live: bool) {
         let r = RING / 2.0 - 1.4;
         p.circle_stroke(centre.x, centre.y, r, 2.4, with_alpha(accent, 0.28));
-        let left_over = if live { self.card_time_left() } else { 0.0 };
+        let left_over = if live { self.card_time_left(c) } else { 0.0 };
         if left_over > 0.001 {
             use std::f64::consts::{FRAC_PI_2, TAU};
             let arc = KArc::new(centre, Vec2::new(r, r), -FRAC_PI_2 + (1.0 - left_over) * TAU, left_over * TAU, 0.0);
