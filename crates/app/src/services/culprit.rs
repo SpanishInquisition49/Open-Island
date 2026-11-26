@@ -378,8 +378,9 @@ pub fn start(rep: Reporter) {
 mod tests {
     use super::*;
 
-    fn p(pid: u32, name: &str, ticks: u64, rss: u64) -> Proc {
-        Proc { pid, name: name.into(), ticks, rss_pages: rss }
+    /// A process that has used `cpu_secs` of processor time: the unit of a tick differs between the systems.
+    fn p(pid: u32, name: &str, cpu_secs: f64, rss: u64) -> Proc {
+        Proc { pid, name: name.into(), ticks: (cpu_secs * sys::HZ) as u64, rss_pages: rss }
     }
 
     #[cfg(target_os = "linux")]
@@ -405,8 +406,8 @@ mod tests {
 
     #[test]
     fn a_program_using_most_of_a_loaded_machine_is_named() {
-        let before = [p(1, "ffmpeg", 0, 1000), p(2, "bash", 0, 10)];
-        let now = [p(1, "ffmpeg", 2000, 1000), p(2, "bash", 10, 10)];
+        let before = [p(1, "ffmpeg", 0.0, 1000), p(2, "bash", 0.0, 10)];
+        let now = [p(1, "ffmpeg", 20.0, 1000), p(2, "bash", 0.1, 10)];
         // 5 s: 20 s of CPU = 4 cores, on an 8-core machine at 90%
         let b = blame(&before, &now, 5.0, 0.9, 8.0, 0.5).unwrap();
         assert_eq!((b.name.as_str(), b.pids.clone(), b.memory, b.protected), ("ffmpeg", vec![1], false, false));
@@ -415,15 +416,15 @@ mod tests {
 
     #[test]
     fn nobody_is_blamed_for_a_spread_out_load_or_a_quiet_machine() {
-        let before: Vec<Proc> = (0..8).map(|i| p(i, "w", 0, 1)).collect();
-        let now: Vec<Proc> = (0..8).map(|i| p(i, &format!("w{i}"), 500, 1)).collect();
+        let before: Vec<Proc> = (0..8).map(|i| p(i, "w", 0.0, 1)).collect();
+        let now: Vec<Proc> = (0..8).map(|i| p(i, &format!("w{i}"), 5.0, 1)).collect();
         assert!(blame(&before, &now, 5.0, 0.9, 8.0, 0.5).is_none(), "eight programs at one core each: nobody stands out");
         assert!(blame(&before, &now, 5.0, 0.3, 8.0, 0.5).is_none(), "machine not loaded");
     }
 
     #[test]
     fn memory_shortage_blames_the_biggest_holder_and_the_session_is_protected() {
-        let now = [p(1, "niri", 0, 900_000), p(2, "chrome", 0, 800_000)];
+        let now = [p(1, "niri", 0.0, 900_000), p(2, "chrome", 0.0, 800_000)];
         let b = blame(&now, &now, 5.0, 0.1, 8.0, 0.03).unwrap();
         assert!(b.memory && b.protected && b.name == "niri");
     }
