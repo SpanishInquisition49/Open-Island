@@ -1,6 +1,6 @@
 //! Services for Windows and macOS. What is implemented here is the cross-platform part (battery through
 //! the platform API, opening URLs); media controls and notification capture need each OS's own API and
-//! are not implemented yet (see the project README).
+//! are not implemented yet (see docs/guide.md).
 
 use super::Reporter;
 use island_ui::model::Command;

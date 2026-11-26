@@ -40,7 +40,7 @@ build target="" profile="release":
         mkdir -p "dist/$1"
         cp "target/$1/$profile/$2" "dist/$1/$2"
         if [[ "$2" == *.exe ]]; then
-            cp README.md docs/windows-test.md "dist/$1/" 2>/dev/null || true
+            cp README.md docs/guide.md docs/windows-test.md "dist/$1/" 2>/dev/null || true
         fi
         echo; echo "-> dist/$1/$2  ($(du -h "dist/$1/$2" | cut -f1))"
     }
