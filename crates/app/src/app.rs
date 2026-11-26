@@ -457,6 +457,13 @@ mod tests {
     }
 
     #[test]
+    fn the_study_hours_are_still_set_after_a_restart() {
+        let text = "10:00-13:00+14:00-18:30,09:00-17:00,09:00-17:00,09:00-17:00,09:00-13:00,off 10:00-13:00,off 09:00-17:00";
+        let island = restarted_after("study-hours", &[("study_hours", OptionValue::Text(text.into()))]);
+        assert_eq!(island_core::plan::week_text(&island.cfg.study_week), text);
+    }
+
+    #[test]
     fn the_text_options_and_the_way_of_travelling_are_still_set_after_a_restart() {
         let text = |t: &str| OptionValue::Text(t.into());
         // the presets as the field shows them, and so as it writes them back

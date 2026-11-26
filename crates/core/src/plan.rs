@@ -32,6 +32,141 @@ impl DayLoad {
     }
 }
 
+/// The step of a change to the study hours, and the shortest stretch they can be.
+const HOURS_STEP: u16 = 30;
+const DAY_MIN: u16 = 24 * 60;
+
+/// The hours of a day of the week in which one studies, in minutes from midnight: from the start to the end, with a
+/// pause (lunch) in between if there is one, which makes them two stretches. The plan counts only these: what happens
+/// before, after or during the pause takes nothing from them. A day off keeps its hours, to come back to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StudyHours {
+    pub on: bool,
+    pub from: u16,
+    pub to: u16,
+    /// (when it begins, when it ends), inside the day.
+    pub pause: Option<(u16, u16)>,
+}
+
+impl Default for StudyHours {
+    fn default() -> Self {
+        Self { on: true, from: 9 * 60, to: 17 * 60, pause: None }
+    }
+}
+
+/// One of the times of a day that can be moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edge {
+    Start,
+    PauseStart,
+    PauseEnd,
+    End,
+}
+
+/// The seven days, Monday first.
+pub type StudyWeek = [StudyHours; 7];
+
+impl StudyHours {
+    /// The stretches of study, in minutes from midnight: none on a day off, two with a pause.
+    pub fn stretches(&self) -> Vec<(u16, u16)> {
+        match self.pause {
+            _ if !self.on => vec![],
+            Some((out, back)) => vec![(self.from, out), (back, self.to)],
+            None => vec![(self.from, self.to)],
+        }
+    }
+
+    /// The same on the day that begins at `midnight_ms`.
+    pub fn windows(&self, midnight_ms: i64) -> Vec<(i64, i64)> {
+        let at = |min: u16| midnight_ms + min as i64 * 60_000;
+        self.stretches().into_iter().map(|(a, b)| (at(a), at(b))).collect()
+    }
+
+    /// The minutes of study the hours hold (also those of a day off, to come back to).
+    pub fn minutes(&self) -> u32 {
+        u32::from(self.to - self.from) - self.pause.map_or(0, |(out, back)| u32::from(back - out))
+    }
+
+    /// Moves one of the times half an hour later or earlier, as far as the day and the times beside it allow.
+    pub fn step(&mut self, edge: Edge, later: bool) {
+        let moved = |t: u16| if later { t.saturating_add(HOURS_STEP) } else { t.saturating_sub(HOURS_STEP) };
+        match (edge, self.pause) {
+            (Edge::Start, pause) => self.from = moved(self.from).min(pause.map_or(self.to, |p| p.0) - HOURS_STEP),
+            (Edge::End, pause) => self.to = moved(self.to).clamp(pause.map_or(self.from, |p| p.1) + HOURS_STEP, DAY_MIN),
+            (Edge::PauseStart, Some((out, back))) => self.pause = Some((moved(out).clamp(self.from + HOURS_STEP, back - HOURS_STEP), back)),
+            (Edge::PauseEnd, Some((out, back))) => self.pause = Some((out, moved(back).clamp(out + HOURS_STEP, self.to - HOURS_STEP))),
+            (_, None) => {}
+        }
+    }
+
+    /// Puts a pause in the day, or takes it out: from 13 to 14 when the day goes well past both, else an hour in its
+    /// middle. A day too short to be cut in two stays whole.
+    pub fn toggle_pause(&mut self) {
+        if self.pause.take().is_some() {
+            return;
+        }
+        let lunch = (13 * 60, 14 * 60);
+        if self.from < lunch.0 && lunch.1 < self.to {
+            self.pause = Some(lunch);
+            return;
+        }
+        let middle = (self.from + self.to) / 2 / HOURS_STEP * HOURS_STEP;
+        let (out, back) = (middle.saturating_sub(HOURS_STEP), middle + HOURS_STEP);
+        if self.from < out && back < self.to {
+            self.pause = Some((out, back));
+        }
+    }
+
+    /// "09:00-17:00", or "09:00-13:00+14:00-18:00" with a pause; "off " before it on a day off.
+    pub fn text(&self) -> String {
+        let span = |a: u16, b: u16| format!("{}-{}", fmt_clock(a), fmt_clock(b));
+        let hours = match self.pause {
+            Some((out, back)) => format!("{}+{}", span(self.from, out), span(back, self.to)),
+            None => span(self.from, self.to),
+        };
+        format!("{}{hours}", if self.on { "" } else { "off " })
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        let text = text.trim();
+        let (on, hours) = text.strip_prefix("off ").map_or((true, text), |rest| (false, rest.trim()));
+        let spans: Vec<(u16, u16)> = hours
+            .split('+')
+            .map(|span| {
+                let (from, to) = span.split_once('-')?;
+                let (from, to) = (parse_clock(from)?, parse_clock(to)?);
+                (from < to).then_some((from, to))
+            })
+            .collect::<Option<_>>()?;
+        match spans[..] {
+            [(from, to)] => Some(Self { on, from, to, pause: None }),
+            [(from, out), (back, to)] if out < back => Some(Self { on, from, to, pause: Some((out, back)) }),
+            _ => None,
+        }
+    }
+}
+
+/// "09:00" (up to "24:00", the end of the day).
+pub fn fmt_clock(min: u16) -> String {
+    format!("{:02}:{:02}", min / 60, min % 60)
+}
+
+fn parse_clock(text: &str) -> Option<u16> {
+    let (h, m) = text.trim().split_once(':')?;
+    let (h, m) = (h.parse::<u16>().ok()?, m.parse::<u16>().ok()?);
+    (m < 60 && (h < 24 || (h == 24 && m == 0))).then_some(h * 60 + m)
+}
+
+/// The week as one line, the days separated by commas.
+pub fn week_text(week: &StudyWeek) -> String {
+    week.iter().map(StudyHours::text).collect::<Vec<_>>().join(",")
+}
+
+pub fn parse_week(text: &str) -> Option<StudyWeek> {
+    let days: Vec<StudyHours> = text.split(',').map(StudyHours::parse).collect::<Option<_>>()?;
+    days.try_into().ok()
+}
+
 /// What the island has to plan around: a task or a deadline with its day and an estimate of the work left.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Load {
@@ -223,6 +358,20 @@ pub fn busy(events: &[Event], from_ms: i64, to_ms: i64) -> Vec<Busy> {
     taken.into_iter().map(|(e, ms)| Busy { calendar: e.calendar.clone(), color: e.color, min: (ms / 60_000) as u32 }).collect()
 }
 
+/// What the timed events take of several stretches of time, calendar by calendar.
+pub fn busy_in(events: &[Event], windows: &[(i64, i64)]) -> Vec<Busy> {
+    let mut all: Vec<Busy> = vec![];
+    for (from, to) in windows {
+        for part in busy(events, *from, *to) {
+            match all.iter_mut().find(|b| b.calendar == part.calendar) {
+                Some(b) => b.min += part.min,
+                None => all.push(part),
+            }
+        }
+    }
+    all
+}
+
 /// The minutes of [from, to) that timed events take, overlaps counted once.
 pub fn busy_minutes(events: &[Event], from_ms: i64, to_ms: i64) -> u32 {
     busy(events, from_ms, to_ms).iter().map(|b| b.min).sum()
@@ -234,22 +383,23 @@ pub fn event_minutes(events: &[Event], start_ms: i64, days: usize) -> Vec<u32> {
     (0..days as i64).map(|i| busy_minutes(events, start_ms + i * DAY, start_ms + (i + 1) * DAY)).collect()
 }
 
-/// The week from `first_day` on: `ranges` are the (start, end) of each day in ms, `loads` what is due, `study` the
-/// minutes of study planned for each day.
-pub fn week(events: &[Event], ranges: &[(i64, i64)], first_day: i64, loads: &[Load], study: &[u32]) -> Vec<DayLoad> {
-    ranges
+/// The week from `first_day` on: `windows` are the stretches of each day that count, in ms, `loads` what is due, `study`
+/// the minutes of study planned for each day.
+pub fn week(events: &[Event], windows: &[Vec<(i64, i64)>], first_day: i64, loads: &[Load], study: &[u32]) -> Vec<DayLoad> {
+    windows
         .iter()
         .enumerate()
-        .map(|(i, (s, e))| {
+        .map(|(i, spans)| {
             let day = first_day + i as i64;
-            let timed: Vec<&Event> = events.iter().filter(|ev| !ev.all_day && ev.start_ms < *e && ev.end_ms > *s).collect();
-            let calendars = busy(events, *s, *e);
+            // an event that is in both stretches of a day is one event
+            let timed = events.iter().filter(|ev| !ev.all_day && spans.iter().any(|(s, e)| ev.start_ms < *e && ev.end_ms > *s)).count();
+            let calendars = busy_in(events, spans);
             let event_min = calendars.iter().map(|b| b.min).sum();
             DayLoad {
                 day,
                 event_min,
                 calendars,
-                events: timed.len() as u32,
+                events: timed as u32,
                 due: loads.iter().filter(|l| l.due == day).count() as u32,
                 study_min: study.get(i).copied().unwrap_or(0),
                 suggested_min: 0,
@@ -429,6 +579,91 @@ mod tests {
     }
 
     #[test]
+    fn study_hours_move_by_half_hours_and_stay_a_stretch_of_the_day() {
+        let mut h = StudyHours::default();
+        h.step(Edge::Start, true);
+        h.step(Edge::End, false);
+        assert_eq!((h.from, h.to, h.text().as_str()), (570, 990, "09:30-16:30"));
+        for _ in 0..60 {
+            h.step(Edge::Start, true);
+        }
+        assert_eq!((h.from, h.to), (960, 990), "the start stops half an hour before the end");
+        for _ in 0..60 {
+            h.step(Edge::End, true);
+        }
+        assert_eq!(h.to, 24 * 60);
+        for _ in 0..60 {
+            h.step(Edge::Start, false);
+            h.step(Edge::End, false);
+        }
+        assert_eq!((h.from, h.to), (0, 30));
+        assert_eq!(StudyHours::default().windows(1000), [(1000 + 9 * H, 1000 + 17 * H)]);
+        let off = StudyHours { on: false, ..Default::default() };
+        assert!(off.windows(0).is_empty() && off.minutes() == 480, "a day off has no time, and remembers its hours");
+    }
+
+    #[test]
+    fn a_lunch_pause_cuts_the_day_in_two() {
+        let mut h = StudyHours { to: 18 * 60, ..Default::default() };
+        h.toggle_pause();
+        assert_eq!((h.pause, h.minutes(), h.text().as_str()), (Some((780, 840)), 480, "09:00-13:00+14:00-18:00"));
+        assert_eq!(h.windows(0), [(9 * H, 13 * H), (14 * H, 18 * H)]);
+        // every time stays in its order, half an hour at least between two of them
+        for _ in 0..60 {
+            h.step(Edge::PauseStart, true);
+            h.step(Edge::Start, true);
+        }
+        assert_eq!((h.from, h.pause), (780, Some((810, 840))));
+        for _ in 0..60 {
+            h.step(Edge::PauseEnd, true);
+            h.step(Edge::End, false);
+        }
+        assert_eq!((h.pause, h.to), (Some((810, 960)), 990), "moved towards each other, they stop half an hour apart");
+        for _ in 0..60 {
+            h.step(Edge::End, false);
+            h.step(Edge::PauseEnd, false);
+        }
+        assert_eq!((h.pause, h.to), (Some((810, 840)), 870), "the end stops after the pause, the pause stays half an hour");
+        h.toggle_pause();
+        assert_eq!(h.pause, None);
+        // a day that does not go past lunch gets its pause in the middle; a very short one gets none
+        let mut evening = StudyHours { from: 15 * 60, to: 21 * 60, ..Default::default() };
+        evening.toggle_pause();
+        assert_eq!(evening.pause, Some((1050, 1110)));
+        let mut short = StudyHours { from: 600, to: 690, ..Default::default() };
+        short.toggle_pause();
+        assert_eq!(short.pause, None);
+        let mut untouched = StudyHours::default();
+        untouched.step(Edge::PauseStart, true);
+        assert_eq!(untouched, StudyHours::default(), "no pause to move");
+    }
+
+    #[test]
+    fn the_week_of_study_hours_is_written_and_read_back() {
+        let mut week = StudyWeek::default();
+        week[0] = StudyHours { on: true, from: 540, to: 1080, pause: Some((780, 870)) };
+        week[5] = StudyHours { on: false, from: 600, to: 780, pause: None };
+        week[6] = StudyHours { on: true, from: 0, to: 24 * 60, pause: None };
+        let text = week_text(&week);
+        assert!(text.starts_with("09:00-13:00+14:30-18:00,09:00-17:00,") && text.ends_with(",off 10:00-13:00,00:00-24:00"), "{text}");
+        assert_eq!(parse_week(&text), Some(week));
+        for bad in ["", "09:00-17:00", "17:00-09:00,", "09:00-25:00", "9-17"] {
+            assert_eq!(parse_week(bad), None, "{bad}");
+        }
+        for bad in ["24:30-25:00", "10:00-10:00", "09:00-13:00+12:00-18:00", "09:00-13:00+13:00-18:00", "09:00-10:00+11:00-12:00+13:00-14:00"] {
+            assert_eq!(StudyHours::parse(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn events_in_a_pause_count_for_nothing() {
+        let day = StudyHours { on: true, from: 540, to: 1080, pause: Some((780, 840)) };
+        let evs = vec![ev("lunch", 13, 14), ev("long", 12, 15), ev("early", 8, 10)];
+        let w = week(&evs, &[day.windows(0)], 0, &[], &[]);
+        assert_eq!((w[0].events, w[0].event_min), (2, 180), "9-10, 12-13 and 14-15; the lunch is not one of them");
+    }
+
+    #[test]
     fn free_time_is_suggested_by_weight_and_nearness() {
         let ex = |weight, due| Weighted { weight, due };
         let day = |p: &[Vec<(usize, u32)>], d: usize| [0, 1].map(|e| p[d].iter().find(|(i, _)| *i == e).map_or(0, |x| x.1));
@@ -460,7 +695,7 @@ mod tests {
         let parts: Vec<(String, u32)> = busy(&evs, 0, 24 * H).into_iter().map(|b| (b.calendar, b.min)).collect();
         assert_eq!(parts, [("Uni".to_string(), 240), ("Personal".to_string(), 120)], "the shared hour is the lecture's, which began first");
         assert_eq!(busy_minutes(&evs, 10 * H, 12 * H), 120, "cut to the stretch asked for");
-        let w = week(&evs, &[(0, 24 * H)], 0, &[], &[]);
+        let w = week(&evs, &[vec![(0, 24 * H)]], 0, &[], &[]);
         assert_eq!((w[0].events, w[0].event_min, w[0].calendars.len()), (5, 360, 2));
     }
 
@@ -475,7 +710,7 @@ mod tests {
     #[test]
     fn a_week_counts_hours_and_what_is_due_and_flags_a_heavy_day() {
         let day0 = 100;
-        let ranges: Vec<(i64, i64)> = (0..7).map(|i| (i * 24 * H, (i + 1) * 24 * H)).collect();
+        let ranges: Vec<Vec<(i64, i64)>> = (0..7).map(|i| vec![(i * 24 * H, (i + 1) * 24 * H)]).collect();
         let evs = vec![ev("A", 9, 11), ev("B", 12, 15), ev("C", 24 + 9, 24 + 10)];
         let loads = vec![Load { label: "x".into(), course: String::new(), due: day0 + 1, est_min: 0 }, Load { label: "y".into(), course: String::new(), due: day0 + 1, est_min: 0 }, Load { label: "z".into(), course: String::new(), due: day0 + 1, est_min: 0 }];
         let w = week(&evs, &ranges, day0, &loads, &[]);

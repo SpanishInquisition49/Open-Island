@@ -112,8 +112,8 @@ pub struct Config {
     pub evening_recap_min: i64,
     /// Door-to-door minutes to where lectures are (0: off): the cards say when to leave, and one comes at that moment.
     pub commute_minutes: i64,
-    /// Hours a day for lectures and study together: the study plan gives each day what the events leave of them.
-    pub study_day_hours: u32,
+    /// When one studies on each day of the week: the study plan gives a day what its events leave of that time.
+    pub study_week: island_core::plan::StudyWeek,
     /// The same for the card with today, shown from this time until 14:00.
     pub morning_recap_min: i64,
     pub evening_weekends: bool,
@@ -176,7 +176,7 @@ impl Default for Config {
             ocr_screenshots: true,
             evening_recap_min: 0,
             commute_minutes: 0,
-            study_day_hours: 8,
+            study_week: Default::default(),
             morning_recap_min: 0,
             evening_weekends: false,
             culprit_alerts: true,
@@ -240,6 +240,16 @@ pub enum Action {
     PinRemove(usize),
     /// Removes the deadline at this position of the soonest-first list.
     DeadlineDone(usize),
+    /// Opens or closes the editor of the study hours on the Plan page.
+    PlanHours(bool),
+    /// Makes this day of the week (0 Monday) a study day or a day off.
+    StudyDayToggle(usize),
+    /// Moves one of the times of a day's study hours half an hour later (`true`) or earlier.
+    StudyStep(usize, island_core::plan::Edge, bool),
+    /// Gives a day a lunch pause, or takes it away.
+    StudyPause(usize),
+    /// Gives Tuesday to Friday the hours of Monday.
+    StudyCopyWeekdays,
     /// Opens the bar to add an exam or a hand-in.
     DeadlineAdd,
     /// Opens the bar to move or change the deadline at this position, its day first.
@@ -633,6 +643,8 @@ pub struct Island {
     pub(crate) todos: Vec<Todo>,
     /// Tasks finished here whose server copy may still say open for one more sync (so they do not come back).
     pub(crate) tasks_done: Vec<String>,
+    /// The Plan page shows the editor of the study hours.
+    pub(crate) plan_hours: bool,
     /// The task (by uid) whose row shows its menu: put off, edit, remove.
     pub row_menu: Option<String>,
     /// When a line too long for its place next moves (set while drawing; the next tick asks for a frame then), and for each
@@ -942,6 +954,7 @@ impl Island {
             dnd_seen: false,
             auto_quiet: None,
             quiet_set_aside: Vec::new(),
+            plan_hours: false,
             quiet_since: None,
             recap_id: 0,
             dnd_sent: false,

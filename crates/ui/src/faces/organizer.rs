@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::island::{PLAN_ROWS, SPLIT_ROWS};
-use island_core::plan::HitKind;
+use island_core::plan::{self, Edge, HitKind};
 use island_core::task;
 
 /// A calendar's own colour, white when it has none.
@@ -15,10 +15,18 @@ const DAY_ROW: f64 = 26.0;
 const SECTION: f64 = 22.0;
 const PLAN_ROW: f64 = 26.0;
 const GAP: f64 = 6.0;
+/// A day of the study hours editor, and the line its second stretch adds.
+const HOURS_ROW: f64 = 32.0;
+const STRETCH_ROW: f64 = 28.0;
 const FIND_ROWS: usize = 8;
 
 impl Island {
     pub(crate) fn plan_height(&self) -> f64 {
+        if self.plan_hours {
+            // a day with a pause has its second stretch on a line of its own
+            let paused = self.cfg.study_week.iter().filter(|h| h.on && h.pause.is_some()).count();
+            return 14.0 + 34.0 + 6.0 + 7.0 * HOURS_ROW + paused as f64 * STRETCH_ROW + 8.0 + 28.0 + SECTION + 10.0;
+        }
         let v = self.plan_view();
         let today = v.today.len().clamp(1, PLAN_ROWS) as f64;
         let deadlines = v.deadlines.len().clamp(1, PLAN_ROWS) as f64;
@@ -33,10 +41,75 @@ impl Island {
             + 10.0
     }
 
+    /// The study hours of each day of the week: on or off, from when to when.
+    fn face_study_hours(&self, p: P, w: f64) {
+        p.stagger(0);
+        let head = 14.0 + 17.0;
+        p.icon_button(14.0 + 14.0, head, 28.0, "arrow-left", 15.0, Action::PlanHours(false));
+        p.text("Study hours", 14.0 + 28.0 + 8.0, head, 14.0, SEMI, theme::FG, Align::Left, (w - 80.0) as f32);
+        let mut y = 14.0 + 34.0 + 6.0;
+        for (day, h) in self.cfg.study_week.iter().enumerate() {
+            p.stagger(1 + day);
+            let cy = y + HOURS_ROW / 2.0;
+            // the day is its own switch
+            let name = &clock::WEEKDAYS[day][..3];
+            let chip = rect(16.0, cy - 12.0, 52.0, 24.0);
+            let hot = p.hovered(chip);
+            let (fill, text) = match (h.on, hot) {
+                (true, false) => (theme::ACCENT, theme::ON_ACCENT),
+                (true, true) => (theme::HOT_ACCENT, theme::ON_ACCENT),
+                (false, false) => (theme::CHIP, theme::DIM),
+                (false, true) => (theme::HOT_CHIP, theme::FG),
+            };
+            p.rrect(chip, 12.0, fill);
+            p.text(name, chip.center().x, cy, 12.0, SEMI, text, Align::Center, 44.0);
+            p.hit(chip, Action::StudyDayToggle(day));
+            if h.on {
+                // the day, or the part before the pause and the part after it
+                let first = h.pause.map_or((h.to, Edge::End), |(out, _)| (out, Edge::PauseStart));
+                let mut lines = vec![(cy, (h.from, Edge::Start), first)];
+                if let Some((_, back)) = h.pause {
+                    lines.push((cy + STRETCH_ROW, (back, Edge::PauseEnd), (h.to, Edge::End)));
+                }
+                for (line, from, to) in &lines {
+                    for (x, (minutes, edge)) in [(88.0, *from), (212.0, *to)] {
+                        p.icon_button(x, *line, 24.0, "minus", 12.0, Action::StudyStep(day, edge, false));
+                        p.text(&plan::fmt_clock(minutes), x + 35.0, *line, 12.5, SEMI, theme::FG, Align::Center, 46.0);
+                        p.icon_button(x + 70.0, *line, 24.0, "plus", 12.0, Action::StudyStep(day, edge, true));
+                    }
+                    p.text("to", 185.0, *line, 10.5, REG, theme::DIM, Align::Center, 20.0);
+                }
+                // lunch: lit when the day has the pause
+                let lunch = rect(w - 106.0, cy - 12.0, 34.0, 24.0);
+                let (lit, hot) = (h.pause.is_some(), p.hovered(lunch));
+                p.rrect(lunch, 12.0, if lit { theme::ACCENT } else if hot { theme::HOT_CHIP } else { theme::CHIP });
+                p.icon("coffee", lunch.center().x, cy, 13.0, if lit { theme::ON_ACCENT } else { theme::DIM });
+                p.hit(lunch, Action::StudyPause(day));
+                p.text(&task::fmt_minutes(h.minutes()), w - 18.0, cy, 11.0, REG, theme::DIM, Align::Right, 46.0);
+                y += (lines.len() - 1) as f64 * STRETCH_ROW;
+            } else {
+                p.text("Day off", 84.0, cy, 12.0, REG, theme::DIM, Align::Left, 100.0);
+            }
+            y += HOURS_ROW;
+        }
+        y += 8.0;
+        p.stagger(9);
+        let label = "Copy Monday to Tue–Fri";
+        let bw = p.button_width(label);
+        p.button(rect((w - bw) / 2.0, y, bw, 26.0), label, Action::StudyCopyWeekdays);
+        y += 28.0;
+        p.text("Events outside these hours or at lunch are not counted", w / 2.0, y + SECTION / 2.0, 10.5, REG, theme::DIM, Align::Center, (w - 32.0) as f32);
+    }
+
     pub(super) fn face_plan(&self, p: P, w: f64, _h: f64) {
+        if self.plan_hours {
+            return self.face_study_hours(p, w);
+        }
         let head = self.page_header(p, w, "Plan");
         let add = p.button_width("+ Exam");
         p.button(rect(w - 16.0 - add, head - 12.0, add, 24.0), "+ Exam", Action::DeadlineAdd);
+        let hours = p.button_width("Hours");
+        p.button(rect(w - 24.0 - add - hours, head - 12.0, hours, 24.0), "Hours", Action::PlanHours(true));
         let view = self.plan_view();
         let today = self.today_day();
         let mut y = 14.0 + 34.0;
@@ -64,6 +137,8 @@ impl Island {
                 "Done for today"
             } else if view.deadlines.is_empty() {
                 "Add an exam with its CFU to get a daily plan"
+            } else if view.day_off {
+                "Day off"
             } else if view.room_today == 0 {
                 "No study time left today"
             } else {
@@ -137,7 +212,11 @@ impl Island {
                 p.text(&d.due.to_string(), w - 82.0, cy, 10.5, SEMI, theme::ORANGE, Align::Left, 16.0);
             }
             let hours = d.event_min + d.study_min + d.suggested_min;
-            let hours = if hours == 0 { "free".to_string() } else { task::fmt_minutes(hours) };
+            let hours = match hours {
+                _ if !self.study_hours(d.day).on => "off".to_string(),
+                0 => "free".to_string(),
+                _ => task::fmt_minutes(hours),
+            };
             p.text(&hours, w - 18.0, cy, 11.0, if heavy { SEMI } else { REG }, if heavy { theme::ORANGE } else { theme::DIM }, Align::Right, 50.0);
             y += DAY_ROW;
         }

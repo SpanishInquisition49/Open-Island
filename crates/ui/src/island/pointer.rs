@@ -439,6 +439,30 @@ impl Island {
                     self.deadlines.remove(n);
                 }
             }
+            Action::PlanHours(open) => self.plan_hours = open,
+            Action::StudyDayToggle(day) => {
+                if let Some(h) = self.cfg.study_week.get_mut(day) {
+                    h.on = !h.on;
+                    return vec![self.save_study_week()];
+                }
+            }
+            Action::StudyStep(day, edge, later) => {
+                if let Some(h) = self.cfg.study_week.get_mut(day) {
+                    h.step(edge, later);
+                    return vec![self.save_study_week()];
+                }
+            }
+            Action::StudyPause(day) => {
+                if let Some(h) = self.cfg.study_week.get_mut(day) {
+                    h.toggle_pause();
+                    return vec![self.save_study_week()];
+                }
+            }
+            Action::StudyCopyWeekdays => {
+                let monday = self.cfg.study_week[0];
+                self.cfg.study_week[1..5].fill(monday);
+                return vec![self.save_study_week()];
+            }
             Action::DeadlineAdd => {
                 let text = "exam ".to_string();
                 self.bar = Some(Bar { until: self.now + BAR_IDLE_MS, cursor: text.chars().count(), text, ..Default::default() });

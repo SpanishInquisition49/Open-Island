@@ -3571,16 +3571,114 @@ fn the_plan_never_asks_for_more_time_than_there_is() {
         run_bar(&mut i, line);
     }
     let asked = |i: &Island, d: i64| i.study_on(today + d).iter().map(|(_, m)| m).sum::<u32>();
-    // 08:00: eight hours less the four of events
-    assert_eq!(asked(&i, 0), 240);
+    // 08:00: the study hours, 9 to 17, less the three of events in them (the one at 22 is outside)
+    assert_eq!(asked(&i, 0), 300);
     assert_eq!(asked(&i, 1), 0, "ten hours of events");
     assert!((0..7).all(|d| asked(&i, d) <= 480), "{:?}", (0..7).map(|d| asked(&i, d)).collect::<Vec<_>>());
     assert!(i.plan_view().deadlines.iter().any(|d| d.short_min > 0), "and what does not fit is told");
-    // 21:00: one hour to the end of the day, none of it taken by the event after
-    i.tick(i.day_start_ms(today) + 21 * h, 8.0);
+    // 16:00: one hour to the end of the study hours
+    i.tick(i.day_start_ms(today) + 16 * h, 8.0);
     assert_eq!(asked(&i, 0), 60);
-    i.tick(i.day_start_ms(today) + 23 * h + 60_000, 8.0);
+    i.tick(i.day_start_ms(today) + 17 * h + 60_000, 8.0);
     assert_eq!((asked(&i, 0), i.plan_view().room_today), (0, 0));
+}
+
+#[test]
+fn only_what_falls_in_a_days_study_hours_counts() {
+    use island_core::plan::StudyHours;
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0); // Friday 15 January, 08:00
+    let today = i.today_day();
+    let h = 3_600_000;
+    let at = |i: &Island, day: i64, hour: i64| i.day_start_ms(day) + hour * h;
+    let ev = |id: &str, a: i64, b: i64| Event { id: id.into(), title: id.into(), start_ms: a, end_ms: b, ..Default::default() };
+    // today: an hour before the study hours, one across their end, a whole evening after them
+    i.data.events = vec![ev("run", at(&i, today, 7), at(&i, today, 8)), ev("lecture", at(&i, today, 16), at(&i, today, 18)), ev("dinner", at(&i, today, 19), at(&i, today, 23))];
+    run_bar(&mut i, "esame 25 jan Reti ~100h");
+    let first = i.week_loads()[0].clone();
+    assert_eq!((first.event_min, first.events, first.study_min), (60, 1, 420), "one hour of the lecture is inside, the rest is free: {first:?}");
+    // Friday from 15 to 20: the lecture and an hour of the dinner are inside now
+    let friday = island_core::calendar::weekday_of_days(today) as usize;
+    i.cfg.study_week[friday] = StudyHours { on: true, from: 15 * 60, to: 20 * 60, pause: None };
+    let first = i.week_loads()[0].clone();
+    assert_eq!((first.event_min, first.study_min), (180, 120), "{first:?}");
+    assert_eq!(i.plan_view().room_today, 120);
+    // the study hours not begun yet: all of them are ahead; half way through only what is left
+    i.tick(at(&i, today, 19), 8.0);
+    assert_eq!(i.plan_view().room_today, 0, "the last hour is the dinner's");
+    // a day off asks nothing, and is not offered as the lighter day to move work to
+    i.cfg.study_week[(friday + 1) % 7].on = false;
+    assert_eq!(i.study_on(today + 1), vec![]);
+    assert_eq!(i.week_loads()[1].study_min, 0);
+    assert!(!i.study_on(today + 2).is_empty());
+}
+
+#[test]
+fn the_plan_leaves_the_lunch_pause_free() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0); // 08:00
+    let today = i.today_day();
+    let h = 3_600_000;
+    let day = island_core::plan::StudyHours { on: true, from: 9 * 60, to: 18 * 60, pause: Some((13 * 60, 14 * 60)) };
+    i.cfg.study_week = [day; 7];
+    // an appointment over lunch takes nothing, the part of a lecture that runs into it neither
+    let at = i.day_start_ms(today);
+    i.data.events = vec![Event { id: "l".into(), title: "Lecture".into(), start_ms: at + 12 * h, end_ms: at + 14 * h, ..Default::default() }];
+    run_bar(&mut i, "esame 25 jan Reti ~100h");
+    let first = i.week_loads()[0].clone();
+    assert_eq!((first.event_min, first.study_min), (60, 420), "{first:?}");
+    // at 13:30 only the afternoon is ahead
+    i.tick(at + 13 * h + h / 2, 8.0);
+    assert_eq!(i.plan_view().room_today, 240);
+    i.tick(at + 12 * h, 8.0);
+    assert_eq!(i.plan_view().room_today, 240, "the rest of the morning is the lecture's");
+}
+
+#[test]
+fn the_study_hours_are_edited_on_the_plan_page_and_kept() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    i.data = data();
+    i.tick(T0, 8.0);
+    let open = |i: &mut Island| {
+        for _ in 0..200 {
+            let t = i.now + 8;
+            i.push(t, Input::OpenPage(Page::Plan));
+            let fr = i.tick(t, 8.0);
+            let mut scene = Scene::new();
+            i.draw(&mut scene, &f, fr.surface, 1.0);
+        }
+    };
+    open(&mut i);
+    let plan_page = i.hits.iter().filter(|h| matches!(h.action, Action::PlanHours(true))).count();
+    assert_eq!(plan_page, 1, "a button opens the editor");
+    i.activate(Action::PlanHours(true));
+    open(&mut i);
+    assert_eq!(i.hits.iter().filter(|h| matches!(h.action, Action::StudyStep(..))).count(), 28, "four buttons a day");
+    let kept = |cmds: Vec<Command>| match cmds.as_slice() {
+        [Command::SetOption { key, value: OptionValue::Text(t) }] if key == "study_hours" => t.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(kept(i.activate(Action::StudyStep(0, island_core::plan::Edge::Start, true))).starts_with("09:30-17:00,09:00-17:00"));
+    assert!(kept(i.activate(Action::StudyCopyWeekdays)).starts_with("09:30-17:00,09:30-17:00,09:30-17:00,09:30-17:00,09:30-17:00,09:00-17:00"));
+    assert!(kept(i.activate(Action::StudyDayToggle(6))).ends_with(",off 09:00-17:00"));
+    open(&mut i);
+    assert_eq!(i.hits.iter().filter(|h| matches!(h.action, Action::StudyStep(..))).count(), 24, "a day off has none");
+    // a lunch pause on Monday: the day is two stretches, each with its two times, and the page is taller
+    let before = i.plan_height();
+    assert!(kept(i.activate(Action::StudyPause(0))).starts_with("09:30-13:00+14:00-17:00,09:30-17:00"));
+    open(&mut i);
+    assert_eq!(i.hits.iter().filter(|h| matches!(h.action, Action::StudyStep(..))).count(), 28);
+    assert!(i.plan_height() > before);
+    assert!(kept(i.activate(Action::StudyStep(0, island_core::plan::Edge::PauseEnd, true))).starts_with("09:30-13:00+14:30-17:00,"));
+    // leaving the page leaves the editor
+    for _ in 0..200 {
+        let t = i.now + 8;
+        i.push(t, Input::OpenPage(Page::Today));
+        i.tick(t, 8.0);
+    }
+    open(&mut i);
+    assert!(i.hits.iter().any(|h| matches!(h.action, Action::PlanHours(true))));
 }
 
 #[test]
@@ -3632,11 +3730,11 @@ fn the_plan_gives_less_study_to_a_day_of_lectures_and_never_counts_work_twice() 
     let on = |i: &Island, d: i64| i.study_on(today + d).iter().map(|(_, m)| m).sum::<u32>();
     assert_eq!([on(&i, 0), on(&i, 1), on(&i, 2), on(&i, 3)], [240, 60, 240, 240]);
     assert_eq!((0..7).map(|d| on(&i, d)).sum::<u32>(), 13 * 60);
-    i.cfg.study_day_hours = 6;
+    i.cfg.study_week = [island_core::plan::StudyHours { on: true, from: 9 * 60, to: 15 * 60, pause: None }; 7];
     assert_eq!(on(&i, 1), 0, "a shorter day leaves nothing next to six hours of lectures");
     let view = i.plan_view();
     assert_eq!((view.deadlines.len(), view.deadlines[0].left_min, view.deadlines[0].short_min), (1, 780, 0));
-    i.cfg.study_day_hours = 2;
+    i.cfg.study_week = [island_core::plan::StudyHours { on: true, from: 9 * 60, to: 11 * 60, pause: None }; 7];
     assert!(i.plan_view().deadlines[0].short_min > 0, "six hours free before the exam are not enough for thirteen");
 }
 
@@ -3703,8 +3801,8 @@ fn the_plan_and_find_pages_draw_and_the_plan_flags_a_heavy_day() {
     i.data = data();
     i.tick(T0, 8.0);
     let h = 3_600_000;
-    // tomorrow: seven hours of lectures
-    i.data.events = (0..4).map(|k| Event { id: format!("e{k}"), title: format!("Lecture {k}"), start_ms: T0 + 20 * h + k * 2 * h, end_ms: T0 + 20 * h + k * 2 * h + 3_600_000 * 2 - 600_000, ..Default::default() }).collect();
+    // tomorrow: seven hours of lectures, from nine
+    i.data.events = (0..4).map(|k| Event { id: format!("e{k}"), title: format!("Lecture {k}"), start_ms: T0 + 25 * h + k * 2 * h, end_ms: T0 + 25 * h + k * 2 * h + 3_600_000 * 2 - 600_000, ..Default::default() }).collect();
     run_bar(&mut i, "esame 25 jan Algoritmi ~10h");
     let week = i.week_loads();
     assert_eq!(week.len(), 7);

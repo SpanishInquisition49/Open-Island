@@ -433,12 +433,14 @@ folder is any folder, the account is any CalDAV account.
   page orders the list: late ones first (in orange), then by day, then those without one; each row ends with its day and its estimate.
   A repeating task rests until its day comes; ticking it moves it to the next one instead of removing it.
 - **Study plan**: an exam or hand-in with an estimate (`esame 3 feb Algoritmi #algoritmi ~20h`) or a task with one is spread over the
-  days before it (in steps of five minutes; all that is left on the day itself). A day has `study_day_hours` (8; "Study day" on the
-  options page) for lectures and study together, and gets study in proportion to what its timed events leave free, so a day full of
-  lectures gets little and an empty one much; what the nearest deadline takes is not free for the next, and the same work is never
+  days before it (in steps of five minutes; all that is left on the day itself). Each day of the week has its **study hours**
+  (9:00 to 17:00 to begin with; the **Hours** button on the Plan page, where a day can also be off or have a lunch pause that
+  cuts it in two, or `study_hours` in the configuration): the plan gives a day what its timed events leave of that time, and
+  events before or after it, or during the pause, count for nothing, here and in the week shown on the page. So a day full of lectures gets little and an empty one much; what the nearest
+  deadline takes is not free for the next, and the same work is never
   planned on two days. Calendars are read two months ahead: past that a day counts like the same weekday of the last week known.
-  The plan is always one that can be followed: no day is given more than it has free, and today only what is left before 23:00 once
-  the events still to come and what you already studied are taken out. When the free time before a date is not enough, the rest is
+  The plan is always one that can be followed: no day is given more than it has free, and today only what is left of its
+  study hours once the events still to come and what you already studied are taken out. When the free time before a date is not enough, the rest is
   not planned and the page says how much of it "won't fit". The morning and evening cards end with "Study 1h20: Algoritmi exam 45m, Report 35m".
   `log 90m algoritmi` (or a Pomodoro `pomodoro algoritmi`) counts for the nearest-due task or exam of that course, and comes off
   today's part first, so having studied does not ask for more the same day. An exam's hours are the total: what is studied for it
@@ -664,7 +666,7 @@ a script with `open-island msg set <option> <value>`:
 | Quiet | `deep_work_minutes` (0-120, 20: auto focus), `break_minutes` (0-240, 0: off), `deep_work_apps` (a list in `config.json`) | |
 | Day | `travel_times` | on |
 | Day | `evening_weekends` (both cards on Saturday and Sunday) | off |
-| Day | `morning_recap_time`, `evening_recap_time` (`"08:00"`, `"18:30"`, or minutes; `off`), `commute_minutes` (0 = off), `travel_margin_minutes` (0-30, 5), `study_day_hours` (2-14) | off, off, 0, 5, 8 |
+| Day | `morning_recap_time`, `evening_recap_time` (`"08:00"`, `"18:30"`, or minutes; `off`), `commute_minutes` (0 = off), `travel_margin_minutes` (0-30, 5), `study_hours` (seven days, Monday first: `"09:00-17:00"`, `"09:00-13:00+14:00-18:00"`, `"off 09:00-17:00"`) | off, off, 0, 5, 9-17 |
 | Places | `weather`, `follow_position` | on |
 | Places | `currency_rates` (the ECB's daily rates for the bar) | on |
 | Places | `wifi_position` (Linux: a position within metres from the Wi-Fi networks around you, looked up at beacondb.net; a card says so when you turn it on) | **off** |

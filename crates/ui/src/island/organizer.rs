@@ -2,7 +2,8 @@
 //! and the search. Everything is decided here from what the island holds; the files and servers are the platform layer's.
 
 use super::*;
-use island_core::plan::{self, DayLoad, Hit, HitKind, Load, StudyPlan, Weighted};
+use crate::model::OptionValue;
+use island_core::plan::{self, DayLoad, Hit, HitKind, Load, StudyHours, StudyPlan, Weighted};
 use island_core::task::{self, Repeat, Spec, Task};
 
 /// Where a load of work comes from, to take studied time off it.
@@ -18,8 +19,6 @@ const LOG_DAYS: i64 = 120;
 const CALENDAR_DAYS: usize = 60;
 /// The most rows of today's study and of the deadlines the Plan page shows.
 pub(crate) const PLAN_ROWS: usize = 5;
-/// The hour the study day ends: past it nothing more is planned for today.
-const DAY_END_HOUR: i64 = 23;
 /// The most exams the split of the next seven days names.
 pub(crate) const SPLIT_ROWS: usize = 4;
 
@@ -49,6 +48,8 @@ pub(crate) struct PlanView {
     pub today: Vec<StudyRow>,
     /// How the study of the next seven days divides among the exams: (name, minutes), most first.
     pub split: Vec<(String, u32)>,
+    /// Today is a day off.
+    pub day_off: bool,
     /// Minutes studied today, and those that can still be.
     pub studied_today: u32,
     pub room_today: u32,
@@ -403,7 +404,7 @@ impl Island {
         let mut out = vec![format!("{} is heavy: {}", cap(&task::due_label(heavy.day, today)), plan::day_summary(heavy))];
         // the task with the most work among those due that day (a repeating one has no deadline to bring forward)
         let cand = self.todos.iter().filter(|t| t.due == Some(heavy.day) && t.repeat == Repeat::Never).max_by_key(|t| t.est_min);
-        let lighter = week.iter().filter(|d| d.day >= today && d.day < heavy.day && load(d) + 60 < load(heavy)).min_by_key(|d| load(d));
+        let lighter = week.iter().filter(|d| d.day >= today && d.day < heavy.day && load(d) + 60 < load(heavy) && self.study_hours(d.day).on).min_by_key(|d| load(d));
         if let (Some(t), Some(d)) = (cand, lighter) {
             out.push(format!("{} is lighter: move \"{}\" there?", cap(&task::due_label(d.day, today)), t.text));
         }
@@ -441,8 +442,7 @@ impl Island {
         let weighted: Vec<usize> = (0..self.deadlines.len()).filter(|n| Some(&self.deadlines[*n]).is_some_and(|d| d.est_min == 0 && d.cfu > 0 && d.day >= today)).collect();
         let last = loads.iter().map(|l| l.due).chain(weighted.iter().map(|n| self.deadlines[*n].day)).max().unwrap_or(today);
         let horizon = (last - today).clamp(7, 366) as usize;
-        let budget = self.cfg.study_day_hours * 60;
-        let mut free: Vec<u32> = plan::event_minutes(&self.data.events, self.day_start_ms(today), horizon.min(CALENDAR_DAYS)).into_iter().map(|busy| budget.saturating_sub(busy)).collect();
+        let mut free: Vec<u32> = (today..today + horizon.min(CALENDAR_DAYS) as i64).map(|day| self.free_in(&self.study_windows(day))).collect();
         for day in free.len()..horizon {
             free.push(free[day - 7]);
         }
@@ -455,24 +455,42 @@ impl Island {
                 done_weighted[i] += min;
             }
         }
-        let room_today = self.room_today(budget);
+        let room_today = self.room_today();
         let planned = plan::spread(&loads, &done, today, &free, room_today);
         let exams: Vec<Weighted> = weighted.iter().map(|n| Weighted { weight: self.deadlines[*n].cfu, due: self.deadlines[*n].day }).collect();
         let suggested = plan::share_out(&exams, &done_weighted, today, &planned.free, room_today.saturating_sub(planned.minutes_on(0)));
         Outlook { plan: planned, sources, weighted, suggested, room_today }
     }
 
-    /// What of today can still be studied: no more than the day's hours less its events and what is done, and no more
-    /// than the time until the study day ends, less the events still in it.
-    fn room_today(&self, budget: u32) -> u32 {
+    pub(crate) fn study_hours(&self, day: i64) -> StudyHours {
+        self.cfg.study_week[island_core::calendar::weekday_of_days(day) as usize]
+    }
+
+    /// The stretches of a day in which one studies (two around a lunch pause).
+    fn study_windows(&self, day: i64) -> Vec<(i64, i64)> {
+        self.study_hours(day).windows(self.day_start_ms(day))
+    }
+
+    /// The minutes of some stretches of time that no event takes.
+    fn free_in(&self, windows: &[(i64, i64)]) -> u32 {
+        let whole: u32 = windows.iter().map(|(from, to)| ((to - from).max(0) / 60_000) as u32).sum();
+        let taken: u32 = plan::busy_in(&self.data.events, windows).iter().map(|b| b.min).sum();
+        whole.saturating_sub(taken)
+    }
+
+    /// What of today can still be studied: no more than today's study hours leave after their events and what is done,
+    /// and no more than the free time still ahead in them.
+    fn room_today(&self) -> u32 {
         let today = self.today_day();
-        let (start, end) = (self.day_start_ms(today), self.day_start_ms(today) + DAY_END_HOUR * 3_600_000);
-        let busy_from = |from: i64| plan::busy_minutes(&self.data.events, from, end);
+        let windows = self.study_windows(today);
         let done: u32 = self.study_log.iter().filter(|(d, _, _)| *d == today).map(|(_, _, m)| m).sum();
-        let by_hours = budget.saturating_sub(busy_from(start)).saturating_sub(done);
-        let now = self.now.max(start);
-        let by_clock = (((end - now).max(0) / 60_000) as u32).saturating_sub(busy_from(now));
-        by_hours.min(by_clock)
+        let ahead: Vec<(i64, i64)> = windows.iter().filter(|(_, to)| *to > self.now).map(|(from, to)| (self.now.max(*from), *to)).collect();
+        self.free_in(&windows).saturating_sub(done).min(self.free_in(&ahead))
+    }
+
+    /// The command that keeps the study hours as they are now.
+    pub(super) fn save_study_week(&self) -> Command {
+        Command::SetOption { key: "study_hours".into(), value: OptionValue::Text(plan::week_text(&self.cfg.study_week)) }
     }
 
     /// What to study on a day: (what, minutes), the most pressing first.
@@ -532,6 +550,7 @@ impl Island {
             split: self.week_split(&outlook),
             studied_today: self.study_log.iter().filter(|(d, _, _)| *d == today).map(|(_, _, m)| m).sum(),
             room_today: outlook.room_today,
+            day_off: !self.study_hours(today).on,
             week: self.week_of(&outlook),
             deadlines,
             studied: self.studied_this_week(),
@@ -677,7 +696,8 @@ impl Island {
 
     fn week_of(&self, outlook: &Outlook) -> Vec<DayLoad> {
         let today = self.today_day();
-        let ranges: Vec<(i64, i64)> = (0..7).map(|i| (self.day_start_ms(today + i), self.day_start_ms(today + i + 1))).collect();
+        // only what falls in the study hours of each day is counted
+        let ranges: Vec<Vec<(i64, i64)>> = (0..7).map(|i| self.study_windows(today + i)).collect();
         let mut loads: Vec<Load> = outlook.sources.iter().map(|(_, l)| l.clone()).collect();
         // what is due without an estimate still counts as "due" on its day
         loads.extend(self.todos.iter().filter(|t| t.est_min == 0 && t.repeat == Repeat::Never).filter_map(|t| Some(Load { label: t.text.clone(), course: t.course.clone(), due: t.due?, est_min: 0 })));

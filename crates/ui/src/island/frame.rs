@@ -793,6 +793,10 @@ impl Island {
                 _ => 0.0,
             };
         }
+        if want != Face::Plan {
+            // the editor is left with the page
+            self.plan_hours = false;
+        }
         if want != self.want {
             if let Some(p) = page_of(want).filter(|p| !matches!(p, Page::Home | Page::Grid)) {
                 *self.page_uses.entry(p).or_insert(0) += 1;

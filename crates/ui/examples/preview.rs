@@ -708,5 +708,29 @@ fn main() {
         scene.fill(vello::peniko::Fill::NonZero, Affine::IDENTITY, Color::from_rgba8(0xf6, 0xed, 0xd0, 255), None, &vello::kurbo::Rect::new(0.0, 0.0, 4000.0, 4000.0));
         i.draw(&mut scene, &fonts, (sw as f64, sh as f64), scale);
         render(&mut g, &scene, (sw as f64 * scale) as u32, (sh as f64 * scale) as u32, &dir.join(format!("{name}.png")));
+        // the editor of the study hours, opened as it is opened: by its button on the Plan page
+        if name == "page-plan" {
+            let (x, y, w, _) = i.input_rects()[0];
+            let mut t = i.now;
+            i.pointer_down(t, x + w - 135.0, y + 31.0);
+            i.pointer_up(t);
+            i.cfg.study_week[0].to = 18 * 60;
+            i.cfg.study_week[0].toggle_pause();
+            i.cfg.study_week[2].to = 19 * 60;
+            i.cfg.study_week[2].toggle_pause();
+            i.cfg.study_week[5].to = 13 * 60;
+            i.cfg.study_week[6].on = false;
+            let mut f = i.tick(t, 8.0);
+            for _ in 0..300 {
+                t += 8;
+                f = i.tick(t, 8.0);
+                i.draw(&mut Scene::new(), &fonts, (f.surface.0.ceil().max(520.0), f.surface.1.ceil()), scale);
+            }
+            let (sw, sh) = (f.surface.0.ceil().max(520.0) as u32, f.surface.1.ceil().max(90.0) as u32);
+            let mut scene = Scene::new();
+            scene.fill(vello::peniko::Fill::NonZero, Affine::IDENTITY, Color::from_rgba8(0xf6, 0xed, 0xd0, 255), None, &vello::kurbo::Rect::new(0.0, 0.0, 4000.0, 4000.0));
+            i.draw(&mut scene, &fonts, (sw as f64, sh as f64), scale);
+            render(&mut g, &scene, (sw as f64 * scale) as u32, (sh as f64 * scale) as u32, &dir.join("page-plan-hours.png"));
+        }
     }
 }

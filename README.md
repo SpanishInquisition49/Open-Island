@@ -63,8 +63,8 @@ in the morning and one in the evening sum it up, weather included.
 ### A study plan that fits your calendar
 
 Add your exams with their date and either their credits or the hours you expect to need. The island suggests what to study
-each day: more on free days, less on busy ones, and never more than the day can hold. Each of your calendars keeps its
-own colour.
+each day: more on free days, less on busy ones, and never more than the day can hold. You choose when your study day
+starts and ends, weekday by weekday, when you break for lunch, and which days are off. Each of your calendars keeps its own colour.
 
 ### Timers, and a bar you can talk to
 
