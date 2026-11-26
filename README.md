@@ -1,4 +1,9 @@
-<h1 align="center">open-island</h1>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/mosaic-horizontal-dark.svg">
+    <img src="assets/logo/mosaic-horizontal.svg" width="380" alt="open-island logo">
+  </picture>
+</p>
 
 <p align="center">
   <b>A dynamic island for your desktop.</b><br>
