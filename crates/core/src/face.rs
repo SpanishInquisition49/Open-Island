@@ -37,8 +37,6 @@ pub enum Face {
     TimerMini,
     TimerFull,
     TimerDone,
-    Notif,
-    NotifAct,
     Reply,
     Bar,
 }
@@ -83,8 +81,6 @@ impl Face {
             TimerMini => (210.0, 28.0),
             TimerFull => (320.0, 112.0),
             TimerDone => (330.0, 64.0),
-            Notif => (410.0, 82.0),
-            NotifAct => (410.0, 150.0),
             Reply => (430.0, 168.0),
             Bar => (430.0, 92.0),
         }
@@ -139,19 +135,12 @@ pub enum Page {
     Grid,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NotifFace {
-    Plain,
-    Actions,
-}
-
 /// Snapshot of the state the choice depends on.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Snapshot {
     pub barring: bool,
     pub replying: bool,
     pub osd: bool,
-    pub notif: Option<NotifFaceOpt>,
     pub timer_done: bool,
     pub power: bool,
     pub device: bool,
@@ -170,8 +159,6 @@ pub struct Snapshot {
     pub soon: bool,
 }
 
-pub type NotifFaceOpt = NotifFace;
-
 /// Chooses what the island shows. Returns the face and, in the compact state, an optional second
 /// activity for the side bubble. Hovering the side bubble opens that activity: the caller sets `page`.
 pub fn choose(s: &Snapshot) -> (Face, Option<Side>) {
@@ -185,11 +172,6 @@ pub fn choose(s: &Snapshot) -> (Face, Option<Side>) {
     // on the quick settings page the sliders change volume/brightness: their OSD would replace the page
     if s.osd && !(s.big && s.page == Some(Page::Qs)) {
         return (Osd, None);
-    }
-    match s.notif {
-        Some(NotifFace::Plain) => return (Notif, None),
-        Some(NotifFace::Actions) => return (NotifAct, None),
-        None => {}
     }
     if s.timer_done {
         return (TimerDone, None);
@@ -506,12 +488,9 @@ mod tests {
     #[test]
     fn priorities() {
         assert_eq!(face(Snapshot { replying: true, osd: true, ..snap() }), Face::Reply);
-        assert_eq!(face(Snapshot { osd: true, notif: Some(NotifFace::Plain), ..snap() }), Face::Osd);
-        assert_eq!(face(Snapshot { notif: Some(NotifFace::Actions), power: true, ..snap() }), Face::NotifAct);
         assert_eq!(face(Snapshot { big: true, page: Some(Page::Qs), osd: true, ..snap() }), Face::Qs);
         assert_eq!(face(Snapshot { power: true, meeting: true, ..snap() }), Face::Power);
         assert_eq!(face(Snapshot { device: true, meeting: true, ..snap() }), Face::Device);
-        assert_eq!(face(Snapshot { notif: Some(NotifFace::Plain), device: true, ..snap() }), Face::Notif, "a notification wins");
         assert_eq!(face(Snapshot { meeting: true, rain: true, ..snap() }), Face::Meeting);
     }
 
@@ -573,7 +552,7 @@ mod tests {
         let (face, first) = choose(&o);
         assert_eq!((face, first), (Face::Idle, Some(Side::Op)));
         assert_eq!(more_sides(face, first, &o, 2, 3), [Side::OpAt(0), Side::OpAt(1)]);
-        assert!(more_sides(Face::Notif, None, &o, 2, 3).is_empty(), "no first pill, no more");
+        assert!(more_sides(Face::Idle, None, &o, 2, 3).is_empty(), "no first pill, no more");
     }
 
     #[test]

@@ -125,7 +125,7 @@ impl Shell {
         self.cut_to_shape(&window);
         // under a fullscreen window the island hides (the platform service says when); under a maximized one it
         // hides too, except while it has something to say (a card, a page) or the pointer is at the top edge
-        let resting = self.app.island.current_face().is_compact();
+        let resting = self.app.island.current_face().is_compact() && !self.app.island.has_card();
         let want_hidden = should_hide(self.app.fullscreen_hides(), self.app.maximized, resting, self.app.pointer_near);
         if want_hidden != self.hidden {
             self.hidden = want_hidden;

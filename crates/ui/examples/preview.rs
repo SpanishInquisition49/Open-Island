@@ -174,6 +174,10 @@ fn render(g: &mut Gpu, scene: &Scene, w: u32, h: u32, path: &std::path::Path) {
     eprintln!("wrote {}", path.display());
 }
 
+fn card_case(i: &mut Island, _: &mut Data) {
+    i.push(NOW, Input::Notification(Incoming { id: 1, app: "Telegram".into(), summary: "Marco".into(), body: "Ci vediamo alle 18 in aula?".into(), ..Default::default() }));
+}
+
 fn main() {
     let dir = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "preview".into()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -217,6 +221,18 @@ fn main() {
         ("osd", Box::new(|i, _| i.push(NOW, Input::Osd { kind: OsdKind::Volume, level: 0.62, muted: false }))),
         ("power-low", Box::new(|i, _| i.push(NOW, Input::Power(PowerEvent::Low)))),
         ("notif", Box::new(|i, _| i.push(NOW, Input::Notification(Incoming { id: 1, app: "Telegram".into(), summary: "Marco".into(), body: "Ci vediamo alle 18 in aula?".into(), ..Default::default() })))),
+        // the card as it drops out of the pill and goes back, and with the pointer on it
+        ("notif-drop-a", Box::new(card_case)),
+        ("notif-drop-b", Box::new(card_case)),
+        ("notif-drop-c", Box::new(card_case)),
+        ("notif-drop-d", Box::new(card_case)),
+        ("notif-leave-a", Box::new(card_case)),
+        ("notif-leave-b", Box::new(card_case)),
+        ("notif-hover", Box::new(card_case)),
+        ("notif-long", Box::new(|i, _| {
+            i.push(NOW, Input::Notification(Incoming { id: 1, app: "Mail".into(), summary: "Segreteria studenti: aggiornamento sul calendario degli appelli straordinari".into(), body: "Gentile studente, ti informiamo che il calendario degli appelli è stato aggiornato: controlla le nuove date sul portale prima di venerdì, perché le iscrizioni chiudono una settimana prima di ogni prova e non sarà possibile iscriversi dopo.".into(), ..Default::default() }));
+            i.push(NOW, Input::Notification(Incoming { id: 2, app: "Telegram".into(), summary: "Anna".into(), critical: true, ..Default::default() }));
+        })),
         ("bar-empty", Box::new(|i, _| i.push(NOW, Input::OpenBar))),
         ("bar-remind", Box::new(|i, _| { i.push(NOW, Input::OpenBar); i.push(NOW, Input::Key(KeyInput::Text("remind 20m Call Anna".into()))) })),
         ("bar-sum", Box::new(|i, _| { i.push(NOW, Input::OpenBar); i.push(NOW, Input::Key(KeyInput::Text("5 km in mi".into()))) })),
@@ -491,7 +507,25 @@ fn main() {
         // pages need a page request; "home" and "meeting" go through the hover-less path
         let hold = name == "lyrics-scroll" || name == "page-sys-opening" || name == "media-transition" || name.contains("full") || name.starts_with("focus-full") || name.contains("lyrics") || name == "home" || name == "home-rain" || name == "qs-devices" || name.starts_with("page-");
         let frames = if name == "media-transition" { 26 } else if name == "page-sys-opening" { 38 } else if name == "lyrics-scroll" { 40 } else { 400 };
-        let f = settle(&mut i, &d, frames, hold);
+        let frames = match name { "notif-drop-a" => 12, "notif-drop-b" => 24, "notif-drop-c" => 36, "notif-drop-d" => 52, _ => frames };
+        let mut f = settle(&mut i, &d, frames, hold);
+        // these need the card to have been on screen before something happens to it
+        if name.starts_with("notif-leave") || name == "notif-hover" {
+            let size = (f.surface.0.ceil().max(520.0), f.surface.1.ceil());
+            i.draw(&mut Scene::new(), &fonts, size, scale);
+            let mut t = NOW + frames as i64 * 8;
+            if name == "notif-hover" {
+                let (x, y, w, h) = i.input_rects()[1];
+                i.pointer_moved(t, x + w - 24.0, y + h / 2.0);
+            } else {
+                i.push(t, Input::NotificationClosed(1));
+            }
+            for _ in 0..match name { "notif-leave-a" => 18, "notif-leave-b" => 40, _ => 4 } {
+                t += 8;
+                f = i.tick(t, 8.0);
+                i.draw(&mut Scene::new(), &fonts, size, scale);
+            }
+        }
         let (sw, sh) = (f.surface.0.ceil().max(520.0) as u32, f.surface.1.ceil().max(90.0) as u32);
         let mut scene = Scene::new();
         scene.fill(vello::peniko::Fill::NonZero, Affine::IDENTITY, Color::from_rgba8(0xf6, 0xed, 0xd0, 255), None, &vello::kurbo::Rect::new(0.0, 0.0, 4000.0, 4000.0));

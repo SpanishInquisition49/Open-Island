@@ -273,6 +273,7 @@ impl Island {
             self.pending.push(Command::NotificationClosed { id: n.id, reason });
         }
         self.notif_until = 0;
+        self.leave_card();
     }
 
     pub(super) fn start_reply(&mut self) {

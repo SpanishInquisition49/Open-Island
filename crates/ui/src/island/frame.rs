@@ -1,6 +1,7 @@
 //! Part of `Island` (see `mod.rs`).
 
 use super::*;
+use super::card;
 
 impl Island {
     // ---- the frame ----------------------------------------------------------------------------
@@ -22,7 +23,6 @@ impl Island {
             }
             Face::Notifs => h = 14.0 + 34.0 + 6.0 + self.history_groups().len().clamp(1, 5) as f64 * 46.0 + if self.history.is_empty() { 20.0 } else { 8.0 },
             Face::Clip => h = 14.0 + 34.0 + 4.0 + self.data.clipboard.len().clamp(1, CLIP_ROWS) as f64 * 32.0 + 10.0,
-            Face::Notif if self.notif.as_ref().is_some_and(|n| n.progress.is_some()) => h += 14.0,
             Face::FocusMini => w += self.icon_count(true) as f64 * ICON_W,
             Face::Settings => h = 14.0 + 34.0 + self.settings_content_height() + 14.0,
             Face::Options => h = 14.0 + 34.0 + 40.0 + crate::options::content_height(self.options_tab, self.data.config.filters.len()) + 14.0,
@@ -165,9 +165,7 @@ impl Island {
             self.page = self.hover_page;
         }
         let media = self.data.media.as_ref().is_some_and(|m| !m.title.is_empty());
-        let notif = self.notif.as_ref().map(|n| if n.actions.is_empty() { NotifFace::Plain } else { NotifFace::Actions });
         let snap = Snapshot {
-            notif,
             barring: self.bar.is_some(),
             replying: self.reply.is_some(),
             osd: self.osd.is_some() && now < self.osd_until,
@@ -711,10 +709,15 @@ impl Island {
         if self.reply.as_ref().is_some_and(|r| now > r.until) {
             self.end_reply(false);
         }
+        self.hold_card();
         if self.notif.is_some() && self.reply.is_none() && now >= self.notif_until {
             self.close_notif(CloseReason::Expired);
         }
         // whatever took the card off the screen (expiry, the x, a click), the next waiting one comes up
+        // closed by its sender or by a press: its card goes back in before the next one takes its place
+        if self.notif.is_none() {
+            self.leave_card();
+        }
         if self.notif.is_none() && self.reply.is_none() {
             if let Some(n) = self.waiting.pop_front() {
                 self.queue.retain(|q| q.id != n.id);
@@ -724,6 +727,7 @@ impl Island {
         if self.notif.is_none() && self.waiting.is_empty() {
             self.queue.clear();
         }
+        self.sync_card();
         if self.timer.as_ref().and_then(|t| t.end_ms).is_some_and(|e| now >= e) {
             self.on_timer_end();
         }
@@ -845,15 +849,17 @@ impl Island {
         let levels_moving = self.ease_levels(dt_ms) | self.ease_media_button(dt_ms);
         let waiting_for_hover = (self.hovering && now - self.hover_since < HOVER_INTENT_MS + 60) || now < self.hover_left + HOVER_GRACE_MS + 60;
         let marquee = self.marquee_on.replace(false);
-        let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving || marquee;
+        let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving || marquee || self.card_moving();
         let equalizer = self.data.media.as_ref().is_some_and(|m| m.playing) && matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric);
-        let expiring = snap.osd || snap.notif.is_some() || snap.timer_done || snap.power || snap.meeting || snap.rain || snap.op_flash || self.edit.is_some() || self.reply.is_some() || self.kb.is_some() || self.bar.is_some();
+        let expiring = snap.osd || self.notif.is_some() || snap.timer_done || snap.power || snap.meeting || snap.rain || snap.op_flash || self.edit.is_some() || self.reply.is_some() || self.kb.is_some() || self.bar.is_some();
         let next_ms: u32 = if moving {
             0
         } else if equalizer {
             // live bars: every new spectrum (it comes 30 times a second) wakes a frame by itself, so no timer is needed
             // while they arrive (a timer at 16 ms drew each of them twice); the made-up animation needs one, at 30 fps
             if !self.spectrum.is_empty() && now - self.spectrum_at < 200 { 120 } else { 33 }
+        } else if self.cards.live.is_some() {
+            33 // the ring drains
         } else if expiring {
             120
         } else if self.timer.is_some() || self.ops.op.is_some_and_running() {
@@ -877,7 +883,14 @@ impl Island {
             self.anim_box = Some((target_w, th, bx.0, bx.1));
             bx
         };
-        Frame { surface: (sw.max(40.0) + 8.0, sh.max(20.0) + TOP_MARGIN + 4.0), animating, next_ms }
+        let (mut sw, mut sh) = (sw.max(40.0), sh.max(20.0));
+        if self.has_card() {
+            // room for the card under the pill, centred on the pill however many small pills sit beside it
+            let slot = self.side_slot(self.shown_side.is_some() || self.want_side.is_some(), self.shown_more.len().max(self.want_more.len()));
+            sw = sw.max(card::CARD_MAX_W + slot);
+            sh += card::CARD_ZONE_H;
+        }
+        Frame { surface: (sw + 8.0, sh + TOP_MARGIN + 4.0), animating, next_ms }
     }
 
     /// Content opacity for the crossfade (eased).
@@ -891,10 +904,12 @@ impl Island {
         self.pointer
     }
 
-    /// The part of the surface that should take pointer input (the pill and its bubble), in surface
-    /// coordinates: (x, y, width, height). The rest of the surface is transparent and must click through.
-    pub fn input_rect(&self) -> (f64, f64, f64, f64) {
-        self.pill_rect()
+    /// The parts of the surface that should take pointer input (the pill with its bubbles, and the card under it), in
+    /// surface coordinates: (x, y, width, height). The rest of the surface is transparent and must click through.
+    pub fn input_rects(&self) -> Vec<(f64, f64, f64, f64)> {
+        let mut v = vec![self.pill_rect()];
+        v.extend(self.cards.rect.map(|(x, y, w, h, _)| (x, y, w, h)));
+        v
     }
 
     /// The island's outline as rounded rectangles (x, y, width, height, radius) in surface coordinates: what is
@@ -908,6 +923,7 @@ impl Island {
                 v.push((self.pill_origin.0 + w + BUBBLE_GAP + n as f64 * (BUBBLE_W + BUBBLE_GAP), self.pill_origin.1, BUBBLE_W, h, r));
             }
         }
+        v.extend(self.cards.rect);
         v
     }
 

@@ -10,6 +10,7 @@ pub mod codes;
 pub mod color;
 pub mod culprit;
 pub mod downloads;
+pub mod droplet;
 pub mod duration;
 pub mod face;
 pub mod headsup;

@@ -139,6 +139,14 @@ returns to the page that led there.
 Besides the session, the graphics and the tools, it now has a "Your day" section: where home is, the commute and the card times, the pinned train, how many events are
 kept for offline use and when they were fetched, and the currency rates: what each day feature has to work with, and the command that sets it when it is missing.
 
+## The notification card
+
+A notification does not take over the pill: a drop forms inside it, falls on a liquid neck that pinches off and spreads into a card just below, then is gathered up and
+swallowed again when it goes. The card shows the icon or picture, the title and the sender, up to three lines of text, and on the right a ring that drains with the time
+left, or the buttons the sender offers. With the pointer on it the countdown waits (for up to 5 s after the pointer last moved), the icon becomes a close button and the
+ring becomes snooze; a click on the card opens the sender. The motion and the look are
+ported from [drip](https://github.com/jrnxf/drip) (see `THIRD-PARTY-NOTICES.md`).
+
 ## Conversations, not piles of cards
 
 Notifications are grouped by conversation (the same app and the same title: a chat or a sender, a site).
@@ -183,7 +191,7 @@ beside the pill, then a card again when it ends (red when it failed).
 
 ## Licence
 
-MIT. Tabler icons are MIT (`crates/ui/assets/TABLER-LICENSE.txt`).
+MIT. Tabler icons are MIT (`crates/ui/assets/TABLER-LICENSE.txt`). The notification card is ported from drip, MIT (`THIRD-PARTY-NOTICES.md`).
 
 ### The iPhone (through tether)
 
@@ -486,7 +494,7 @@ Notifications are held (they stay in the history, and the sound stays off) while
 `critical` notifications still come through. Switch any of the three off in the configuration:
 `"quiet_in_meetings": false`, `"quiet_on_mic": false`, `"quiet_on_screen_share": false`.
 
-The bell with a z on a notification card hides it and brings it back after ten minutes. When the island stops being
+The bell with a z on a notification card (under the pointer) hides it and brings it back after ten minutes. When the island stops being
 quiet (a meeting ends, a call, `dnd off`, the study focus) one card says how much was held back and from whom; a click
 opens the list. The focus mode of `~/.local/bin/focus` counts as quiet too.
 

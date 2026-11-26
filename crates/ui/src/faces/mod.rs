@@ -53,6 +53,10 @@ impl Island {
         hits.clear();
         let pointer = self.pointer_local();
 
+        // the notification card under it, and the neck that joins them: the pill covers where they meet
+        self.measure_cards(fonts);
+        self.draw_card_shapes(scene, base, w, h, radius);
+
         // the pill
         scene.fill(Fill::NonZero, base, theme::BG, None, &RoundedRect::new(0.0, 0.0, w, h, radius));
 
@@ -74,6 +78,8 @@ impl Island {
                 self.draw_dock(&mut p, w, h);
             }
         }
+        scene.pop_layer();
+        self.draw_card_contents(scene, fonts, &mut hits, base, w, h);
         // the keyboard focus ring
         if let Some(kb) = self.kb {
             let nav: Vec<usize> = hits.iter().enumerate().filter(|(_, hit)| !(hit.rect.width() > w * 0.9 && hit.rect.height() > h * 0.5)).map(|(i, _)| i).collect();
@@ -85,6 +91,7 @@ impl Island {
         // the cover art is one image that travels between the small pill's spot and the open player's,
         // following the shape's height, so it never cross-fades with the rest of the content
         if matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric) {
+            scene.push_clip_layer(Fill::NonZero, base, &RoundedRect::new(0.0, 0.0, w, h, radius));
             let t = ((h - 28.0) / (160.0 - 28.0)).clamp(0.0, 1.0);
             let t = t * t * (3.0 - 2.0 * t);
             let lerp = |a: f64, b: f64| a + (b - a) * t;
@@ -93,8 +100,8 @@ impl Island {
             let mut p = Painter { scene, fonts, hits: &mut hits, opacity: 1.0, pointer: None, transform: base, base: (1.0, base), since_enter: 10_000 };
             let art = self.data.media.as_ref().and_then(|m| m.art.as_ref());
             self.draw_art(&mut p, art, x, y, size, r);
+            scene.pop_layer();
         }
-        scene.pop_layer();
 
         // the side bubble
         for (n, side) in self.sides_shown().into_iter().enumerate().filter(|_| self.bubble_k > 0.01) {
@@ -151,7 +158,6 @@ impl Island {
             Face::TimerMini => self.face_timer_mini(p, w, h),
             Face::TimerFull => self.face_timer_full(p, w, h),
             Face::TimerDone => self.face_simple(p, w, h, "bell-ringing", theme::ACCENT, &self.timer_done_text.0, &self.timer_done_text.1),
-            Face::Notif | Face::NotifAct => self.face_notif(p, w, h, face == Face::NotifAct),
             Face::Reply => self.face_reply(p, w, h),
             Face::Device => self.face_device(p, w, h),
             Face::Weather => self.face_weather(p, w, h),
@@ -466,68 +472,6 @@ impl Island {
         p.icon(icon, 36.0, h / 2.0, 24.0, tint);
         p.text(title, 60.0, h / 2.0 - 9.0, 14.0, SEMI, theme::FG, Align::Left, (w - 78.0) as f32);
         p.text(sub, 60.0, h / 2.0 + 10.0, 11.0, REG, theme::DIM, Align::Left, (w - 78.0) as f32);
-    }
-
-    fn face_notif(&self, p: P, w: f64, h: f64, actions: bool) {
-        let Some(n) = &self.notif else { return };
-        let top = if actions { 14.0 + 30.0 } else { h / 2.0 };
-        let lead_cy = if actions { 14.0 + 30.0 } else { h / 2.0 };
-        match n.image.as_ref().or(n.app_icon.as_ref()) {
-            Some(img) => draw_image(p, img, 14.0, lead_cy - 22.0, 44.0, if n.image.is_some() { 10.0 } else { 9.0 }),
-            None => p.icon(if n.critical { "alert-triangle" } else { "bell" }, 36.0, lead_cy, 26.0, if n.critical { theme::RED } else { theme::FG }),
-        }
-        let more = self.queue.len();
-        let tx = 72.0;
-        let tmax = (w - tx - 84.0) as f32;
-        let mut app = n.app.clone();
-        // new messages of this conversation that joined the card, or others of the same app waiting
-        let group = self.notif_group.max(self.queue.iter().find(|q| q.app == n.app).map(|q| q.group_count).unwrap_or(1));
-        if group > 1 {
-            app = format!("{app}  ·  {group} new");
-        }
-        p.text(&app, tx, top - 19.0, 11.0, REG, theme::DIM, Align::Left, tmax);
-        p.text(&n.summary, tx, top - 2.0, 14.0, SEMI, theme::FG, Align::Left, tmax);
-        let code = super::island::notif_code(n);
-        match &code {
-            Some(c) => {
-                p.text(&island_core::codes::display(c), tx, top + 18.0, 19.0, SEMI, theme::ACCENT, Align::Left, tmax);
-                let copied = self.code_copied.is_some_and(|(id, until)| id == n.id && self.now < until);
-                p.text(if copied { "Copied" } else { "tap to copy" }, w - 14.0, top + 18.0, 10.0, REG, if copied { theme::ACCENT } else { theme::DIM }, Align::Right, 80.0);
-            }
-            None => {
-                p.text(&n.body, tx, top + 16.0, 12.0, REG, theme::DIM, Align::Left, tmax);
-            }
-        }
-        if let (Some(pr), false) = (n.progress, actions) {
-            p.bar(rect(tx, h - 18.0, tmax as f64, 5.0), pr as f64 / 100.0, theme::FG, theme::TRACK);
-        }
-        // every card has an x that dismisses it (the next waiting one comes up); how many wait shows under it
-        let xy = lead_cy - if more > 0 { 6.0 } else { 0.0 };
-        p.icon_button(w - 28.0, xy, 28.0, "x", 14.0, Action::Dismiss);
-        if !super::island::is_own_notification(n) {
-            p.icon_button(w - 58.0, xy, 28.0, "bell-z", 14.0, Action::Snooze);
-        }
-        if more > 0 {
-            p.text(&format!("+{more}"), w - 28.0, lead_cy + 14.0, 10.0, SEMI, theme::DIM, Align::Center, 30.0);
-        }
-        if actions {
-            let btns: Vec<(&str, Action)> = n
-                .actions
-                .iter()
-                .filter(|a| a.key != "default")
-                .take(3)
-                .map(|a| (if a.key == "inline-reply" { "Reply" } else { a.label.as_str() }, Action::NotifAction(a.key.clone())))
-                .collect();
-            let widths: Vec<f64> = btns.iter().map(|(l, _)| p.button_width(l)).collect();
-            let mut x = w - 14.0;
-            for ((label, action), bw) in btns.iter().zip(widths).rev() {
-                x -= bw;
-                p.button(rect(x, h - 14.0 - 30.0, bw, 30.0), label, action.clone());
-                x -= 8.0;
-            }
-        }
-        // a click on the card body goes to the app that sent it
-        p.hit(rect(0.0, 0.0, w, h - if actions { 50.0 } else { 0.0 }), code.map_or(Action::NotifOpen, Action::CopyCode));
     }
 
     fn face_reply(&self, p: P, w: f64, h: f64) {
@@ -870,6 +814,7 @@ impl Island {
     }
 }
 
+mod card;
 mod organizer;
 mod pages_a;
 mod pages_b;

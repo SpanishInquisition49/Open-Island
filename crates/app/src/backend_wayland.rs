@@ -91,7 +91,7 @@ struct Wl {
     next_ms: u32,
     exit: bool,
     last_render: Instant,
-    input_rect: Option<(i32, i32, i32, i32)>,
+    input_rects: Vec<(i32, i32, i32, i32)>,
     on_top_layer: bool,
     /// OPEN_ISLAND_NO_POINTER=1: the surface takes no pointer input (screenshots and tests)
     no_pointer: bool,
@@ -127,13 +127,14 @@ impl Wl {
         let (bw, bh) = ((lw as f64 * self.scale).round() as u32, (lh as f64 * self.scale).round() as u32);
         self.gpu.resize(bw, bh);
         // only the island itself takes clicks
-        let (x, y, w, h) = self.app.island.input_rect();
-        let rect = (x.floor() as i32, y.floor() as i32, w.ceil() as i32, h.ceil() as i32);
-        if self.input_rect != Some(rect) {
-            self.input_rect = Some(rect);
+        let rects: Vec<(i32, i32, i32, i32)> = self.app.island.input_rects().into_iter().map(|(x, y, w, h)| (x.floor() as i32, y.floor() as i32, w.ceil() as i32, h.ceil() as i32)).collect();
+        if self.input_rects != rects {
+            self.input_rects = rects.clone();
             if let Ok(region) = Region::new(&self.compositor) {
                 if !self.no_pointer {
-                    region.add(rect.0, rect.1, rect.2, rect.3);
+                    for (x, y, w, h) in rects {
+                        region.add(x, y, w, h);
+                    }
                 }
                 self.layer.wl_surface().set_input_region(Some(region.wl_region()));
             }
@@ -538,7 +539,7 @@ pub fn run() -> Result<(), String> {
         next_ms: 0,
         exit: false,
         last_render: Instant::now(),
-        input_rect: None,
+        input_rects: Vec::new(),
         on_top_layer: false,
         no_pointer: std::env::var_os("OPEN_ISLAND_NO_POINTER").is_some(),
         perf: crate::perf::Perf::from_env(),

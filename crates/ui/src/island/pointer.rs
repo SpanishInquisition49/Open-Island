@@ -37,6 +37,7 @@ impl Island {
     pub fn pointer_moved(&mut self, now: i64, x: f64, y: f64) -> Vec<Command> {
         self.now = now;
         self.pointer = Some((x, y));
+        self.card_pointer_moved();
         let (px, py, pw, ph) = self.pill_rect();
         let inside = x >= px && x <= px + pw && y >= py && y <= py + ph;
         if inside && !self.hovering {
@@ -153,7 +154,6 @@ impl Island {
             Face::TimerDone => self.timer_done_until = 0,
             Face::Power => self.power_until = 0,
             Face::Device => self.device_until = 0,
-            Face::Notif | Face::NotifAct => self.close_notif(CloseReason::Dismissed),
             Face::Meeting => self.meeting_until = 0,
             Face::Rain => self.rain_until = 0,
             Face::Progress => {
@@ -201,6 +201,10 @@ impl Island {
 
     pub fn scroll(&mut self, now: i64, dx: f64, dy: f64) -> Vec<Command> {
         self.now = now;
+        // the card under the pill is not the pill
+        if self.over_card() {
+            return vec![];
+        }
         // over the map the wheel zooms (and a sideways swipe does not turn the page under the finger)
         if self.shown == Face::Map {
             self.map_scroll_acc += dy;

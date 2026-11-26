@@ -6,7 +6,7 @@ use crate::model::*;
 use crate::paint::Hit;
 use island_core::calendar::{self, Announcer};
 use island_core::duration;
-use island_core::face::{self, Face, NotifFace, Page, Side, Snapshot};
+use island_core::face::{self, Face, Page, Side, Snapshot};
 use island_core::lyrics::{self, Line};
 use island_core::notify;
 use island_core::pomodoro::{self, Phase};
@@ -536,7 +536,7 @@ pub struct Cal {
 
 /// A window this big holds every page (with its overshoot and the side bubble): a platform that cannot resize its
 /// window without a hitch keeps one of this size and only changes which part of it takes the pointer.
-pub const MAX_SURFACE: (f64, f64) = (560.0, 640.0);
+pub const MAX_SURFACE: (f64, f64) = (820.0, 840.0);
 
 /// Result of a tick: how big the window surface must be, and whether another frame is needed soon.
 #[derive(Clone, Copy, Debug)]
@@ -632,6 +632,8 @@ pub struct Island {
     pub(crate) timer_done_text: (String, String),
     pub(crate) notif: Option<Incoming>,
     notif_until: i64,
+    /// The notification card under the pill.
+    pub(crate) cards: card::Cards,
     pub(crate) reply: Option<Reply>,
     pub(crate) bar: Option<Bar>,
     pub(crate) options_tab: usize,
@@ -818,6 +820,7 @@ impl Island {
             timer_done_text: Default::default(),
             notif: None,
             notif_until: 0,
+            cards: Default::default(),
             reply: None,
             bar: None,
             options_tab: 0,
@@ -927,6 +930,7 @@ impl Island {
     }
 }
 
+pub(crate) mod card;
 mod frame;
 mod inputs;
 mod organizer;

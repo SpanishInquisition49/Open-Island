@@ -174,7 +174,7 @@ fn notifications_queue_and_do_not_disturb() {
     i.push(T0, n(2, "b", false));
     assert_eq!(i.queue.len(), 1);
     run(&mut i, 600);
-    assert_eq!(i.current_face(), Face::Notif);
+    assert!(i.has_card() && i.current_face() == Face::Idle, "the card drops under the pill, which stays as it is");
     assert_eq!(i.notif.as_ref().unwrap().id, 1);
     run(&mut i, 5500);
     assert_eq!(i.notif.as_ref().map(|n| n.id), Some(2), "the next one is shown");
@@ -3641,4 +3641,108 @@ fn the_pill_widens_for_a_long_line_of_lyrics_and_stays_put_for_a_short_one() {
     i.cfg.lyrics_in_pill = false;
     assert_eq!(i.face_size(Face::MediaMini).0, base.min(i.face_size(Face::MediaMini).0), "off: the title's pill");
     assert!(i.face_size(Face::MediaMini).0 < wide);
+}
+
+/// Ticks and draws, as the platform does: the card's motion and its place come from the drawing.
+fn card_frames(i: &mut Island, f: &Fonts, ms: i64) -> crate::island::Frame {
+    let mut fr = i.tick(i.now.max(T0), 8.0);
+    for _ in 0..(ms / 8).max(1) {
+        fr = i.tick(i.now + 8, 8.0);
+        i.draw(&mut Scene::new(), f, fr.surface, 1.0);
+    }
+    fr
+}
+
+#[test]
+fn a_card_drops_under_the_pill_takes_the_pointer_and_goes_back_in() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    assert_eq!(i.input_rects().len(), 1);
+    i.push(T0, Input::Notification(incoming(1)));
+    let fr = card_frames(&mut i, &f, 1500);
+    let rects = i.input_rects();
+    assert_eq!(rects.len(), 2, "the pill and the card");
+    let (pill, card) = (rects[0], rects[1]);
+    assert!((card.1 - (pill.1 + pill.3 + 12.0)).abs() < 0.5, "under the pill, past the gap: {pill:?} {card:?}");
+    assert!(card.0 >= 0.0 && card.0 + card.2 <= fr.surface.0 && card.1 + card.3 <= fr.surface.1, "{card:?} in {:?}", fr.surface);
+    assert!(((card.0 + card.2 / 2.0) - (pill.0 + pill.2 / 2.0)).abs() < 1.0, "centred under it");
+    i.activate(Action::Dismiss);
+    card_frames(&mut i, &f, 100);
+    assert!(i.has_card() && i.input_rects().len() == 1, "still on its way, and no longer takes the pointer");
+    card_frames(&mut i, &f, 1500);
+    assert!(!i.has_card());
+}
+
+#[test]
+fn the_next_card_waits_for_the_one_before_and_keeps_its_whole_time() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::Notification(incoming(1)));
+    i.push(T0, Input::Notification(Incoming { app: "mail".into(), ..incoming(2) }));
+    card_frames(&mut i, &f, 1000);
+    i.activate(Action::Dismiss);
+    card_frames(&mut i, &f, 16);
+    let c = i.cards.live.as_ref().expect("the next one is lined up");
+    assert!(c.n.id == 2 && c.born > i.now, "after the first has gone in");
+    assert!(i.notif_until >= c.born + i.cfg.notification_ms - 16);
+}
+
+#[test]
+fn an_update_changes_the_card_where_it_is() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::Notification(incoming(1)));
+    card_frames(&mut i, &f, 1500);
+    let (born, width) = (i.cards.live.as_ref().unwrap().born, i.input_rects()[1].2);
+    i.push(i.now, Input::Notification(Incoming { body: "A much longer line, which needs a wider card than the one before".into(), ..incoming(1) }));
+    card_frames(&mut i, &f, 1000);
+    assert_eq!(i.cards.live.as_ref().unwrap().born, born, "the same card");
+    assert!(i.cards.gone.is_none() && i.input_rects()[1].2 > width + 50.0);
+}
+
+#[test]
+fn the_pointer_on_a_card_holds_its_countdown_for_a_while() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::Notification(incoming(1)));
+    card_frames(&mut i, &f, 4000);
+    let (x, y, w, h) = i.input_rects()[1];
+    i.pointer_moved(i.now, x + w / 2.0, y + h / 2.0);
+    let left = i.card_time_left();
+    card_frames(&mut i, &f, 4000);
+    assert!(i.notif.is_some(), "held past its five seconds");
+    assert!((i.card_time_left() - left).abs() < 0.05, "the ring stands still: {left} -> {}", i.card_time_left());
+    assert!(!i.hovering, "the card is not the pill: no page opens");
+    i.pointer_left(i.now);
+    card_frames(&mut i, &f, 1000);
+    assert!(i.notif.is_some(), "a moment more after the pointer leaves");
+    card_frames(&mut i, &f, 1000);
+    assert!(i.notif.is_none());
+    // a pointer that never moves does not hold a card for ever
+    i.push(i.now, Input::Notification(incoming(2)));
+    card_frames(&mut i, &f, 1500);
+    let (x, y, w, h) = i.input_rects()[1];
+    i.pointer_moved(i.now, x + w / 2.0, y + h / 2.0);
+    card_frames(&mut i, &f, 12_000);
+    assert!(i.notif.is_none());
+}
+
+#[test]
+fn going_from_an_open_page_down_to_the_card_keeps_the_page_open() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    i.push(T0, Input::Notification(incoming(1)));
+    card_frames(&mut i, &f, 1500);
+    let (px, py, pw, ph) = i.input_rects()[0];
+    i.pointer_moved(i.now, px + pw / 2.0, py + ph / 2.0);
+    card_frames(&mut i, &f, 1000);
+    assert_eq!(i.current_face(), Face::IdleHover);
+    // off the pill, across the gap, onto the card
+    i.pointer_left(i.now);
+    card_frames(&mut i, &f, 100);
+    let (x, y, w, h) = i.input_rects()[1];
+    i.pointer_moved(i.now, x + w / 2.0, y + h / 2.0);
+    card_frames(&mut i, &f, 1500);
+    assert_eq!(i.current_face(), Face::IdleHover, "the page stays");
+    assert!(i.over_card(), "and the card is still under the pointer");
 }
