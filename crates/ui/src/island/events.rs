@@ -254,6 +254,7 @@ impl Island {
             }
             "copy" => self.pending.push(Command::RestoreClipboard(what.to_string())),
             "screens" => self.screens_action(what),
+            "undo" => self.undo_removal(what),
             _ => return false,
         }
         true

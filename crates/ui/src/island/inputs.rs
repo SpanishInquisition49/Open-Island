@@ -1,5 +1,6 @@
 //! Part of `Island` (see `mod.rs`).
 
+use super::undo::Removed;
 use super::*;
 
 impl Island {
@@ -998,15 +999,17 @@ impl Island {
     /// Takes pins off: "" the newest, "all" every one, else the first containing the words (any case).
     pub fn unpin(&mut self, what: &str) {
         let what = what.trim().to_lowercase();
-        let gone = match what.as_str() {
-            "" => (!self.pins.is_empty()).then(|| vec![self.pins.remove(0)]),
-            "all" | "tutti" => Some(std::mem::take(&mut self.pins)),
-            w => self.pins.iter().position(|p| p.to_lowercase().contains(w)).map(|i| vec![self.pins.remove(i)]),
+        let gone: Vec<(usize, String)> = match what.as_str() {
+            "" => (!self.pins.is_empty()).then(|| (0, self.pins.remove(0))).into_iter().collect(),
+            "all" | "tutti" => std::mem::take(&mut self.pins).into_iter().enumerate().collect(),
+            w => self.pins.iter().position(|p| p.to_lowercase().contains(w)).map(|i| (i, self.pins.remove(i))).into_iter().collect(),
         };
-        match gone {
-            Some(g) if !g.is_empty() => self.say("Unpinned", &if g.len() == 1 { g[0].clone() } else { format!("{} notes", g.len()) }),
-            _ => self.say("Nothing to unpin", ""),
-        }
+        let said = match gone.as_slice() {
+            [] => return self.say("Nothing to unpin", ""),
+            [(_, one)] => one.clone(),
+            many => format!("{} notes", many.len()),
+        };
+        self.removed(Removed::Pins(gone), "Unpinned", &said);
     }
 
     /// How often each page was opened, by page key, to be kept between runs.

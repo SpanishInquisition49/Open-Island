@@ -1,5 +1,6 @@
 //! Part of `Island` (see `mod.rs`).
 
+use super::undo::Removed;
 use super::*;
 
 impl Island {
@@ -253,6 +254,17 @@ impl Island {
             }
             return vec![];
         }
+        // over the calendar the wheel goes through the events of the day
+        if self.shown == Face::Cal {
+            self.cal_scroll_acc += dy;
+            while self.cal_scroll_acc.abs() >= 1.0 {
+                let up = self.cal_scroll_acc > 0.0;
+                self.cal.first = if up { self.cal_first().saturating_sub(1) } else { (self.cal_first() + 1).min(self.cal_last_first()) };
+                self.cal_scroll_acc -= self.cal_scroll_acc.signum();
+            }
+            self.expand_until = now + 6000;
+            return vec![];
+        }
         // vertical scroll over the pill or a media face changes the volume
         if self.shown.is_compact() || matches!(self.shown, Face::MediaFull | Face::MediaLyric | Face::MediaMini | Face::Osd | Face::Qs) {
             let v = (self.data.volume.unwrap_or(0.5) + (dy as f32) * 0.02).clamp(0.0, 1.0);
@@ -493,7 +505,9 @@ impl Island {
             Action::AuthSubmit | Action::AuthCancel | Action::AuthUser | Action::AuthFace | Action::AuthConfirm => {}
             Action::DeadlineDone(n) => {
                 if n < self.deadlines.len() {
-                    self.deadlines.remove(n);
+                    let d = self.deadlines.remove(n);
+                    let name = d.text.clone();
+                    self.removed(Removed::Deadline(n, d), "Removed from the plan", &name);
                 }
             }
             Action::PlanHours(open) => self.plan_hours = open,
@@ -555,7 +569,8 @@ impl Island {
             }
             Action::PinRemove(n) => {
                 if n < self.pins.len() {
-                    self.pins.remove(n);
+                    let pin = self.pins.remove(n);
+                    self.removed(Removed::Pins(vec![(n, pin.clone())]), "Unpinned", &pin);
                 }
             }
             Action::TodoDone(n) => self.complete_task(n),
@@ -689,14 +704,20 @@ impl Island {
                 self.hover_page = Some(p);
                 if p == Page::Cal {
                     let c = crate::clock::civil(now, self.data.utc_offset_secs);
-                    self.cal = Cal { year: c.year, month: c.month, day: c.day };
+                    self.cal = Cal { year: c.year, month: c.month, day: c.day, first: 0 };
                 }
             }
             Action::CalPrev | Action::CalNext => {
                 let (y, m) = calendar::add_months(self.cal.year, self.cal.month, if a == Action::CalNext { 1 } else { -1 });
-                self.cal = Cal { year: y, month: m, day: 1 };
+                self.cal = Cal { year: y, month: m, day: 1, first: 0 };
             }
-            Action::CalDay(d) => self.cal.day = d,
+            Action::CalDay(d) => (self.cal.day, self.cal.first) = (d, 0),
+            // a page further, and from the last one back to the top
+            Action::CalMore => {
+                let last = self.cal_last_first();
+                let first = self.cal_first();
+                self.cal.first = if first >= last { 0 } else { (first + CAL_ROWS).min(last) };
+            }
             Action::Join(url) => {
                 return vec![Command::OpenUrl(url)];
             }
@@ -713,7 +734,7 @@ impl Island {
             Action::RemoveCalendar(i) => return vec![Command::RemoveCalendar(i)],
             Action::CalToday => {
                 let c = crate::clock::civil(now, self.data.utc_offset_secs);
-                self.cal = Cal { year: c.year, month: c.month, day: c.day };
+                self.cal = Cal { year: c.year, month: c.month, day: c.day, first: 0 };
             }
             // a row of the page is a conversation: removing or opening it takes all of its messages
             Action::HistoryRemove(i) => {
@@ -896,10 +917,18 @@ impl Island {
             }
             Action::ShelfRemove(n) => {
                 if n < self.shelf.len() {
-                    self.shelf.remove(n);
+                    let path = self.shelf.remove(n);
+                    let name = std::path::Path::new(&path).file_name().map_or_else(|| path.clone(), |f| f.to_string_lossy().into_owned());
+                    self.removed(Removed::Shelf(vec![(n, path)]), "Taken off the shelf", &name);
                 }
             }
-            Action::ShelfClear => self.shelf.clear(),
+            Action::ShelfClear => {
+                let all: Vec<(usize, String)> = std::mem::take(&mut self.shelf).into_iter().enumerate().collect();
+                if !all.is_empty() {
+                    let body = if all.len() == 1 { "1 file".to_string() } else { format!("{} files", all.len()) };
+                    self.removed(Removed::Shelf(all), "Shelf cleared", &body);
+                }
+            }
             Action::ShelfSend => {
                 if !self.shelf.is_empty() {
                     self.push(now, Input::SendFiles(self.shelf.clone()));
@@ -907,7 +936,9 @@ impl Island {
             }
             Action::WaitingRemove(n) => {
                 if n < self.at_places.len() {
-                    self.at_places.remove(n);
+                    let w = self.at_places.remove(n);
+                    let text = w.text.clone();
+                    self.removed(Removed::Waiting(n, w), "Reminder removed", &text);
                 }
             }
             // what the button shows lit, a press puts out, whoever lit it

@@ -123,6 +123,9 @@ month outside that and it is read then, with the months beside it ("Reading this
 read again after ten minutes or on refresh. A feed only gives what its publisher still lists: an old month can be empty because
 the events are gone at the source.
 
+Under the month, the events of the chosen day are listed four at a time. On a busier day the wheel moves through them, and the
+button under the list ("1–4 of 7 · more") goes a page further and back to the top.
+
 **Passwords and API keys** (CalDAV accounts, the map tiles) are kept in the system's keyring, not in `config.json`: the
 Secret Service on Linux (GNOME Keyring, KWallet, KeePassXC), the Credential Manager on Windows, the Keychain on macOS. One
 written into the file by hand (`"password"`, `"map_api_key"`) is moved to the keyring while the island runs, and leaves the
@@ -867,6 +870,13 @@ PipeWire reports a change, so it follows headphones coming and going.
 The clock icon in the dock (right after home, `open-island msg page today`) lists the day in one column: calendar events and
 reminders in time order, what is over dimmed, and a line for "now" between it and what is still to come. The header says what
 is next and in how long; an event with a link has a join button on its row.
+
+## Taking back a removal
+
+What a cross, a menu or a line removes can be brought back for a few seconds with **Undo** on the card that says it went: a
+task (on the CalDAV account too, with `tasks_sync`), an exam or hand-in with the time studied for it, a pinned note, files
+taken off the shelf (also all at once) and a reminder waiting for a place. Only the last removal can be taken back. A calendar
+event cancelled with `cancel` cannot: it is deleted at its source.
 
 ## Reminders tied to a place
 

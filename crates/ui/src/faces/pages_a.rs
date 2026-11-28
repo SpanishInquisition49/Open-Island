@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::model::AuthFaceUse;
-use crate::island::FACE_NOTE_H;
+use crate::island::{CAL_ROWS, FACE_NOTE_H};
 
 impl Island {
     pub(super) fn face_cal(&self, p: P, w: f64, h: f64) {
@@ -55,7 +55,17 @@ impl Island {
         if evs.is_empty() {
             p.text(self.no_events_text(), 14.0, y, 12.0, REG, theme::DIM, Align::Left, 300.0);
         }
-        for e in evs.iter().take(4) {
+        let first = self.cal_first();
+        if evs.len() > CAL_ROWS {
+            // which of the day's events these are, and the way to the others (the wheel moves one at a time)
+            let t = format!("{}–{} of {} · more", first + 1, first + CAL_ROWS, evs.len());
+            let tw = p.fonts.measure(&t, 10.0, SEMI) as f64;
+            let chip = rect(14.0, h - 16.0, tw + 16.0, 16.0);
+            p.rrect(chip, 8.0, if p.hovered(chip) { theme::HOT_CHIP } else { theme::CHIP });
+            p.text(&t, 22.0, h - 8.0, 10.0, SEMI, theme::FG, Align::Left, 200.0);
+            p.hit(chip, Action::CalMore);
+        }
+        for e in evs.iter().skip(first).take(CAL_ROWS) {
             let when = if e.all_day { "All day".to_string() } else { clock::civil(e.start_ms, self.offset_at(e.start_ms)).hhmm() };
             let row = rect(8.0, y - 11.0, w - 16.0, 22.0);
             let has_url = e.url.as_deref().is_some_and(|u| !u.is_empty());

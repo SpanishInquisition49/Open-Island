@@ -1,6 +1,7 @@
 //! The organizer: tasks (a day, a course, an estimate, a repetition), events made from the bar, study time, the week ahead
 //! and the search. Everything is decided here from what the island holds; the files and servers are the platform layer's.
 
+use super::undo::Removed;
 use super::*;
 use crate::model::OptionValue;
 use island_core::plan::{self, DayLoad, Hit, HitKind, Load, StudyHours, StudyPlan, Weighted};
@@ -248,7 +249,8 @@ impl Island {
         let extra = self.tasks_done.len().saturating_sub(20);
         self.tasks_done.drain(..extra);
         self.pending.push(Command::DeleteTask { uid: t.uid.clone() });
-        self.say("Task removed", &t.text);
+        let text = t.text.clone();
+        self.removed(Removed::Task(i, t), "Task removed", &text);
     }
 
     pub(super) fn cancel_event(&mut self, query: &str) {

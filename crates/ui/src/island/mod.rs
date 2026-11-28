@@ -338,6 +338,8 @@ pub enum Action {
     SetColor(usize, (u8, u8, u8)),
     Back,
     CalToday,
+    /// The next events of a day that has more than fit.
+    CalMore,
     HistoryRemove(usize),
     HistoryOpen(usize),
     /// A click on the notification card: go to the app that sent it.
@@ -626,7 +628,12 @@ pub struct Cal {
     pub year: i32,
     pub month: u32,
     pub day: u32,
+    /// The first of the day's events listed, when there are more than fit.
+    pub first: usize,
 }
+
+/// The events of a day the calendar page lists at a time.
+pub(crate) const CAL_ROWS: usize = 4;
 
 /// A window this big holds every page (with its overshoot and the side bubble): a platform that cannot resize its
 /// window without a hitch keeps one of this size and only changes which part of it takes the pointer.
@@ -769,6 +776,9 @@ pub struct Island {
     /// Places saved by name (home is in the settings), and the reminders waiting for one.
     pub(crate) places: Vec<(String, f64, f64)>,
     pub(crate) at_places: Vec<island_core::places::Waiting>,
+    /// What was removed last, while it can be taken back, and the number of its card.
+    undo: Option<undo::Removed>,
+    undo_count: u32,
     /// When a position was last asked for the waiting reminders.
     pub(crate) place_asked_at: i64,
     /// The microphone's mute as last told.
@@ -796,6 +806,7 @@ pub struct Island {
     map_fixed_zoom: Option<u8>,
     map_drag_last: (f64, f64),
     map_scroll_acc: f64,
+    cal_scroll_acc: f64,
     pub(crate) map_both: bool,
     map_asked_at: i64,
     /// Map tiles that arrived (and which were asked for), by zoom, x, y.
@@ -969,6 +980,8 @@ impl Island {
             mic_seen: None,
             places: Vec::new(),
             at_places: Vec::new(),
+            undo: None,
+            undo_count: 0,
             shelf: Vec::new(),
             shelf_pressed: (0.0, 0.0),
             place_asked_at: 0,
@@ -987,6 +1000,7 @@ impl Island {
             map_fixed_zoom: None,
             map_drag_last: (0.0, 0.0),
             map_scroll_acc: 0.0,
+            cal_scroll_acc: 0.0,
             map_both: true,
             map_asked_at: i64::MIN / 2,
             tiles: Default::default(),
@@ -1033,7 +1047,7 @@ impl Island {
             lyric_idx: 0,
             lyric_at: -100_000,
             lyric_dir: 1.0,
-            cal: Cal { year: 1970, month: 1, day: 1 },
+            cal: Cal { year: 1970, month: 1, day: 1, first: 0 },
             enter_at: -100_000,
             spectrum: vec![],
             spectrum_at: -100_000,
@@ -1081,6 +1095,7 @@ mod screens;
 mod session;
 mod places;
 mod shelf;
+mod undo;
 pub(crate) use organizer::{PLAN_ROWS, SPLIT_ROWS};
 mod pointer;
 mod power;

@@ -21,7 +21,7 @@ impl Island {
             }
             Face::Cal => {
                 let weeks = calendar::month_grid(self.cal.year, self.cal.month).len() as f64;
-                let n = self.day_events().len().clamp(1, 4) as f64;
+                let n = self.day_events().len().clamp(1, CAL_ROWS) as f64;
                 h = 14.0 + 34.0 + 4.0 + 16.0 + weeks * 30.0 + 10.0 + n * 24.0 + 20.0;
             }
             Face::Notifs => h = 14.0 + 34.0 + 6.0 + self.history_groups().len().clamp(1, 5) as f64 * 46.0 + if self.history.is_empty() { 20.0 } else { 8.0 },
@@ -104,6 +104,16 @@ impl Island {
         let start = self.local_midnight_ms(c.year, c.month, c.day);
         let end = self.local_midnight_ms(c.year, c.month, c.day + 1);
         calendar::events_between(self.calendar_events(), start, end)
+    }
+
+    /// The last position the list of the day can start from.
+    pub(super) fn cal_last_first(&self) -> usize {
+        self.day_events().len().saturating_sub(CAL_ROWS)
+    }
+
+    /// Where it starts now (the events may have changed since it was moved).
+    pub(crate) fn cal_first(&self) -> usize {
+        self.cal.first.min(self.cal_last_first())
     }
 
     /// The local offset from UTC at an instant: the calendar page goes where daylight saving is another.
@@ -959,7 +969,7 @@ impl Island {
         // the calendar opens on today however it was reached (a swipe, the back button, a shortcut)
         if want == Face::Cal && (want != self.want || self.cal.year == 1970) {
             let c = crate::clock::civil(now, self.data.utc_offset_secs);
-            self.cal = Cal { year: c.year, month: c.month, day: c.day };
+            self.cal = Cal { year: c.year, month: c.month, day: c.day, first: 0 };
         }
         // opening the calendar or the home page with stale events asks for a fresh read
         if want != self.want && matches!(want, Face::Cal | Face::IdleHover) && !self.data.config.calendars.is_empty() && now - self.data.events_synced_at > STALE_EVENTS_MS && now - self.last_refresh_req > 30_000 {

@@ -318,6 +318,15 @@ fn main() {
             i.push(NOW - 10 * 60_000, Input::Focused { app: "zen".into(), title: "docs".into() });
             i.push(NOW, Input::OpenPage(island_core::face::Page::Activity));
         })),
+        ("page-calendar-busy", Box::new(|i, d| {
+            d.events = (0..7).map(|n| Event { id: n.to_string(), title: format!("Lecture number {}", n + 1), start_ms: NOW + n * 1_800_000, end_ms: NOW + n * 1_800_000 + 1_500_000, calendar: "Università".into(), ..Default::default() }).collect();
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Cal));
+        })),
+        ("card-undo", Box::new(|i, _| {
+            i.push(NOW, Input::RunLine("todo hand in the report".into()));
+            i.push(NOW, Input::DismissCard);
+            i.push(NOW, Input::RunLine("rm report".into()));
+        })),
         ("media-mini", Box::new(|_, d| media(d, true))),
         ("media-mini-lyric", Box::new(|i, d| { media(d, true); i.cfg.lyrics_in_pill = true; })),
         ("media-long-title", Box::new(|_, d| { media(d, true); d.media.as_mut().unwrap().title = "Sinfonia n. 9 in re minore, op. 125: IV. Finale (Presto - Allegro assai)".into(); })),

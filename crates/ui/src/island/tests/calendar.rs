@@ -177,7 +177,7 @@ fn a_month_partly_read_shows_both_parts_without_doubles() {
     // the month holding the old edge of the stretch
     let edge = i.data.events_span.0;
     let c = crate::clock::civil(edge, 0);
-    i.cal = Cal { year: c.year, month: c.month, day: 1 };
+    i.cal = Cal { year: c.year, month: c.month, day: 1, first: 0 };
     let ev = |title: &str, start: i64| Event { id: title.into(), title: title.into(), start_ms: start, end_ms: start + 1000, ..Default::default() };
     let (before, after) = (ev("before", edge - 86_400_000), ev("after", edge + 3_600_000));
     i.data.events = vec![after.clone()];
@@ -198,7 +198,7 @@ fn days_before_a_change_of_clocks_keep_their_own_hours() {
     assert_eq!(midnight, crate::clock::midnight_ms(2026, 10, 10, 7200));
     i.data.events = vec![Event { id: "d".into(), title: "Holiday".into(), start_ms: midnight, end_ms: midnight + 86_400_000, all_day: true, ..Default::default() }];
     let on = |i: &mut Island, day: u32| {
-        i.cal = Cal { year: 2026, month: 10, day };
+        i.cal = Cal { year: 2026, month: 10, day, first: 0 };
         i.day_events().len()
     };
     assert_eq!((on(&mut i, 9), on(&mut i, 10), on(&mut i, 11)), (0, 1, 0), "an all-day event stays on its day");
@@ -441,4 +441,37 @@ fn the_end_of_an_event_inside_a_longer_one_says_it_is_still_on() {
     i.data.events = vec![ev("Lab", T0, T0 + 5 * h), ev("Talk", T0 + h, T0 + 2 * h), ev("Seminar", T0 + 4 * h, T0 + 6 * h)];
     i.tick(T0 + 2 * h - 60_000, 8.0);
     assert_eq!(i.notif.take().map(|c| (c.summary, c.body)), Some(("Talk ends in 1 min".into(), "Still on: Lab until 13:00".into())));
+}
+
+#[test]
+fn a_day_with_more_events_than_fit_is_gone_through() {
+    let mut i = Island::new(Config { meeting_alerts: false, end_alerts: false, ..Config::default() });
+    let h = 3_600_000;
+    i.data.events = (0..9).map(|n| Event { id: n.to_string(), title: format!("e{n}"), start_ms: T0 + n * h / 2, end_ms: T0 + n * h / 2 + h / 4, ..Default::default() }).collect();
+    i.push(T0, Input::OpenPage(Page::Cal));
+    run(&mut i, 400);
+    assert_eq!((i.cal_first(), i.cal_last_first()), (0, 5));
+    draw_frames(&mut i, 40);
+    // the button goes a page further, and from the end back to the top
+    for first in [4, 5, 0] {
+        assert!(press(&mut i, Action::CalMore));
+        assert_eq!(i.cal_first(), first);
+        draw_frames(&mut i, 2);
+    }
+    // the wheel moves one at a time (down is negative), and stops at the ends without touching the volume
+    for _ in 0..8 {
+        assert!(i.scroll(i.now, 0.0, -1.0).is_empty());
+    }
+    assert_eq!(i.cal_first(), 5);
+    i.scroll(i.now, 0.0, 0.4);
+    assert_eq!(i.cal_first(), 5, "less than a notch");
+    i.scroll(i.now, 0.0, 0.6);
+    assert_eq!(i.cal_first(), 4);
+    // events that go away leave no empty list behind
+    i.data.events.truncate(3);
+    assert_eq!(i.cal_first(), 0);
+    // another day starts from its top
+    i.cal.first = 2;
+    i.activate(Action::CalDay(1));
+    assert_eq!(i.cal.first, 0);
 }
