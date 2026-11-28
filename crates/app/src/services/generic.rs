@@ -20,7 +20,7 @@ pub fn start_system(rep: Reporter) {
         loop {
             if !super::SYSTEM_WANTED.load(Ordering::Relaxed) {
                 last_net = None;
-                std::thread::sleep(Duration::from_millis(400));
+                super::signal::wait_until(&super::SYSTEM_WANTED);
                 continue;
             }
             sys.refresh_cpu_usage();

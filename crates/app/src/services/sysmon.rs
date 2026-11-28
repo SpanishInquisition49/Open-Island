@@ -74,7 +74,7 @@ pub fn start(rep: Reporter) {
             if !super::SYSTEM_WANTED.load(Ordering::Relaxed) {
                 prev_cpu.clear();
                 prev_net = None;
-                std::thread::sleep(Duration::from_millis(400));
+                super::signal::wait_until(&super::SYSTEM_WANTED);
                 continue;
             }
             let cpu_now = sysmon::parse_proc_stat(&read("/proc/stat").unwrap_or_default());

@@ -164,7 +164,7 @@ pub fn point(s: &crate::config::Settings) -> Option<(f64, f64)> {
 
 /// Looks for a fix now (the loop in `start` does it, and wakes at once).
 pub fn refresh() {
-    super::LOCATION_ASK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    super::signal::bump(&super::LOCATION_ASK);
 }
 
 fn settings_position() -> Option<Position> {
@@ -190,7 +190,7 @@ pub fn start(rep: Reporter) {
                 let moved = published.is_none_or(|(la, lo)| island_core::map::distance_m((la, lo), (p.lat, p.lon)) > 3_000.0);
                 if moved {
                     published = Some((p.lat, p.lon));
-                    super::LOCATION_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    super::signal::bump(&super::LOCATION_GEN);
                 }
                 rep.patch(move |d| d.position = Some(p));
             }

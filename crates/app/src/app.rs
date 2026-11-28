@@ -226,16 +226,13 @@ impl App {
         self.exec(cmds);
         {
             use island_core::face::Face;
-            use std::sync::atomic::Ordering;
             let f = self.island.current_face();
-            services::SYSTEM_WANTED.store(f == Face::Sys, Ordering::Relaxed);
-            services::SPECTRUM_WANTED.store(self.island.wants_spectrum(), Ordering::Relaxed);
+            services::signal::set(&services::SYSTEM_WANTED, f == Face::Sys);
+            services::signal::set(&services::SPECTRUM_WANTED, self.island.wants_spectrum());
+            // the quick settings are read as their page opens
             let qs = f == Face::Qs;
-            if qs && !services::QUICK_WANTED.swap(true, Ordering::Relaxed) {
+            if !services::signal::set(&services::QUICK_WANTED, qs) && qs {
                 let _ = self.cmd_tx.send(island_ui::model::Command::RefreshQuick);
-            }
-            if !qs {
-                services::QUICK_WANTED.store(false, Ordering::Relaxed);
             }
         }
         services::save_reminders_if_changed(self.island.reminders());
@@ -328,7 +325,7 @@ impl App {
         match result {
             Ok(()) => {
                 self.island.data.config = config_view_of(&self.fonts);
-                services::CONFIG_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                services::signal::bump(&services::CONFIG_GEN);
             }
             Err(e) => {
                 log::error!("settings: {e}");
@@ -344,7 +341,7 @@ impl App {
             return true;
         }
         if matches!(c, Command::RefreshCalendars) {
-            services::CALENDAR_REFRESH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            services::signal::bump(&services::CALENDAR_REFRESH);
             return true;
         }
         // a password or a key goes to the keyring first, off this thread; the answer comes back as `Msg::ConfigSaved`

@@ -160,7 +160,7 @@ fn set_home(rep: &Reporter, text: &str) {
                 o.remove(k);
             }
         });
-        super::CONFIG_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        super::signal::bump(&super::CONFIG_GEN);
         rep.patch(|d| {
             d.config.home = String::new();
             d.config.home_pos = None;
@@ -180,7 +180,7 @@ fn set_home(rep: &Reporter, text: &str) {
                 o.insert("home_name".into(), serde_json::json!(name));
             }) {
                 Ok(()) => {
-                    super::CONFIG_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    super::signal::bump(&super::CONFIG_GEN);
                     let shown = label.clone();
                     rep.patch(move |d| {
                         d.config.home = shown;
@@ -220,7 +220,7 @@ pub fn command(rep: &Reporter, c: &Command) {
                             d.train_status = None;
                         });
                         say(&rep, "Train pinned", &line);
-                        super::CONFIG_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        super::signal::bump(&super::CONFIG_GEN);
                     }
                     Err(e) => say(&rep, "Train not pinned", &e),
                 }

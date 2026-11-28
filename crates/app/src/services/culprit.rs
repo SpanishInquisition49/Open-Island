@@ -320,7 +320,7 @@ fn watch_privacy(rep: Reporter) {
         let (mut last_mic, mut last_cam) = (Vec::new(), Vec::new());
         loop {
             if !super::SYSTEM_WANTED.load(std::sync::atomic::Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(700));
+                super::signal::wait_until(&super::SYSTEM_WANTED);
                 continue;
             }
             let run = |a: &[&str]| super::tool("pactl").args(a).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();

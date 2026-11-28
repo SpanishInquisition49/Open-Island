@@ -218,7 +218,7 @@ fn spectrum(rep: Reporter) {
         }
         loop {
             if !super::SPECTRUM_WANTED.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(300));
+                super::signal::wait_until(&super::SPECTRUM_WANTED);
                 continue;
             }
             if let Err(e) = capture(&rep) {

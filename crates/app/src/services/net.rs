@@ -310,17 +310,10 @@ fn save_calendar_cache(cache: &HashMap<String, Vec<Event>>, at: i64, (from, to):
     let Some(p) = super::state_file("calendar-cache.json") else { return };
     let sources: serde_json::Map<String, serde_json::Value> = cache.iter().map(|(k, evs)| (key_hash(k), serde_json::Value::Array(evs.iter().map(island_core::calendar::event_to_json).collect()))).collect();
     let text = serde_json::json!({"saved_at": at, "from": from, "to": to, "sources": sources}).to_string();
-    // event titles are private: owner-only
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&p) {
-            let _ = f.write_all(text.as_bytes());
-        }
+    // event titles are private, and a cache cut in half would lose the schedule kept for when there is no network
+    if let Err(e) = super::state::write_whole(&p, &text) {
+        log::warn!("calendar cache: {e}");
     }
-    #[cfg(not(unix))]
-    let _ = std::fs::write(&p, text);
 }
 
 /// What tells one source from another. The password is not part of it: it must not end up, even hashed, in the cache

@@ -33,7 +33,7 @@ pub fn start(rep: Reporter) {
         let mut warned = false;
         loop {
             if !super::SPECTRUM_WANTED.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(300));
+                super::signal::wait_until(&super::SPECTRUM_WANTED);
                 continue;
             }
             let Some(mut child) = record() else {

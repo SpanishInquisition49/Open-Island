@@ -181,7 +181,7 @@ fn create_event(rep: &Reporter, title: String, start_ms: i64, end_ms: i64, whole
                 }
             }
         }
-        super::CALENDAR_REFRESH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        super::signal::bump(&super::CALENDAR_REFRESH);
     });
 }
 
@@ -225,7 +225,7 @@ fn change_event(rep: &Reporter, id: String, title: String, around_ms: i64, ch: i
         if let Err(e) = res {
             rep.input(Input::Toast { summary: format!("Could not change \"{title}\""), body: e });
         }
-        super::CALENDAR_REFRESH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        super::signal::bump(&super::CALENDAR_REFRESH);
     });
 }
 
