@@ -616,14 +616,14 @@ fn thumbnail(props: &windows::Media::Control::GlobalSystemMediaTransportControls
 
 /// Cuts a window to the union of rounded rectangles (pixels, relative to the window): the island is black, so an
 /// opaque window clipped to its shape looks like a transparent one, and the clicks outside it go to what is below.
-pub fn set_window_shape(hwnd: isize, rects: &[(i32, i32, i32, i32, i32)]) {
+pub fn set_window_shape(hwnd: isize, rects: &[(i32, i32, i32, i32, i32)], repaint: bool) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{CombineRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, RGN_OR};
     unsafe {
         let hwnd = HWND(hwnd as *mut _);
         // no shapes: the whole window again
         let Some(&(x, y, w, h, r)) = rects.first() else {
-            SetWindowRgn(hwnd, None, true);
+            SetWindowRgn(hwnd, None, repaint);
             return;
         };
         let mut region = CreateRoundRectRgn(x, y, x + w + 1, y + h + 1, r * 2, r * 2);
@@ -633,7 +633,7 @@ pub fn set_window_shape(hwnd: isize, rects: &[(i32, i32, i32, i32, i32)]) {
             let _ = DeleteObject(part.into());
         }
         // the system owns the region from here on
-        if SetWindowRgn(hwnd, Some(region), true) == 0 {
+        if SetWindowRgn(hwnd, Some(region), repaint) == 0 {
             let _ = DeleteObject(region.into());
             region = Default::default();
         }

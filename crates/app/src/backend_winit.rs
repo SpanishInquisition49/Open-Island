@@ -60,6 +60,14 @@ fn should_hide(fullscreen: bool, out_of_sight: bool) -> bool {
     fullscreen || out_of_sight
 }
 
+/// Whether the island draws through DirectComposition, as `windows_graphics_setup` asks unless the environment says
+/// otherwise. Its window then needs no picture of its own for the system to keep: with one, the parts the island never
+/// painted showed white at its edges as it changed shape. (The other way of drawing needs that picture.)
+#[cfg_attr(not(windows), allow(dead_code))]
+fn composited(opaque: Option<&str>, backend: Option<&str>, presentation: Option<&str>) -> bool {
+    opaque.is_none() && backend.is_some_and(|b| b.eq_ignore_ascii_case("dx12")) && presentation.is_some_and(|p| p.eq_ignore_ascii_case("DxgiFromVisual"))
+}
+
 #[allow(unused_mut)]
 fn attributes() -> WindowAttributes {
     let mut a = Window::default_attributes()
@@ -73,7 +81,10 @@ fn attributes() -> WindowAttributes {
     #[cfg(target_os = "windows")]
     {
         use winit::platform::windows::WindowAttributesExtWindows;
-        a = a.with_skip_taskbar(true).with_undecorated_shadow(false);
+        let said = |name: &str| std::env::var(name).ok();
+        let [opaque, backend, presentation] = ["OPEN_ISLAND_OPAQUE", "WGPU_BACKEND", "WGPU_DX12_PRESENTATION_SYSTEM"].map(said);
+        let composited = composited(opaque.as_deref(), backend.as_deref(), presentation.as_deref());
+        a = a.with_skip_taskbar(true).with_undecorated_shadow(false).with_no_redirection_bitmap(composited);
     }
     #[cfg(target_os = "linux")]
     {
@@ -135,7 +146,7 @@ impl Shell {
             // compositor loses what it shows when it is covered: there every frame is drawn)
             let may_keep = cfg!(windows) && !f.animating && !self.reshow && !self.hidden;
             self.reshow = false;
-            if let Err(e) = self.gpu.draw(&mut self.app.island, &self.app.fonts, self.surface_logical, scale, may_keep) {
+            if let Err(e) = self.gpu.draw(&mut self.app.island, &self.app.fonts, self.surface_logical, scale, self.wanted, may_keep) {
                 log::error!("{e}");
             }
             self.perf.frame(f.animating, self.gpu.last_work);
@@ -189,7 +200,8 @@ impl Shell {
         }
         if let Ok(h) = window.window_handle() {
             if let RawWindowHandle::Win32(w) = h.as_raw() {
-                crate::services::windows::set_window_shape(w.hwnd.get(), &rects);
+                // a composited window shows what is drawn by itself: asking for a repaint only paints over it
+                crate::services::windows::set_window_shape(w.hwnd.get(), &rects, !transparent);
                 self.shape = rects;
             }
         }
@@ -409,7 +421,7 @@ pub fn run() {
         let _ = proxy.send_event(Wake);
     });
     // the graphics context first: it is made while the program has one thread
-    let gpu = Gpu::new();
+    let gpu = Gpu::new().in_parts(FIXED_WINDOW);
     let app = App::new(waker);
     let mut shell = Shell { app, gpu, window: None, surface_logical: (0.0, 0.0), animating: true, next_ms: 0, keyboard_on: false, hidden: false, mods: ModifiersState::empty(), shape: vec![], wanted: (0.0, 0.0), last_redraw: Instant::now(), news: false, asked: None, reshow: true, perf: crate::perf::Perf::from_env() };
     let _ = (TOP_MARGIN, LogicalPosition::new(0.0, 0.0));
@@ -421,7 +433,16 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::should_hide;
+    use super::{composited, should_hide};
+
+    #[test]
+    fn the_window_has_no_picture_of_its_own_only_when_composited() {
+        assert!(composited(None, Some("dx12"), Some("DxgiFromVisual")));
+        assert!(!composited(Some("1"), Some("dx12"), Some("DxgiFromVisual")), "asked for the plain window");
+        assert!(!composited(None, Some("vulkan"), Some("DxgiFromVisual")));
+        assert!(!composited(None, Some("dx12"), Some("DxgiFromHwnd")));
+        assert!(!composited(None, None, None), "X11, macOS");
+    }
 
     #[test]
     fn the_window_goes_under_a_fullscreen_one_and_once_the_island_has_left() {

@@ -244,7 +244,7 @@ impl Wl {
         }
         // while the shape moves each frame waits for the display, which is what paces the loop: all of them are shown
         let may_keep = !changed && !f.animating;
-        if let Err(e) = self.gpu.draw(&mut self.app.island, &self.app.fonts, (lw as f64, lh as f64), self.scale, may_keep) {
+        if let Err(e) = self.gpu.draw(&mut self.app.island, &self.app.fonts, (lw as f64, lh as f64), self.scale, f.surface, may_keep) {
             log::error!("{e}");
         }
         self.perf.frame(f.animating, self.gpu.last_work);

@@ -55,6 +55,17 @@ surface was in fact opaque although that line appeared: a black rectangle showed
 when it stopped. If that, or anything like it, still happens (black rectangle, nothing shown), start it with
 `$env:OPEN_ISLAND_OPAQUE=1` to use the old cut-to-shape way and tell me which of the two worked.
 
+Added on 2026-11-28 after a report of stutter and white bands while the island changed size; a first try seemed fine,
+these are still worth checking one by one:
+
+- **White bands.** Open and close the island many times (hover, a notification, the calendar, the volume keys): no
+  white or black strip must show around it. If one does, start it with `$env:OPEN_ISLAND_OPAQUE=1` and say whether it
+  is still there.
+- **Smoothness.** Start it with `$env:OPEN_ISLAND_PERF=1` and `$env:RUST_LOG="info"` from PowerShell, open and close the
+  island a few times, and send the whole output: the "animation:" lines give the frame intervals and what drawing cost,
+  the "transparent surface" line the graphics adapter. A warning "the surface takes no copies" means every frame renders
+  the whole window: send it too. Say the display's refresh rate and scale, and the graphics card.
+
 Added on 2026-11-28, never run:
 
 - **Out of the way of windows.** Drag any window (not only a maximized one) over the top centre of the primary screen:

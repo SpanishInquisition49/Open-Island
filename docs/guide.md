@@ -807,8 +807,10 @@ On Windows the island slides away from windows over its place (see "Out of the w
 once it is gone.
 Windows draws through DirectX 12 into a transparent DirectComposition surface; `OPEN_ISLAND_OPAQUE=1` falls back to
 cutting the window to the island's shape. The window has one size (large enough for every page) and is not resized while
-the island animates: resizing it and its swap chain was what made it stutter and flash a rectangle. Clicking a notification
-brings the window of its app to the front.
+the island animates: resizing it and its swap chain was what made it stutter and flash a rectangle. Only the box the
+island is in is rendered and copied into that window, and the window keeps no picture of its own
+(`WS_EX_NOREDIRECTIONBITMAP`), so nothing of one can show around the island. Clicking a
+notification brings the window of its app to the front.
 
 ## Smoothness
 
