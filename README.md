@@ -22,7 +22,7 @@
   <a href="docs/guide.md">Full guide</a>
 </p>
 
-At rest it is a clock. When something happens it changes shape to show it: the song you are playing, a message that just
+At rest it is a clock, with the weather outside behind it. When something happens it changes shape to show it: the song you are playing, a message that just
 arrived, the timer running out. Hover it or click it to open it. When a window covers its place it slides out of the way,
 and the pointer at the top edge brings it back.
 
@@ -50,6 +50,33 @@ send it to your phone, open its folder or throw it away.
     <td width="50%"><img src="docs/images/one-time-code.png" alt="A card showing a verification code in large digits"></td>
   </tr>
 </table>
+
+### Alive at the top of the screen
+
+**The weather outside shows inside the pill.** A sun by day, and by night the stars and the moon in tonight's phase;
+clouds and fog; rain and snow as they fall. Snow piles up at the bottom and melts afterwards, and rain leaves drops on
+the glass. A still sky only moves now and then, and there is less motion on battery.
+
+<p align="center">
+  <img src="docs/images/weather-pills.png" width="560" alt="Six small pills: sun, moon and stars, a cloud before the sun, rain, snow piled at the bottom, and fog">
+</p>
+
+**It behaves like a liquid.** With music playing on mains power, the edges of the small pill ripple with the sound: low
+notes push in the middle, high ones towards the ends. They ripple too as a notification drops from the island and when
+it comes back.
+
+<p align="center">
+  <img src="docs/images/liquid.png" width="430" alt="The closed island playing a song, its edges rippling">
+</p>
+
+**Birthdays get confetti.** An all-day entry in your calendars such as "Ada's birthday" brings a card on the day, with a
+burst of confetti.
+
+<p align="center">
+  <img src="docs/images/birthday.png" width="540" alt="A card saying there is a birthday today, with confetti flying around it">
+</p>
+
+Each of these has its own switch on the options page.
 
 ### Your day, in one place
 
@@ -139,11 +166,7 @@ app, and see your headphones' battery when they connect.
 - **Downloads and long jobs** beside the island, as a drop of liquid: it fills up with a job that says how far it is,
   and sloshes while your browser downloads a file.
 - **A heads-up** when a program is slowing the computer down, or the network stops working.
-- **Live weather:** the weather outside shows inside the pill: sun, clouds, fog, rain, snow, and at night the stars
-  and the moon in its phase. Snow piles up at the bottom, and rain leaves drops on the glass.
-- **Behaves like a liquid:** the edges of the small pill ripple with the music, and as notifications drop from it and
-  come back.
-- **Birthdays** from your calendars, with a burst of confetti.
+- **Undo:** removed a task, an exam or a pinned note by mistake? For a few seconds, the card that says so takes it back.
 - **Battery:** plug in and it pours like liquid, with the time to full.
 - **A second screen** (niri): choose to extend or use only one, and it comes back by itself if you do not confirm.
 - **Administrator passwords** (Linux, off until you [switch it on](docs/guide.md#administrator-passwords-linux-off-by-default)):
