@@ -179,6 +179,7 @@ impl Wl {
         self.keyboard_on = false;
         self.outgoing = None;
         self.on_output = None;
+        self.app.screen_name = None;
         self.input_rects.clear();
         self.app.pointer_left();
         self.app.island.keyboard_focus(false);
@@ -262,6 +263,9 @@ impl CompositorHandler for Wl {
     fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, output: &wl_output::WlOutput) {
         if surface == self.layer.wl_surface() {
             self.on_output = Some(output.clone());
+            // which screen's windows can be over the island
+            self.app.screen_name = self.output_state.info(output).and_then(|i| i.name);
+            self.dirty = true;
         }
     }
     fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}

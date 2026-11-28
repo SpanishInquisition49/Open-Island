@@ -23,7 +23,8 @@
 </p>
 
 At rest it is a clock. When something happens it changes shape to show it: the song you are playing, a message that just
-arrived, the timer running out. Hover it or click it to open it.
+arrived, the timer running out. Hover it or click it to open it. When a window covers its place it slides out of the way,
+and the pointer at the top edge brings it back.
 
 ## What it does
 

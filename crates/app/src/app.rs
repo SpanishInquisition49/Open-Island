@@ -88,10 +88,13 @@ pub struct App {
     persist_history: bool,
     /// The focused window covers the whole screen (the island hides under it).
     pub fullscreen: bool,
-    /// A maximized window covers the screen the island is on; the island stays out of sight unless something needs
-    /// it or the pointer asks for it at the top edge.
-    pub maximized: bool,
+    /// The pointer is at the top edge asking for a hidden island.
     pub pointer_near: bool,
+    /// A window is over the island's place (said by a platform that has the island on one screen).
+    covered: bool,
+    /// The screens on which one is, and the name of the screen the island is on, when the platform tells them apart.
+    covered_screens: Vec<String>,
+    pub screen_name: Option<String>,
     last_pointer: (f64, f64),
 }
 
@@ -136,6 +139,11 @@ impl App {
     pub fn fullscreen_hides(&self) -> bool {
         // a password that is being asked must be seen, over a fullscreen window too
         self.fullscreen && self.island.cfg.hide_on_fullscreen && !self.island.auth_open()
+    }
+
+    /// Whether a window is over the island's place, on the screen the island is on.
+    fn covered_here(&self) -> bool {
+        self.covered || self.screen_name.as_ref().is_some_and(|here| self.covered_screens.contains(here))
     }
 
     pub fn new(waker: Waker) -> Self {
@@ -183,7 +191,7 @@ impl App {
             island.restore_history(services::load_history());
         }
         island.data.config = config_view_of(&fonts);
-        Self { drag_out: None, attention_saved_at: 0, island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, was_animating: false, quit: false, persist_history: settings.persist_history, fullscreen: false, maximized: false, pointer_near: false, last_pointer: (0.0, 0.0) }
+        Self { drag_out: None, attention_saved_at: 0, island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, was_animating: false, quit: false, persist_history: settings.persist_history, fullscreen: false, pointer_near: false, covered: false, covered_screens: Vec::new(), screen_name: None, last_pointer: (0.0, 0.0) }
     }
 
     /// Epoch milliseconds: the monotonic clock since the start, so a clock that is adjusted a little does not make
@@ -222,8 +230,9 @@ impl App {
                 Msg::ConfigSaved(result) => self.config_saved(result),
                 Msg::Quit => self.quit = true,
                 Msg::Fullscreen(f) => self.fullscreen = f,
-                Msg::Cover { maximized, pointer_near } => {
-                    self.maximized = maximized;
+                Msg::CoveredScreens(screens) => self.covered_screens = screens,
+                Msg::Cover { covered, pointer_near } => {
+                    self.covered = covered;
                     self.pointer_near = pointer_near;
                 }
             }
@@ -237,6 +246,8 @@ impl App {
         let dt = frame_dt(self.last_tick.elapsed().as_secs_f64() * 1000.0, self.was_animating);
         self.last_tick = Instant::now();
         let now = self.now();
+        let covered = self.covered_here();
+        self.island.set_cover(covered, self.pointer_near);
         let frame = self.island.tick(now, dt);
         self.was_animating = frame.animating;
         let cmds = self.island.take_commands();

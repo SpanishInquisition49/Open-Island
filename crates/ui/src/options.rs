@@ -17,9 +17,9 @@ pub fn toggles(tab: usize) -> &'static [(&'static str, &'static str)] {
             ("clock_in_pill", "Clock in the small pill"),
             ("status_icons", "Status icons"),
             ("hide_on_fullscreen", "Hide under fullscreen"),
+            ("hide_when_covered", "Hide under windows"),
             ("clipboard_history", "Clipboard history"),
             ("timer_sound", "Timer sound"),
-            ("auto_audio_output", "Audio to headphones"),
             ("watch_downloads", "Show downloads"),
             ("progress_drop", "Progress drop"),
         ],
@@ -36,7 +36,7 @@ pub fn toggles(tab: usize) -> &'static [(&'static str, &'static str)] {
         2 => &[("quiet_in_meetings", "Quiet in meetings"), ("quiet_on_mic", "Quiet on a call"), ("quiet_on_screen_share", "Quiet when sharing"), ("away_recap", "Recap when back")],
         3 => &[("travel_times", "Travel times"), ("evening_weekends", "Cards on weekends"), ("link_cards", "Copied link cards"), ("end_alerts", "Event ending")],
         4 => &[("weather", "Weather"), ("follow_position", "Follow my position"), ("wifi_position", "Precise position from Wi-Fi"), ("currency_rates", "Currency rates"), ("receive_files", "Receive files")],
-        5 => &[("media_auto_expand", "Open on a new track"), ("lyrics", "Synced lyrics"), ("lyrics_in_pill", "Lyrics in the pill"), ("art_tint", "Tint from the cover")],
+        5 => &[("media_auto_expand", "Open on a new track"), ("lyrics", "Synced lyrics"), ("lyrics_in_pill", "Lyrics in the pill"), ("art_tint", "Tint from the cover"), ("auto_audio_output", "Audio to headphones")],
         _ => &[],
     }
 }
@@ -48,6 +48,7 @@ pub fn describe(key: &str) -> &'static str {
         "status_icons" => "Icons in the pill for the microphone, camera, screen share and quiet mode",
         "clipboard_history" => "Keep a list of what you copy (pinned entries survive restarts)",
         "hide_on_fullscreen" => "Slide the island away while a window is fullscreen",
+        "hide_when_covered" => "Slide away from a window over it; the pointer at the top edge calls it back",
         "ocr_screenshots" => "A screenshot card offers to copy the text in the picture",
         "watch_downloads" => "Show browser downloads as they come (reads the download folder)",
         "receive_files" => "LocalSend: nearby devices can send files, you accept each one (Linux)",
@@ -183,6 +184,7 @@ pub fn get_bool(c: &Config, key: &str) -> bool {
         "link_cards" => c.link_cards,
         "clock_in_pill" => c.clock_in_pill,
         "hide_on_fullscreen" => c.hide_on_fullscreen,
+        "hide_when_covered" => c.hide_when_covered,
         "quiet_in_meetings" => c.quiet_in_meetings,
         "quiet_on_mic" => c.quiet_on_mic,
         "away_recap" => c.away_recap,
@@ -222,6 +224,7 @@ pub fn set_bool(c: &mut Config, key: &str, on: bool) {
         "link_cards" => c.link_cards = on,
         "clock_in_pill" => c.clock_in_pill = on,
         "hide_on_fullscreen" => c.hide_on_fullscreen = on,
+        "hide_when_covered" => c.hide_when_covered = on,
         "quiet_in_meetings" => c.quiet_in_meetings = on,
         "quiet_on_mic" => c.quiet_on_mic = on,
         "away_recap" => c.away_recap = on,
@@ -326,7 +329,7 @@ mod tests {
     fn every_option_here_is_one_the_platform_layer_can_write() {
         // the keys of the page and the keys the configuration accepts are the same list
         let page: std::collections::BTreeSet<&str> = (0..TABS.len()).flat_map(|t| toggles(t).iter().map(|(k, _)| *k)).collect();
-        assert_eq!(page.len(), 33, "no option on two tabs");
+        assert_eq!(page.len(), 34, "no option on two tabs");
         assert_eq!(TABS[RULES_TAB], "Rules");
         let nums: Vec<&str> = (0..TABS.len()).flat_map(|t| steppers(t).iter().map(|s| s.0)).collect();
         assert_eq!(nums, ["mini_pills", "dock_icons", "notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes", "deep_work_minutes", "break_minutes", "distraction_minutes", "morning_recap_time", "evening_recap_time", "commute_minutes", "travel_margin_minutes", "countdown_days"]);

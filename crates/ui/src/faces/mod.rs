@@ -46,9 +46,29 @@ pub(crate) const PICK_ROW: f64 = 42.0;
 impl Island {
     /// Draws the island into `scene`, in surface coordinates scaled by `scale`.
     pub fn draw(&mut self, scene: &mut Scene, fonts: &Fonts, surface: (f64, f64), scale: f64) {
+        let rise = self.tuck_rise();
+        if self.out_of_sight() {
+            // nothing to show, and nothing to press; the pill's place is still where the pointer calls for it
+            self.pill_origin = self.origin_on(surface);
+            self.hits.clear();
+        } else if rise > 0.0 {
+            let mut moved = Scene::new();
+            self.draw_in_place(&mut moved, fonts, surface, scale);
+            scene.append(&moved, Some(Affine::translate((0.0, -rise * scale))));
+        } else {
+            self.draw_in_place(scene, fonts, surface, scale);
+        }
+    }
+
+    /// The top left corner of the pill on a surface of this size.
+    fn origin_on(&self, surface: (f64, f64)) -> (f64, f64) {
+        let w = self.spring.w.pos.max(1.0);
+        (((surface.0 - (w + self.bubble_slot())) / 2.0).round(), TOP_MARGIN)
+    }
+
+    fn draw_in_place(&mut self, scene: &mut Scene, fonts: &Fonts, surface: (f64, f64), scale: f64) {
         let (w, h) = (self.spring.w.pos.max(1.0), self.spring.h.pos.max(1.0));
-        let slot = self.bubble_slot();
-        let origin = (((surface.0 - (w + slot)) / 2.0).round(), TOP_MARGIN);
+        let origin = self.origin_on(surface);
         self.pill_origin = origin;
         let base = Affine::scale(scale) * Affine::translate(origin);
         let radius = (h / 2.0).min(30.0);

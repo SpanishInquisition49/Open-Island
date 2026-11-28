@@ -1038,6 +1038,7 @@ impl Island {
             (tw, th) = self.face_size(self.shown);
         }
         let at_rest = self.spring.step(tw, th, dt);
+        self.tuck_tick(now, dt);
         if self.shown_side.is_some() && self.want == self.shown && self.want_side.is_none() {
             self.shown_side = None;
             self.shown_more.clear();
@@ -1052,7 +1053,7 @@ impl Island {
         let waiting_for_hover = (self.hovering && now - self.hover_since < HOVER_INTENT_MS + 60) || now < self.hover_left + HOVER_GRACE_MS + 60;
         // milliseconds until a sliding line moves (0: it is sliding)
         let marquee = self.marquee_wake.take().map(|at| (at - now).clamp(0, u32::MAX as i64) as u32);
-        let moving = self.auth_moving() || !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving || self.card_moving() || self.bubbles_moving() || self.fill_moving() || self.fx.moving();
+        let moving = self.tuck_sliding() || self.auth_moving() || !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving || self.card_moving() || self.bubbles_moving() || self.fill_moving() || self.fx.moving();
         let equalizer = self.data.media.as_ref().is_some_and(|m| m.playing) && matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric);
         let expiring = snap.osd || self.auth.is_some() || self.notif.is_some() || self.edit.is_some() || self.reply.is_some() || self.kb.is_some() || self.bar.is_some();
         let next_ms: u32 = if moving {
@@ -1072,6 +1073,9 @@ impl Island {
         };
         let next_ms = if moving { 0 } else { marquee.map_or(next_ms, |wait| next_ms.min(wait.max(MARQUEE_STEP_MS))) };
         let next_ms = if self.fill_sloshing() { next_ms.min(liquid::BUSY_STEP_MS) } else { next_ms };
+        // out of sight there is nothing that has to move; about to leave, the slide starts on time
+        let next_ms = if self.out_of_sight() && !moving { next_ms.max(if self.timer.is_some() { 500 } else { 1000 }) } else { self.tuck_due_ms().map_or(next_ms, |due| next_ms.min(due.max(1))) };
+        let next_ms = if moving { 0 } else { next_ms };
         let animating = next_ms == 0;
         // the surface: holds both shapes plus room for the overshoot while animating
         // (a small pill on its way back still needs its room)
@@ -1136,7 +1140,7 @@ impl Island {
         v.extend(self.fill.as_ref().and_then(|f| f.rect));
         v.extend(self.catch_rect());
         v.extend(self.auth_rect());
-        v
+        self.tuck_input(v)
     }
 
     /// The island's outline as rounded rectangles (x, y, width, height, radius) in surface coordinates: what is
@@ -1151,6 +1155,14 @@ impl Island {
         v.extend(self.fill.as_ref().and_then(|f| f.rect).map(|(x, y, w, h)| (x, y, w, h, w / 2.0)));
         v.extend(self.cards.rects());
         v.extend(self.auth_rect().map(|(x, y, w, h)| (x, y, w, h, 30.0)));
+        if self.out_of_sight() {
+            return vec![];
+        }
+        // on its way out it shows less: what is above the edge is gone
+        let rise = self.tuck_rise();
+        if rise > 0.0 {
+            v = v.into_iter().filter(|(_, y, _, h, _)| y + h > rise).map(|(x, y, w, h, r)| (x, (y - rise).max(0.0), w, h - (rise - y).max(0.0), r)).collect();
+        }
         v
     }
 

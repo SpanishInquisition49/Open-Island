@@ -1416,7 +1416,8 @@ impl Island {
     pub fn wants_spectrum(&self) -> bool {
         let playing = self.data.media.as_ref().is_some_and(|m| m.playing);
         let on_ac = self.data.battery.is_none_or(|b| b.on_ac);
-        playing && on_ac && matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric)
+        // out of sight nobody sees the bars: the sound is not read for them
+        playing && on_ac && !self.out_of_sight() && matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric)
     }
 
     pub fn wants_keyboard(&self) -> bool {

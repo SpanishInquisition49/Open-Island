@@ -8,6 +8,7 @@ pub mod calendar;
 pub mod clipact;
 pub mod codes;
 pub mod color;
+pub mod cover;
 pub mod culprit;
 pub mod downloads;
 pub mod droplet;

@@ -36,6 +36,7 @@ crates/app    window backends (Wayland layer-shell, winit), the OS services, the
 | clipboard history | wl-clipboard | arboard polling (built) | arboard polling (built) | **not yet** |
 | keep awake, night light | systemd-inhibit, wlsunset | SetThreadExecutionState; no night light (no public API) | **not yet** | yes |
 | hide under fullscreen windows | niri | shell notification state (built) | **not yet** | **not yet** |
+| slide away from a window over its place | niri | every window (built) | **not yet** | **not yet** |
 | map and position, trips to events, place search and routes | GeoClue + OpenStreetMap, OSRM, Transitous | the same services, the position from Windows' location service (built; the settings location when it is off) | the same, **no position** | the same as Linux |
 | sound page, heavy-program card, network card | pactl, /proc, nmcli | Core Audio sessions, sysinfo (pause with NtSuspendProcess), a ping of the router and Windows' own connectivity probe (built) | heavy-program card only (built) | yes |
 | audio follows headphones | pactl | **not yet** | **not yet** | yes |
@@ -156,6 +157,23 @@ nothing is left holding it while the island is not running.
 Shuffle and repeat sit beside the skip buttons, for the players that offer them (MPRIS `Shuffle` and `LoopStatus`; on
 Windows what the system's media controls allow). A dot marks what is on; repeat goes from off to the whole list to the
 current track (the icon with a 1) and back. Not on macOS yet.
+
+## Out of the way of windows
+
+While a window is over the island's place (the middle of the top edge of its screen) the island slides up out of sight.
+Move the pointer to the very top of the screen there and it comes back, and it stays while the pointer does. It also comes
+out by itself for what it has to show: a notification or any other card, the volume bar, a password request, the command
+bar and the pages you ask for; then it leaves again. A timer or a song in the small pill goes away with it. Out of sight
+it draws nothing and does not listen to the sound for the equalizer. `hide_when_covered` (Options > Island > "Hide under
+windows", on) switches it off.
+
+- **Windows:** any window in front of the place counts, except the taskbar, the desktop and click-through overlays. The
+  primary monitor only.
+- **niri:** a floating window counts where it is. niri does not say where a tiled one is, so this is worked out: tiled
+  windows count when they reach the top (no bar keeps them below the island; a bar reserving less than 32 px counts as
+  none) and the columns on show are wide enough to reach the middle. A bar at the bottom with none at the top is
+  mistaken for one at the top. The overview shows the island.
+- Other compositors, X11 and macOS do not say where windows are: the island stays.
 
 ## Moving between pages
 
@@ -785,8 +803,8 @@ shows that line in place of today's high and low. It is for where you are (see "
 Cross-building for Windows from Linux needs `cargo install cargo-xwin` (MSVC, recommended) or mingw-w64 (GNU).
 `just check-all` runs the tests, clippy and the Windows (cargo-xwin) and macOS type-checks.
 
-On Windows (and anywhere the island is a plain window) it hides while a maximized window is in front, and comes back when
-the pointer touches the top edge near the middle of the screen; a notification, a timer or the volume still show over it.
+On Windows the island slides away from windows over its place (see "Out of the way of windows"), and its window is hidden
+once it is gone.
 Windows draws through DirectX 12 into a transparent DirectComposition surface; `OPEN_ISLAND_OPAQUE=1` falls back to
 cutting the window to the island's shape. The window has one size (large enough for every page) and is not resized while
 the island animates: resizing it and its swap chain was what made it stutter and flash a rectangle. Clicking a notification

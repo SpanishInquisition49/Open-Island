@@ -120,8 +120,11 @@ pub enum Msg {
     ConfigSaved(Result<(), String>),
     Quit,
     Fullscreen(bool),
-    /// A maximized window covers the island's screen, and whether the pointer is at the top edge asking for it.
-    Cover { maximized: bool, pointer_near: bool },
+    /// A window is over the island's place on its screen, and whether the pointer is at the top edge asking for it
+    /// (for the platform whose window cannot be pointed at while it is hidden).
+    Cover { covered: bool, pointer_near: bool },
+    /// The screens, by name, on which a window is over the island's place (a compositor that has the island on any).
+    CoveredScreens(Vec<String>),
 }
 
 /// Where services report to, with a way to wake the event loop.
@@ -165,8 +168,14 @@ impl Reporter {
     }
 
     #[allow(dead_code)]
-    pub fn cover(&self, maximized: bool, pointer_near: bool) {
-        let _ = self.tx.send(Msg::Cover { maximized, pointer_near });
+    pub fn cover(&self, covered: bool, pointer_near: bool) {
+        let _ = self.tx.send(Msg::Cover { covered, pointer_near });
+        (self.waker)();
+    }
+
+    #[allow(dead_code)]
+    pub fn covered_screens(&self, screens: Vec<String>) {
+        let _ = self.tx.send(Msg::CoveredScreens(screens));
         (self.waker)();
     }
 

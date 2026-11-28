@@ -54,10 +54,10 @@ fn window_size(wanted: (f64, f64)) -> (f64, f64) {
     }
 }
 
-/// Under a fullscreen window the island is out of sight. Under a maximized one it is too, while it rests, unless
-/// the pointer is at the top edge asking for it; a card or a page (not resting) always shows.
-fn should_hide(fullscreen: bool, maximized: bool, resting: bool, pointer_near: bool) -> bool {
-    fullscreen || (maximized && resting && !pointer_near)
+/// The window is not on screen: under a fullscreen window, or once the island has slid out of the way of one over its
+/// place (see `Island::set_cover`).
+fn should_hide(fullscreen: bool, out_of_sight: bool) -> bool {
+    fullscreen || out_of_sight
 }
 
 #[allow(unused_mut)]
@@ -128,24 +128,24 @@ impl Shell {
         self.animating = f.animating;
         self.next_ms = f.next_ms;
         let scale = window.scale_factor();
-        // Windows keeps showing the last frame, so one equal to it is not rendered again (an X11 window without a
-        // compositor loses what it shows when it is covered: there every frame is drawn)
-        let may_keep = cfg!(windows) && !f.animating && !self.reshow && !self.hidden;
-        self.reshow = false;
-        if let Err(e) = self.gpu.draw(&mut self.app.island, &self.app.fonts, self.surface_logical, scale, may_keep) {
-            log::error!("{e}");
+        let want_hidden = should_hide(self.app.fullscreen_hides(), self.app.island.out_of_sight());
+        // a hidden window is not drawn into
+        if !want_hidden {
+            // Windows keeps showing the last frame, so one equal to it is not rendered again (an X11 window without a
+            // compositor loses what it shows when it is covered: there every frame is drawn)
+            let may_keep = cfg!(windows) && !f.animating && !self.reshow && !self.hidden;
+            self.reshow = false;
+            if let Err(e) = self.gpu.draw(&mut self.app.island, &self.app.fonts, self.surface_logical, scale, may_keep) {
+                log::error!("{e}");
+            }
+            self.perf.frame(f.animating, self.gpu.last_work);
+            // cut the window to the island's outline before it is shown, so no rectangle flashes
+            self.cut_to_shape(&window);
         }
-        self.perf.frame(f.animating, self.gpu.last_work);
         self.last_redraw = Instant::now();
-        // cut the window to the island's outline before it is shown, so no rectangle flashes
-        self.cut_to_shape(&window);
-        // under a fullscreen window the island hides (the platform service says when); under a maximized one it
-        // hides too, except while it has something to say (a card, a page) or the pointer is at the top edge
-        let resting = self.app.island.current_face().is_compact() && !self.app.island.has_card();
-        let want_hidden = should_hide(self.app.fullscreen_hides(), self.app.maximized, resting, self.app.pointer_near);
         if want_hidden != self.hidden {
             self.hidden = want_hidden;
-            log::info!("{} the island (fullscreen: {}, maximized window: {}, pointer at the edge: {})", if self.hidden { "hiding" } else { "showing" }, self.app.fullscreen, self.app.maximized, self.app.pointer_near);
+            log::info!("{} the island (fullscreen: {}, out of the way of a window: {})", if self.hidden { "hiding" } else { "showing" }, self.app.fullscreen, self.app.island.out_of_sight());
             window.set_visible(!self.hidden);
             self.reshow = true;
         } else if !self.hidden && !window.is_visible().unwrap_or(true) {
@@ -424,12 +424,9 @@ mod tests {
     use super::should_hide;
 
     #[test]
-    fn hides_under_a_maximized_window_unless_it_has_something_to_show_or_is_asked_for() {
-        assert!(!should_hide(false, false, true, false), "nothing covers the screen");
-        assert!(should_hide(false, true, true, false), "maximized and resting: out of sight");
-        assert!(!should_hide(false, true, true, true), "the pointer at the top edge brings it back");
-        assert!(!should_hide(false, true, false, false), "a notification or a page shows");
-        assert!(should_hide(true, false, true, false), "fullscreen hides");
-        assert!(should_hide(true, true, false, true), "and nothing overrides a fullscreen window");
+    fn the_window_goes_under_a_fullscreen_one_and_once_the_island_has_left() {
+        assert!(!should_hide(false, false));
+        assert!(should_hide(false, true), "slid away from a window over it");
+        assert!(should_hide(true, false), "fullscreen hides");
     }
 }

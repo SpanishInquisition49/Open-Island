@@ -20,6 +20,7 @@ mod system;
 mod tasks;
 mod timers;
 mod travel;
+mod tuck;
 mod undo;
 
 use super::*;

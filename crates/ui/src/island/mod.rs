@@ -144,6 +144,8 @@ pub struct Config {
     pub art_tint: bool,
     /// Go out of sight under a fullscreen window.
     pub hide_on_fullscreen: bool,
+    /// Slide out of sight while a window is over the island's place; the pointer at the top edge brings it back.
+    pub hide_when_covered: bool,
     /// Fetch and show the weather.
     pub weather: bool,
     /// Play a sound when a timer ends.
@@ -207,6 +209,7 @@ impl Default for Config {
             show_osd: true,
             art_tint: true,
             hide_on_fullscreen: true,
+            hide_when_covered: true,
             weather: true,
             timer_sound: true,
             auto_audio_output: true,
@@ -779,6 +782,7 @@ pub struct Island {
     /// What was removed last, while it can be taken back, and the number of its card.
     undo: Option<undo::Removed>,
     undo_count: u32,
+    tuck: tuck::Tuck,
     /// When a position was last asked for the waiting reminders.
     pub(crate) place_asked_at: i64,
     /// The microphone's mute as last told.
@@ -982,6 +986,7 @@ impl Island {
             at_places: Vec::new(),
             undo: None,
             undo_count: 0,
+            tuck: Default::default(),
             shelf: Vec::new(),
             shelf_pressed: (0.0, 0.0),
             place_asked_at: 0,
@@ -1093,6 +1098,7 @@ pub(crate) mod auth;
 mod organizer;
 mod screens;
 mod session;
+mod tuck;
 mod places;
 mod shelf;
 mod undo;

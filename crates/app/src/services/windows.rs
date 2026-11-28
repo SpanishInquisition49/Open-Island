@@ -5,6 +5,7 @@
 //! type-checked with `cargo check --target x86_64-pc-windows-msvc`.
 
 use super::{art, Reporter};
+use island_core::cover;
 use island_ui::model::{Command, Input, LoopMode, Media, OsdKind, Privacy};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Mutex;
@@ -131,48 +132,34 @@ fn keep_awake(rep: Reporter, rx: Receiver<bool>) {
 
 // ---- fullscreen ---------------------------------------------------------------------------------------
 
-/// A window that is on top of everything on the island's screen, and the pointer at its top edge.
+/// A full-screen application, a window over the island's place, and (while there is one) the pointer at the top edge
+/// calling for the island. The pointer is only watched while a window is in the way: a hidden window is told nothing.
 fn fullscreen(rep: Reporter) {
     use windows::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN};
     std::thread::spawn(move || {
-        let (mut last_full, mut last_max, mut last_near) = (false, false, false);
-        let mut near = false;
-        let mut left_at: Option<std::time::Instant> = None;
-        let mut tick = 0u32;
+        let (mut full, mut covered, mut near) = (false, false, false);
+        let (mut full_at, mut cover_at) = (None::<std::time::Instant>, None::<std::time::Instant>);
         loop {
-            // the shell's own "a full-screen application is running" answer (games, video, presentations); once a second
-            if tick.is_multiple_of(12) {
+            let due = |at: Option<std::time::Instant>, every: u64| at.is_none_or(|at| at.elapsed() >= Duration::from_millis(every));
+            // the shell's own "a full-screen application is running" answer (games, video, presentations)
+            if due(full_at, 1000) {
+                full_at = Some(std::time::Instant::now());
                 let now = unsafe { SHQueryUserNotificationState() }.is_ok_and(|s| s == QUNS_BUSY || s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE);
-                if now != last_full {
-                    last_full = now;
+                if now != full {
+                    full = now;
                     rep.fullscreen(now);
                 }
             }
-            tick = tick.wrapping_add(1);
-            let maximized = foreground_maximized_on_primary();
-            // the pointer asks for the island at the top edge, and keeps it while it stays around it
-            let hot = pointer_zone(near);
-            match (hot, near) {
-                (true, _) => {
-                    near = true;
-                    left_at = None;
-                }
-                (false, true) => {
-                    // a short grace before it goes away again
-                    let since = *left_at.get_or_insert_with(std::time::Instant::now);
-                    if since.elapsed() > Duration::from_millis(700) {
-                        near = false;
-                        left_at = None;
-                    }
-                }
-                _ => {}
+            let (was_covered, was_near) = (covered, near);
+            if due(cover_at, 240) {
+                cover_at = Some(std::time::Instant::now());
+                covered = place_covered();
             }
-            if maximized != last_max || near != last_near {
-                last_max = maximized;
-                last_near = near;
-                rep.cover(maximized, near);
+            near = covered && pointer_zone(near);
+            if (covered, near) != (was_covered, was_near) {
+                rep.cover(covered, near);
             }
-            std::thread::sleep(Duration::from_millis(80));
+            std::thread::sleep(Duration::from_millis(if covered { 80 } else { 250 }));
         }
     });
 }
@@ -205,27 +192,68 @@ fn pointer_zone(already_near: bool) -> bool {
     (dx - cx).abs() <= half && dy >= -2.0 && dy <= depth
 }
 
-/// The foreground window is maximized on the primary monitor (and is not the desktop, the taskbar or the island).
-fn foreground_maximized_on_primary() -> bool {
-    use windows::Win32::Foundation::POINT;
-    use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MonitorFromWindow, MONITOR_DEFAULTTOPRIMARY};
-    use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed};
+/// What `place_covered` looks for, and whether it found it.
+struct Search {
+    place: cover::Rect,
+    found: bool,
+}
+
+/// Whether a window of some application is over the island's place on the primary monitor.
+fn place_covered() -> bool {
+    use windows::Win32::Foundation::LPARAM;
+    use windows::Win32::UI::HiDpi::GetDpiForSystem;
+    use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
+    let Some((l, t, r, b)) = primary_rect() else { return false };
+    let scale = f64::from(unsafe { GetDpiForSystem() }) / 96.0;
+    let screen = cover::Rect { left: l.into(), top: t.into(), right: r.into(), bottom: b.into() };
+    let mut search = Search { place: cover::place(screen, scale), found: false };
+    // SAFETY: the callback only runs during the call, while `search` lives; the error returned is the callback stopping
     unsafe {
-        let hwnd = GetForegroundWindow();
-        if hwnd.0.is_null() || !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() || !IsZoomed(hwnd).as_bool() {
-            return false;
+        let _ = EnumWindows(Some(look), LPARAM(std::ptr::addr_of_mut!(search) as isize));
+    }
+    search.found
+}
+
+/// One top-level window: stops the search when it is in the way. What is cheap to ask is asked first.
+unsafe extern "system" fn look(hwnd: windows::Win32::Foundation::HWND, search: windows::Win32::Foundation::LPARAM) -> windows::core::BOOL {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS};
+    use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetLayeredWindowAttributes, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, GWL_EXSTYLE, LWA_ALPHA, WS_EX_LAYERED, WS_EX_TRANSPARENT};
+    // SAFETY: `search` is the `Search` the caller of `EnumWindows` holds; every pointer passed on is to a local of the
+    // size said
+    unsafe {
+        let search = &mut *(search.0 as *mut Search);
+        if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+            return true.into();
         }
+        let rect = |r: RECT| cover::Rect { left: r.left.into(), top: r.top.into(), right: r.right.into(), bottom: r.bottom.into() };
+        let mut outer = RECT::default();
+        if GetWindowRect(hwnd, &mut outer).is_err() || !rect(outer).overlaps(&search.place) {
+            return true.into();
+        }
+        // without the invisible border a window has around it, when the compositor says
+        let mut frame = RECT::default();
+        let at = if DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, std::ptr::addr_of_mut!(frame).cast(), std::mem::size_of::<RECT>() as u32).is_ok() { frame } else { outer };
+        let mut cloaked = 0u32;
+        let _ = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, std::ptr::addr_of_mut!(cloaked).cast(), 4);
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid == std::process::id() {
-            return false;
-        }
         let mut class = [0u16; 64];
         let n = GetClassNameW(hwnd, &mut class).max(0) as usize;
-        if is_shell_class(&String::from_utf16_lossy(&class[..n])) {
-            return false;
+        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        let mut clear = false;
+        if style & WS_EX_LAYERED.0 != 0 {
+            let (mut alpha, mut flags) = (255u8, Default::default());
+            clear = GetLayeredWindowAttributes(hwnd, None, Some(&mut alpha), Some(&mut flags)).is_ok() && flags.0 & LWA_ALPHA.0 != 0 && alpha == 0;
         }
-        MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY) == MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY)
+        let seen = cover::Seen {
+            at: rect(at),
+            shown: cloaked == 0,
+            furniture: pid == std::process::id() || is_shell_class(&String::from_utf16_lossy(&class[..n])),
+            ghost: clear || style & WS_EX_TRANSPARENT.0 != 0,
+        };
+        search.found = seen.is_over(&search.place);
+        (!search.found).into()
     }
 }
 
