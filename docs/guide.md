@@ -41,7 +41,10 @@ crates/app    window backends (Wayland layer-shell, winit), the OS services, the
 | audio follows headphones | pactl | **not yet** | **not yet** | yes |
 | who uses the microphone and the camera (with Mute / Quit) | pactl, /dev/video | the names from the privacy registry, Quit only (built) | **not yet** | yes |
 | activity page, auto focus, away recap | niri focus events, `ext-idle-notify` | the window in front (built); no away recap | **not yet** | **not yet** |
-| LocalSend (send files), one-time codes, clipboard actions | yes (drag a file onto the pill on Wayland) | sending yes, drag no | sending yes, drag no | sending yes |
+| LocalSend (send files), one-time codes, clipboard actions | yes | sending yes | sending yes | sending yes |
+| LocalSend (receive files and messages) | yes | **not yet** | **not yet** | yes |
+| keyboard: Caps Lock and layout notices | sysfs; the layout from niri only | **not yet** | **not yet** | Caps Lock only |
+| shelf: drop files on the pill and drag them out | yes (Wayland) | the list only, filled by `open-island shelf` (built) | the same (built) | yes |
 
 "built" means it type-checks for `x86_64-pc-windows-msvc` / `aarch64-apple-darwin` in `cargo check`; none of it has been
 run on those systems. The update-check card of the Luau original is not ported (it was specific to Noctalia). Complex
@@ -100,7 +103,7 @@ notification sound. It writes the file below, keeping the keys it does not know,
 { "latitude": 43.72, "longitude": 10.40,
   "calendars": [
     {"name": "University", "url": "https://example.org/calendar.ics", "color": "#ff9f0a"},
-    {"type": "icloud", "user": "me@icloud.com", "password": "abcd-efgh-ijkl-mnop"},
+    {"type": "icloud", "user": "me@icloud.com"},
     {"type": "caldav", "server": "https://cloud.example.org/remote.php/dav/", "user": "me", "password_cmd": "pass show dav"} ],
   "timer_presets": ["5m", "10m", "25m"], "meeting_lead_minutes": 10,
   "notification_seconds": 5, "font": "Inter", "low_battery_percent": 15, "lyrics": true,
@@ -113,8 +116,20 @@ notification sound. It writes the file below, keeping the keys it does not know,
 Calendars: a feed (`.ics` / `webcal://`, public or secret address) or a CalDAV account. **iCloud** needs the Apple ID and an
 app-specific password (appleid.apple.com > Sign-In and Security > App-Specific Passwords), not the Apple ID password: every
 calendar of the account is read with its own name and colour. Each calendar can be renamed and recoloured from the menu (the
-old `calendar_urls` list still works and is migrated). `password_cmd` prints the password (a password manager) instead of
-keeping it in the file, which is owner-only anyway.
+old `calendar_urls` list still works and is migrated).
+
+The calendars are always read from two months back to two months ahead, again every five minutes. Turn the Calendar page to a
+month outside that and it is read then, with the months beside it ("Reading this month…"); it is kept while the island runs and
+read again after ten minutes or on refresh. A feed only gives what its publisher still lists: an old month can be empty because
+the events are gone at the source.
+
+**Passwords and API keys** (CalDAV accounts, the map tiles) are kept in the system's keyring, not in `config.json`: the
+Secret Service on Linux (GNOME Keyring, KWallet, KeePassXC), the Credential Manager on Windows, the Keychain on macOS. One
+written into the file by hand (`"password"`, `"map_api_key"`) is moved to the keyring while the island runs, and leaves the
+file only once the keyring holds it. Without a keyring, adding an account from the menu is refused; `password_cmd` (a command
+that prints the password, from a password manager) works everywhere. This protects the file, its copies and backups: other
+programs of the same user can still ask an unlocked keyring. A secret feed address is a secret too, and is still written in
+the file (which is owner-only). `open-island doctor` says whether the keyring answers.
 
 The weather, the map and the trips use where the machine is (GeoClue, see "Following your position"); the latitude and longitude
 above are the fallback, and the whole answer when `follow_position` is off. The island calls out only to the services a feature
@@ -132,6 +147,12 @@ only one page begins so: `go phone`, `go meteo`, `go sett`, `go all`. The contro
 **What is remembered.** The options are in this file and apply from the start of the next run. "Do not disturb" and "Keep awake" are written to the state folder as
 soon as they are switched, so they come back after a restart or a crash. Whatever keeps the machine awake (`systemd-inhibit`, `caffeinate`) ends with the island, so
 nothing is left holding it while the island is not running.
+
+## The player
+
+Shuffle and repeat sit beside the skip buttons, for the players that offer them (MPRIS `Shuffle` and `LoopStatus`; on
+Windows what the system's media controls allow). A dot marks what is on; repeat goes from off to the whole list to the
+current track (the icon with a 1) and back. Not on macOS yet.
 
 ## Moving between pages
 
@@ -186,6 +207,94 @@ then `open-island notify --preset deploy "Shipped"`.
 one asking for a permission or an answer stays until the agent goes on (`PostToolUse` is what clears it as soon as an approved tool has run). `open-island agent --done`
 in the `Stop` hook also says when a turn ends. The card only tells: permissions are answered in the terminal.
 
+## The battery
+
+Plugging in or unplugging drops a card with the battery as liquid: it pours up to its level from empty on power and falls to
+it from full off it. A couple of seconds later the line under it says "Full in 1h10" or "About 3h20 left", from the power the
+battery reports at that moment (an estimate, in steps of five minutes). The low battery card says the same. Options > Alerts >
+"Battery alerts" switches the cards off.
+
+## A second screen (Linux, niri)
+
+When a screen is plugged in, a card offers **Extend**, **External** (the laptop's panel off) and **Laptop** (the other one
+off); `monitor` in the command bar brings it back. niri cannot mirror one screen on another, so there is no such choice. A
+choice that switches a screen off asks to be kept: without **Keep** within 15 seconds everything comes back on. A screen goes
+off only after niri says another is on, and whenever every connected screen is off (the projector pulled out while the
+laptop's panel was off) the panel is switched back on, also when the island starts. If the island is not running at that
+moment, `niri msg output eDP-1 on` does it. The changes are temporary: niri forgets them when its configuration changes.
+The island moves to the screen that is left when its own goes away.
+
+## Administrator passwords (Linux, off by default)
+
+With `"polkit_agent": true` in `config.json` (then restart the island) the island is the session's polkit agent: when a
+program needs an administrator's password, a drop falls from the pill to the middle of the screen and opens into the request,
+over fullscreen windows too; the pill shows a lock meanwhile. It shows the action
+as the system names it, the system's message, the program that asked, and whose password is wanted, with their picture (the
+one the login screens show, in `/var/lib/AccountsService/icons`; for you also `~/.face`); Enter confirms, Esc
+cancels, three refused attempts end the request. Only one agent can serve a session: switch the other off first (Noctalia:
+`polkit_agent = false`). `open-island doctor` has a section on it. Needs polkit 126 or later (the helper socket) and the
+Wayland layer-shell backend.
+
+How the password is treated:
+
+- the island never checks it and never stores it. It goes to polkit's own helper, a root service, after checking that the
+  other end of the socket really is root, and only when you confirm: a request dismissed before anything was sent reaches
+  nobody (and so counts no failed attempt against the account). It is given only to a prompt that asks for a password;
+  anything else (a PIN) is shown and asked for;
+- it is held in one buffer of fixed size, wiped after use, kept out of the swap where the system allows, never printed or
+  logged, drawn only as dots; no paste, no key repeat, and keys are ignored for half a second after the request appears;
+- keys and clicks sent by programs (`open-island msg key ...`) are dropped while it is up, no card shows beside it, and a
+  request is accepted only from polkit itself;
+- while the agent is on, other programs of your user cannot trace the island or read its memory.
+
+### Face recognition (Gaze)
+
+If polkit's PAM stack runs [Gaze](https://gaze.gundulabs.com), a request can be answered with your face. On Arch, create
+`/etc/pam.d/polkit-1` (this takes the place of the package's file in `/usr/lib/pam.d`):
+
+```
+#%PAM-1.0
+auth       requisite    pam_faillock.so preauth
+auth       sufficient   pam_gaze.so
+auth       include      system-auth
+account    include      system-auth
+password   include      system-auth
+session    include      system-auth
+```
+
+Without options the camera looks first (a second or two) and a password typed meanwhile goes through when it is done; Gaze
+says why a face was not accepted, and the request shows it. With `simultaneous` the password goes straight through, but Gaze
+then says nothing when it does not recognise a face: the request notices only after six seconds. Keep a root shell open
+while you change PAM files, and check `gaze doctor` and `open-island doctor`.
+
+- **When it looks:** Settings > Passwords > "Face unlock" (shown while `polkit_agent` is on), or `polkit_face` in
+  `config.json`. **When asked** (`"ask"`, the default): only on Enter on the empty field or **Use face**. **Automatic**
+  (`"auto"`): as soon as the request opens, kept only when Gaze has `require_confirmation_elevation = true`, else it asks.
+  **Off** (`"off"`): the island does not offer it; the PAM file still decides whether Gaze runs when a password is sent, so
+  to keep the camera off altogether take the Gaze line out of it. A change applies from the next request. The password can
+  be typed at any moment. `open-island msg set` cannot change this.
+- **Confirming:** with that Gaze setting on (its default), a recognised face does nothing until you press Enter or
+  **Confirm**, at the earliest 0.7 s after it appears. With it off, a face you asked for authorises at once.
+- The island never sees the camera or a picture: Gaze runs inside polkit's helper, as root. The island only shows where it is
+  and passes on your yes (a fixed word). It tells Gaze that it knows its message codes, which lasts while it runs.
+- A face is easier to fake or to use without you than a password: Gaze has its own liveness check, and the choice to accept
+  it for administrator actions is made in the PAM file, which is yours.
+- One face check per request: another can be asked for only after a refused attempt, because the one under way cannot be
+  restarted without ending the conversation, and ending it counts.
+- While the account is locked nothing runs, the camera included: the island says "Account temporarily locked" and closes
+  the request.
+- A recognised face does not reset the count of failed attempts (a typed password that is accepted does, through
+  `pam_faillock`'s last step; a `sufficient` module that succeeds stops before it). `faillock --user you` shows the count.
+- Dismissing a request after the camera or the system has started counts as a failed attempt against the account
+  (`faillock`; three in a quarter of an hour lock it for ten minutes by default; `faillock --reset --user you` as root
+  clears it). Dismissing before you asked for anything counts nothing.
+
+What no agent can do: protect you from a program that already runs as your user and imitates the request, takes polkit's
+place before the island does, or rewrites the island's program. For the last one, install the binary where only root can
+change it: `sudo install -m755 target/release/open-island /usr/local/bin/` and start that one. The graphics toolkit keeps
+short-lived copies of the characters typed that the island cannot wipe. A real request of yours shows the action's name under
+the title; if a "password request" turns up as an ordinary notification card, it is not one.
+
 ## Liquid: events, small pills and the filling drop
 
 The pill shows how things are; **what happens drops from it as a card**, stacked with the notifications:
@@ -208,8 +317,8 @@ Each plays once, for the event that starts it, and asks for no frames afterwards
 - **The drop becomes the card.** When a countdown or a job with a percentage ends, the drop that hung at the left of the pill lets go, slides under it and opens into
   the card that says how it went, carrying the colour of the end until it does (a failed one trembles as it opens). Behind another card the new one drops from it as
   usual.
-- **Files.** A file dragged over the island (Wayland) is reached for: the pill says "Drop to send" and stretches a neck with a drop towards the pointer; let go and it
-  is drawn in, the pill swells, and the device list opens. When the files have gone, a small drop leaves the right end of the pill.
+- **Files.** A file dragged over the island (Wayland) is reached for: the pill says "Drop on the shelf" and stretches a neck with a drop towards the pointer; let go and it
+  is drawn in, the pill swells, and the shelf opens with the file on it. When files have been sent, a small drop leaves the right end of the pill.
 - **One-time codes** roll in a digit at a time; a click on the card sends them into the pill, which says "Copied".
 - **Back from do not disturb** (or from any of the automatic quiet states), what was held comes out of the pill drop by drop, each with its app's icon or initial (six
   at most), and the drops gather into the card that sums them up. Coming back to the machine is told by that card alone.
@@ -241,7 +350,8 @@ claiming notifications (undo with `... true`). Any other owner is left alone and
 ## Controlling it
 
 `open-island msg <event> [payload]`: `peek`, `open [page]` (keyboard navigation: arrows move a focus ring, Enter
-activates, Tab / Shift+Tab change page, Escape closes), `page next|prev`, `page <home|today|map|cal|qs|sys|activity|audio|send|notifs|media|timer|clip|focus|settings>`, `dnd on|off`, `timer 25m`,
+activates, Tab / Shift+Tab change page, Escape closes), `page next|prev`, `page <home|today|map|cal|qs|sys|activity|audio|send|shelf|notifs|media|timer|clip|focus|settings>`,
+`dnd on|off|1h|until 18:00|until class ends`, `mic [toggle|off|on]`, `shelf <file>...`, `timer 25m`,
 `pomodoro`, `stopwatch`, `timer-cancel`, `reply` (reply to the notification on screen: bind it to a key), `send <file>...` (see LocalSend below), and for long operations `open-island progress run [-l label] -- command...` (runs the command on a pseudo-terminal, so rsync, curl, pacman... still draw
 their own progress, and shows the last `NN%` they print; not for commands that ask questions: `sudo -v` first), or by hand `progress <percent|?> <label>`,
 `progress-done [label]`, `progress-fail [label]`, `progress-clear`: a `64%` small pill beside the pill while it runs,
@@ -323,8 +433,10 @@ and a card says when the phone's battery drops to 20% (again only after it has b
 
 ### Text from an image (OCR)
 
-A screenshot's card (the compositor's "Screenshot captured") becomes one with a **Copy text** button that does the same; switch it off with
-`ocr_screenshots` (Options > Alerts > "Text from screenshots").
+A screenshot's card (the compositor's "Screenshot captured") becomes one with buttons: **Text** copies the text in it, as below, and
+when the picture's file is found (the one the notification names, or the newest picture written in the last seconds to niri's
+screenshot folder or to Pictures) also **Send** (to a nearby device), **Folder** and **Trash** (it goes to the bin, from where it can be
+taken back). The text button is switched off with `ocr_screenshots` (Options > Alerts > "Text from screenshots"). Linux.
 
 `ocr` in the command bar (or `open-island msg ocr`) reads the text of the image on the clipboard (a screenshot of a slide, a
 scanned page) with Tesseract and puts the text on the clipboard; a card shows how it starts. It asks for Italian and English
@@ -413,13 +525,20 @@ how to write it instead of "Not understood":
 | `event fri all day conference`, `evento domani tutto il giorno gita` | an entry without hours (it blocks nothing, so it never flags an overlap) |
 | `event fri 15-16:30 office hours`, `evento domani 10 dentista`, `event 3 feb 14:00 for 2h exam prep` | an event on the calendar: shown at once, written to the calendar, and a word when it overlaps another |
 | `note ask about the exam format`, `open-island note …` | a line in the notes folder (one Markdown file a day) |
-| `find compilers`, `cerca reti` | a search through events, tasks, deadlines, pins, notes and study files (the Find page) |
-| `log 90m algoritmi`, `studiato 1h30 reti`, `pomodoro algoritmi` | study time done; it comes off the work still to do for that course. A Pomodoro with a course logs its focus time by itself |
+| `find compilers`, `cerca reti` | a search through events (those to come, and the last three that are over, from the two months back), tasks, deadlines, pins, notes and study files (the Find page) |
+| `log 90m algoritmi`, `studiato 1h30 reti`, `pomodoro algoritmi` | study time done; it comes off the work still to do for that course. A Pomodoro with a course is a study session: quiet during the focus, logged by itself |
 | `esame 3 feb Algoritmi`, `deadline 3/2 project` | a date to count down to (see "For a commuting student") |
 | `until class` | a timer that ends five minutes before the next event |
 | `pomodoro`, `stopwatch`, `focus 45`, `dnd on` / `dnd off` | the matching mode |
+| `dnd 1h`, `dnd for 30m`, `dnd until 18:00`, `dnd until class ends`, `dnd fino alle 18`, `dnd fino a fine lezione` | do not disturb that ends by itself; the quick settings chip says when, and it is kept across restarts |
+| `mic`, `mic off`, `mic on` (also `microfono …`) | mutes or unmutes the microphone |
+| `remind me when i get home water the plants`, `remind me when i leave uni call Sam`, `ricordami quando arrivo a casa …`, `ricordami quando esco da uni …` | a reminder tied to a place: see "Reminders tied to a place" |
+| `place uni`, `unplace uni` | saves where you are now under a name, or forgets it |
+| `countdown 45`, `countdown off` (also `conto …`) | how many days ahead the pill counts down to an exam or deadline |
 | `12*7+3`, `sqrt(2)`, `2^10`, `(1+2)*3` | a sum; Enter copies the result |
 | `20% of 150`, `80 + 15%`, `80 - 20%`, `split 84.5 by 3` | a share, a price with a rate, what each person of a bill pays; Enter copies it |
+| `emoji fire`, `emoji cuore`, `symbol implies`, `simbolo freccia` | up to ten emoji or symbols side by side: Enter copies the lit one, Tab and Shift+Tab move, a click copies that one. Emoji are found by their English names and shortcodes, the common ones in Italian too; flags and other emoji made of several characters are not offered (the island could not draw them whole) |
+| `monitor` | the card of the other screen again (see "A second screen") |
 | `pw 24`, `uuid`, `roll 2d6`, `d20`, `coin`, `random 1-100` | something generated when you press Enter and copied (a password is copied like a verification code: out of the clipboard history, cleared after 30 s, not shown on the card) |
 | `days until 3 feb`, `giorni al 25 dic`, `today + 45 days`, `3 feb - 2 weeks`, `31 jan + 1 month`, `week`, `3 feb` | date arithmetic and the day of the week (dates are day first; a day and month without a year is the next one to come; `week` is the ISO week) |
 | `20 usd in eur`, `100 eur to jpy` | a currency conversion with the ECB's daily rates (needs them once; works offline with the last ones) |
@@ -441,13 +560,23 @@ folder is any folder, the account is any CalDAV account.
   cuts it in two, or `study_hours` in the configuration): the plan gives a day what its timed events leave of that time, and
   events before or after it, or during the pause, count for nothing, here and in the week shown on the page. So a day full of lectures gets little and an empty one much; what the nearest
   deadline takes is not free for the next, and the same work is never
-  planned on two days. Calendars are read two months ahead: past that a day counts like the same weekday of the last week known.
+  planned on two days. The study plan counts on two months of calendar ahead: past that a day counts like the same weekday of the last week known.
   The plan is always one that can be followed: no day is given more than it has free, and today only what is left of its
   study hours once the events still to come and what you already studied are taken out. When the free time before a date is not enough, the rest is
   not planned and the page says how much of it "won't fit". The morning and evening cards end with "Study 1h20: Algoritmi exam 45m, Report 35m".
-  `log 90m algoritmi` (or a Pomodoro `pomodoro algoritmi`) counts for the nearest-due task or exam of that course, and comes off
-  today's part first, so having studied does not ask for more the same day. An exam's hours are the total: what is studied for it
+  `log 90m algoritmi` (or a study session, below) counts for the task or exam named exactly so, else for the nearest-due one of that
+  course, and comes off today's part first, so having studied does not ask for more the same day. An exam's hours are the total: what is studied for it
   is counted next to them ("4h of 20h"), also when it was logged before the hours, or the exam, were written down.
+- **Study sessions**: the ▶ on a row of today's study (Plan page), or `pomodoro algoritmi`, starts a Pomodoro for it. While a
+  focus runs, notifications are held (the break lets them out, with the card of what was held back); a lecture about to start, the end of an
+  event and the nudge about distracting apps still come, and `dnd off` lifts the quiet for that focus. Its time is logged by itself:
+  all of it at the end, what ran of it when it is skipped, stopped or replaced by another timer (under five minutes: nothing).
+  The running row shows the clock, and its cross stops it. A Pomodoro started without a name is only a Pomodoro: nothing is held.
+  Quitting the island in the middle of a focus loses that focus.
+- **Pace**: under each exam or hand-in with hours, where the last days lead: "10h20 short: 31% by then · 26m a day, 1h25 needed", or
+  "On track". It is the time studied for it a study day (since you first studied for it, over at least 7 and at most 14 days; days off
+  count only if you studied), carried over the study days left before the date. It does not look at how full those days are: that is
+  what "won't fit" says. One with credits and no hours has no pace, as there is no total to measure against.
 - **Credits (CFU)**: `exam 15 dec AE 9cfu` (or `9 cfu`) gives an exam a weight instead of a number of hours. Whatever each day leaves
   free, after the events and the work with hours, is suggested to the exams that have credits and no hours, each in proportion to
   its credits over the days it has left: a bigger exam gets more, and so does a nearer one. These are indications, in quarters of an
@@ -587,13 +716,36 @@ Notifications are held (they stay in the history, and the sound stays off) while
 `critical` notifications still come through. Switch any of the three off in the configuration:
 `"quiet_in_meetings": false`, `"quiet_on_mic": false`, `"quiet_on_screen_share": false`.
 
+The focus of a study session (see the organizer) holds them too.
+
 The DND button is lit whenever notifications are held, by you or by the island (the three above, the study focus, auto
-focus), and a press on a lit button always puts it out, as `dnd off` does: the reasons there are at that moment are set
+focus, a study session), and a press on a lit button always puts it out, as `dnd off` does: the reasons there are at that moment are set
 aside until each of them ends, so the next meeting or call holds them again.
+
+Do not disturb can also end by itself: `dnd 1h`, `dnd until 18:00`, or `dnd until class ends` (the event that is on, or the next one
+today).
 
 The bell with a z on a notification card (under the pointer) hides it and brings it back after ten minutes. When the island stops being
 quiet (a meeting ends, a call, `dnd off`, the study focus) one card says how much was held back and from whom; a click
 opens the list. The focus mode of `~/.local/bin/focus` counts as quiet too.
+
+## The microphone
+
+While the microphone is in use its icon shows in the pill; muted, a red crossed microphone stays there. A click on either, `mic` in the
+bar, or `open-island msg mic toggle` mutes and unmutes the default input, and a short card says which. To have it on a key, in niri:
+
+```kdl
+Mod+M { spawn "open-island" "msg" "mic" "toggle"; }
+```
+
+Linux (pactl) and Windows.
+
+## The keyboard
+
+A change of Caps Lock, or of the keyboard layout, shows for a moment where the volume bar does ("Caps Lock on", "English (US)").
+Caps Lock is read from the keyboards' lights (`/sys/class/leds`, four times a second); the layout comes from niri's event
+stream, so other compositors show Caps Lock only. Switch both off with `keyboard_alerts` (Options > Alerts > "Keyboard
+changes"). Linux.
 
 ## Status of anything a script watches
 
@@ -662,19 +814,22 @@ a script with `open-island msg set <option> <value>`:
 | Island | `mini_pills` (1-4, 2): how many small pills may sit beside the main one; a timer, focus, an event and each running activity (an agent's turn, a build) get their own, in that order; 1 is a single pill beside it | 2 |
 | Island | `dock_icons` (4-12, 7): how many page icons the bottom bar shows (Home, what is live, the pages used most, the page you are on); the rest are on the All pages grid | 7 |
 | Island | `timer_presets` (["5m","10m","25m"]), `screen` (`focused` or a name such as `eDP-1`; pinning by connector name, on Wayland too; an unknown name is logged and the compositor chooses), `timer_sound_file` (the sound file the timer plays) | |
-| Alerts | `show_notifications`, `show_osd`, `battery_alerts`, `meeting_alerts`, `rain_alerts`, `culprit_alerts` | on |
+| Alerts | `show_notifications`, `show_osd`, `battery_alerts`, `meeting_alerts`, `rain_alerts`, `culprit_alerts`, `ocr_screenshots`, `keyboard_alerts` | on |
 | Alerts | `notification_seconds` (2-30, 5), `osd_seconds` (0.5-5, 1.6), `low_battery_percent` (5-50, 15), `meeting_lead_minutes` (1-60, 10: the card), `meeting_pill_minutes` (1-120, 10: the pill on the side) | |
 | Quiet | `quiet_in_meetings`, `quiet_on_mic`, `quiet_on_screen_share`, `away_recap` | on |
 | Day | `link_cards` (a copied link offers to open it) | on |
 | Quiet | `deep_work_minutes` (0-120, 20: auto focus), `break_minutes` (0-240, 0: off), `deep_work_apps` (a list in `config.json`) | |
-| Day | `travel_times` | on |
+| Quiet | `distraction_minutes` (0-120, 20; 0: off), `distraction_apps` (the apps marked on the Activity page) | 20, none |
+| Day | `travel_times`, `end_alerts` (five minutes before an event of half an hour to five hours ends: what comes next, and where) | on |
+| Day | `countdown_days` (0-365, 21: the clock pill counts down to the next exam or deadline within that many days, orange in the last three; 0: off. Also `countdown 45` / `countdown off` in the bar) | 21 |
 | Day | `evening_weekends` (both cards on Saturday and Sunday) | off |
 | Day | `morning_recap_time`, `evening_recap_time` (`"08:00"`, `"18:30"`, or minutes; `off`), `commute_minutes` (0 = off), `travel_margin_minutes` (0-30, 5), `study_hours` (seven days, Monday first: `"09:00-17:00"`, `"09:00-13:00+14:00-18:00"`, `"off 09:00-17:00"`) | off, off, 0, 5, 9-17 |
 | Places | `weather`, `follow_position` | on |
 | Places | `currency_rates` (the ECB's daily rates for the bar) | on |
+| Places | `receive_files` (Linux: take files other devices send with LocalSend; `receive_dir` in `config.json` says where they go) | **off** |
 | Places | `wifi_position` (Linux: a position within metres from the Wi-Fi networks around you, looked up at beacondb.net; a card says so when you turn it on) | **off** |
-| Places | `map_tile_url` (a preset name or a URL; see the map), `map_dark`, `map_api_key` (Settings page), `travel_mode` (`car`, `walk`, `transit`, `train`: on the Today page and the map) | OpenStreetMap, on, none, car |
-| Music (a title or artist too long for its place slides back and forth, pausing at each end, instead of being cut) | `media_auto_expand`, `lyrics`, `lyrics_in_pill` (off; the compact pill widens, up to 640 px, to show the line whole), `art_tint` | on |
+| Places | `map_tile_url` (a preset name or a URL; see the map), `map_dark`, `map_api_key` (Settings page; kept in the keyring), `travel_mode` (`car`, `walk`, `transit`, `train`: on the Today page and the map) | OpenStreetMap, on, none, car |
+| Music (a title or artist too long for its place goes round to the left, followed by itself and pausing each time its start is back, instead of being cut) | `media_auto_expand`, `lyrics`, `lyrics_in_pill` (off; the compact pill widens, up to 640 px, to show the line whole), `art_tint` | on |
 
 Not carried over, because they are about running inside Noctalia: `style` (the island is always black), `update_check`.
 
@@ -713,15 +868,55 @@ The clock icon in the dock (right after home, `open-island msg page today`) list
 reminders in time order, what is over dimmed, and a line for "now" between it and what is still to come. The header says what
 is next and in how long; an event with a link has a join button on its row.
 
+## Reminders tied to a place
+
+`remind me when i get home water the plants` (or `... when i leave uni ...`, `at home ...`; in Italian `quando arrivo a casa`,
+`quando esco da ...`) waits until the computer gets there or goes away, then rings with a card. Home is the place set for the map
+(`home <address>`); any other place is saved while you are there with `place uni`. What is waiting is listed on the Today page,
+where the cross takes it off.
+
+- It needs **Follow my position** on. While something waits, the position is asked every two minutes.
+- It needs a position sure within 500 m: the one from the internet address is often far rougher, so on a laptop turn on the Wi-Fi
+  position (below, off by default). The island says so when the reading is too rough.
+- "Getting there" is within 200 m (more when the reading is less sure); being away is half as far again, so a reading that wavers at
+  the edge rings nothing. A reminder set while you are already there waits for the next arrival.
+- It only works while the computer is on and has a position: it is not a phone's geofence.
+
+Places and what waits for them are kept in `places.json` in the state folder, readable only by you.
+
+## The shelf
+
+A place to set files down for a moment. Drop files on the pill (Wayland), or `open-island shelf <file>...`: they stay on the Shelf page,
+across restarts, until you take them off (twelve at most; the files themselves are never moved or deleted). Drag a row to another
+window to drop a copy there (Wayland), open it, or send everything to a nearby device with **Send**. A small tray icon in the pill
+says something is on it; a file that no longer exists is dropped from the list at the next start.
+
 ## Send files to another device (LocalSend)
 
 `open-island send report.pdf photo.jpg` opens a page that lists the devices on your network running
 [LocalSend](https://localsend.org) (phones, other computers; the app must be open there), found by looking at the /24 network
 for its port, and sends the files to the one you click. The progress pill shows it (the other side has to accept first), then a
 card says how it went. It speaks LocalSend's protocol v2 (self-signed HTTPS, which is why the certificate is not checked), so
-nothing else has to be installed on this machine. On Wayland you can also drag files from a file manager onto the pill: it
-opens, and dropping opens the same page (the drop target is the island's own area, so the pill must be under the pointer).
-Not done: receiving, and dropping on Windows and macOS.
+nothing else has to be installed on this machine. Files dropped on the pill go to the shelf (above), whose **Send** button opens the
+same page.
+
+### Receiving (Linux)
+
+Off until you switch it on: **Options > Places > "Receive files"**, or `open-island msg set receive_files on`. The island then
+shows up in LocalSend on the other devices, under the computer's name. When one of them sends, a card says who, how much and
+the first file names, with **Accept** and **Decline**; nothing is written before you accept, and a card nobody answers for a
+minute is a no. The progress drop fills while the files arrive, the card at the end opens the file or its folder, and what came
+is also on the shelf. A text message shows on its card with **Copy**. The card appears during do not disturb too, since you are
+usually the one sending.
+
+Files go to the download folder, or to `receive_dir` in the configuration. A name is cut to its last part (no folders, no
+hidden files) and a file never replaces one that is there: it becomes `name (2)`. A file longer than announced, cut short, or
+not matching its checksum is thrown away.
+
+While the option is on the island listens on port 53317 (TCP and UDP), with its own certificate (kept in the state folder), and
+answers only addresses of the local network and of your tailnet. Anyone on the same network can see the computer's name and
+ask to send; a PIN is not supported. **The LocalSend app on the same computer uses the same port**: only one of the two can
+receive (the island says when the port is taken). With a firewall, let TCP and UDP 53317 in.
 
 ## One-time codes
 
@@ -781,11 +976,12 @@ used for the weather (rain that falls or starts before you would arrive); the ba
 ## Activity: where the attention goes, rewind, auto focus (niri)
 
 The island follows the focused window (niri's event stream) and stops counting when nobody has touched the keyboard or the
-pointer for two minutes. Nothing leaves the machine; only today's totals per app are written to the state directory
-(`attention.json`), once a minute.
+pointer for two minutes. Nothing leaves the machine; the totals per app of today and of the thirteen days before are written to the
+state directory (`attention.json`), once a minute.
 
 - **Activity page** (dock, after the system page; `open-island msg page activity`). *Today*: the five apps that held the
-  attention, with share and time, and how long you have been on the current one. *Rewind*: the last half hour in one list, newest
+  attention, with share and time, and how long you have been on the current one. *Week*: the last seven days, how long each, and
+  the apps that took most of them. *Rewind*: the last half hour in one list, newest
   first: windows (an app that had the focus for less than ten seconds is left out), notifications, tracks, and what you copied
   (a click puts it back on the clipboard).
 - **Auto focus**: after `deep_work_minutes` (default 20, Options > Quiet "Auto focus", 0 = off) in a row on work apps (editors,
@@ -793,6 +989,9 @@ pointer for two minutes. Nothing leaves the machine; only today's totals per app
   break it) notifications are held like in a meeting, a bell-off icon shows in the pill, and a recap card comes when you leave.
   Reminders and critical notifications still get through.
 - **Break nudge**: `break_minutes` (default 0 = off) gives a card after that long on one app, then again after another period.
+- **Distracting apps**: the crossed circle on a row of *Today* marks an app (a click on its chip below takes the mark off). In your
+  study hours, after `distraction_minutes` (default 20) in a row on marked apps a card says so, then again after another period.
+  It only says it: nothing is closed or blocked.
 
 Other compositors than niri give no focus events yet, so the page stays empty there (the options still apply).
 
@@ -815,8 +1014,8 @@ turn so water stays blue and parks green; `map_dark: false` keeps it light). 256
 `open-island`. What leaves the machine when the page is open is the tile addresses, which say roughly where you are looking.
 `map_tile_url` (Options > Places > "Map tiles", or `open-island msg set map_tile_url <name or url>`) changes the provider. It takes
 a preset name or an https URL with `{z}`, `{x}` and `{y}` (and `{key}` where the provider wants its API key, which goes in
-Settings > Map > "API key", `map_api_key`: stored in `config.json` like the iCloud password, drawn as dots, sent only to the tile
-server in that URL). Presets, all fetched and looked at: `osm` (default), `esri-dark` (Esri's dark gray canvas, no key, no labels),
+Settings > Map > "API key" or `open-island msg set map_api_key <key>`: kept in the keyring like the calendar passwords,
+drawn as dots, sent only to the tile server in that URL). Presets, all fetched and looked at: `osm` (default), `esri-dark` (Esri's dark gray canvas, no key, no labels),
 `esri-light` and `esri-street` (Esri, darkened by the island), `opentopomap`, `cyclosm` (darkened too), and `carto-dark`
 (`https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png?key={key}`, needs a free key from carto.com/basemaps/apikey).
 A URL with "dark" in it is not darkened again, and the credit on the map follows the provider. Providers that want a key may answer
@@ -854,10 +1053,12 @@ Nothing is sent unless a feature that needs it is in use, and each can be switch
 | currency rates | the European Central Bank, `ecb.europa.eu` (one XML file, at most every 12 h, kept on disk) | your IP address, as for any web page | switch `currency_rates` off (Options > Places) |
 | the usual train (only when you pin one) | ViaggiaTreno, `viaggiatreno.it` (Trenitalia), and for the station near home Transitous | the station, the train number and the time; your IP address; an address you typed for home is sent once to the geocoder at `api.transitous.org` (coordinates are not sent anywhere but to find the near station) | do not pin a train; give home as coordinates |
 | sending files | the device you pick, on your network | the files | do not send |
+| receiving files (**off by default**) | devices on your network | the computer's name, to whoever looks for LocalSend devices | leave `receive_files` off (Options > Places) |
 | network check | NetworkManager's own connectivity probe, a ping to your router | nothing of yours | `nmcli` absent |
 
 The clipboard history is in memory (only pinned entries are written, mode 0600), one-time codes are never kept, and the activity
-page keeps only today's totals per app in the state directory. Nothing is sent to an account or an analytics service.
+page keeps only daily totals per app (two weeks of them) in the state directory. Saved places and the reminders waiting for them
+stay on the machine. Nothing is sent to an account or an analytics service.
 
 ### Position within metres (Linux)
 

@@ -33,6 +33,8 @@ const LYRIC_PILL_MAX: f64 = 640.0;
 /// a fast screen is not redrawn at its own rate for as long as a long title is up. (Under 16 so that a 60 Hz screen
 /// gets every one of its frames.)
 const MARQUEE_STEP_MS: u32 = 12;
+/// The room of the line under the face choice of the settings page.
+pub(crate) const FACE_NOTE_H: f64 = 18.0;
 const SNOOZE_MS: i64 = 10 * 60_000;
 /// Notifications the island makes itself (confirmations, reminders, the recap) have ids from here.
 const OWN_ID_BASE: u32 = 3_000_000;
@@ -45,6 +47,9 @@ const EDIT_IDLE_MS: i64 = 40_000;
 const LYRIC_LEAD_MS: f64 = 250.0;
 /// Events older than this are read again when a page that shows them opens.
 const STALE_EVENTS_MS: i64 = 120_000;
+/// A month fetched for the calendar page is read again after this long, or this soon when a calendar did not answer.
+const MONTH_STALE_MS: i64 = 600_000;
+const MONTH_RETRY_MS: i64 = 60_000;
 const HOVER_INTENT_MS: i64 = 140;
 const HOVER_GRACE_MS: i64 = 320;
 const FADE_OUT_MS: f64 = 70.0;
@@ -79,9 +84,16 @@ pub struct Config {
     pub deep_work_minutes: i64,
     /// Names of apps that count as work (part of the name, any case).
     pub deep_work_apps: Vec<String>,
+    /// Apps (by name) that, used this many minutes during the study hours, get a card (0: never).
+    pub distraction_apps: Vec<String>,
+    pub distraction_minutes: u32,
     /// A card after this many minutes on the same app without a break (0: never).
     pub break_minutes: i64,
     pub meeting_alerts: bool,
+    /// Say five minutes before what is on ends, and what comes next.
+    pub end_alerts: bool,
+    /// The clock pill counts down to the nearest deadline when it is this many days away or less (0: never).
+    pub countdown_days: u32,
     pub rain_alerts: bool,
     pub battery_alerts: bool,
     pub low_battery: f32,
@@ -108,6 +120,10 @@ pub struct Config {
     pub watch_downloads: bool,
     /// A screenshot's card offers to copy the text in it (OCR).
     pub ocr_screenshots: bool,
+    /// Take files other devices send with LocalSend (it listens on the network). Off by default.
+    pub receive_files: bool,
+    /// Say when the keyboard layout or Caps Lock changes.
+    pub keyboard_alerts: bool,
     /// Minutes after midnight when the card with tomorrow comes (0: off), and whether it comes on Saturday and Sunday too.
     pub evening_recap_min: i64,
     /// Door-to-door minutes to where lectures are (0: off): the cards say when to leave, and one comes at that moment.
@@ -154,8 +170,12 @@ impl Default for Config {
             wifi_position: false,
             deep_work_minutes: 20,
             deep_work_apps: island_core::activity::DEEP_WORK_APPS.iter().map(|s| s.to_string()).collect(),
+            distraction_apps: Vec::new(),
+            distraction_minutes: 20,
             break_minutes: 0,
             meeting_alerts: true,
+            end_alerts: true,
+            countdown_days: 21,
             rain_alerts: true,
             battery_alerts: true,
             low_battery: 15.0,
@@ -174,6 +194,8 @@ impl Default for Config {
             currency_rates: true,
             watch_downloads: true,
             ocr_screenshots: true,
+            receive_files: false,
+            keyboard_alerts: true,
             evening_recap_min: 0,
             commute_minutes: 0,
             study_week: Default::default(),
@@ -242,6 +264,18 @@ pub enum Action {
     DeadlineDone(usize),
     /// Opens or closes the editor of the study hours on the Plan page.
     PlanHours(bool),
+    /// Copies the emoji or symbol at this position of what the bar found.
+    BarPick(usize),
+    /// The buttons of a password request.
+    AuthSubmit,
+    AuthCancel,
+    AuthUser,
+    AuthFace,
+    AuthConfirm,
+    /// A choice of the settings page: how a face answers a password request.
+    FaceChoice(crate::model::AuthFaceUse),
+    /// Starts a study session on the row at this position of today's study.
+    StudyStart(usize),
     /// Makes this day of the week (0 Monday) a study day or a day off.
     StudyDayToggle(usize),
     /// Moves one of the times of a day's study hours half an hour later (`true`) or earlier.
@@ -281,6 +315,17 @@ pub enum Action {
     Join(String),
     ClearHistory,
     ToggleDnd,
+    /// A file of the shelf, pressed: a drag of it starts when the pointer moves.
+    ShelfDrag(usize),
+    ShelfOpen(usize),
+    ShelfRemove(usize),
+    /// Opens the page that sends everything on the shelf.
+    ShelfSend,
+    ShelfClear,
+    /// Removes the reminder waiting for a place at this position of the list.
+    WaitingRemove(usize),
+    /// Mutes or unmutes the microphone (the icon in the pill).
+    MicToggle,
     ReplySend,
     ReplyCancel,
     CyclePlayer,
@@ -319,6 +364,8 @@ pub enum Action {
     MapRoute,
     MapRefresh,
     ActivityTab(usize),
+    /// Marks the app as a distraction, or takes the mark off.
+    ToggleDistraction(String),
     /// Put a line of the rewind page back on the clipboard.
     RewindCopy(usize),
     /// How to get to the next event with a place.
@@ -395,6 +442,8 @@ pub struct Bar {
     pub draft: String,
     /// The deadline (by name) the line was opened to change: running it takes that one's place.
     pub replaces: Option<String>,
+    /// Which of the emoji or symbols found Enter copies.
+    pub pick: usize,
 }
 
 /// Something that happened, for the rewind page.
@@ -508,7 +557,7 @@ pub enum Field {
     Screen,
     /// The map tile URL (empty: OpenStreetMap's).
     MapTiles,
-    /// The API key of the map tile provider (kept in the config file, never shown).
+    /// The API key of the map tile provider (kept in the keyring, never shown).
     MapKey,
     /// A place to search on the map.
     MapSearch,
@@ -713,6 +762,21 @@ pub struct Island {
     evening_day: i64,
     morning_id: u32,
     leave_id: u32,
+    /// The files kept on the shelf, the newest first.
+    pub(crate) shelf: Vec<String>,
+    /// Where the press that may become a drag of one of them was.
+    shelf_pressed: (f64, f64),
+    /// Places saved by name (home is in the settings), and the reminders waiting for one.
+    pub(crate) places: Vec<(String, f64, f64)>,
+    pub(crate) at_places: Vec<island_core::places::Waiting>,
+    /// When a position was last asked for the waiting reminders.
+    pub(crate) place_asked_at: i64,
+    /// The microphone's mute as last told.
+    mic_seen: Option<bool>,
+    /// When the last card about a distracting app was shown.
+    distraction_told: Option<i64>,
+    /// The ends already announced (their moments), the newest last.
+    ends_told: Vec<i64>,
     /// The news about the pinned train that has been said (train, time, kind), so that a card comes once.
     train_alerted: Option<String>,
     /// The event the "time to leave" card was shown for (id and start), so that it comes once.
@@ -764,6 +828,8 @@ pub struct Island {
     pub(crate) waiting: std::collections::VecDeque<Incoming>,
     pub(crate) history: Vec<(Incoming, i64)>,
     pub(crate) osd: Option<Osd>,
+    /// A word shown in the volume bar's place (the keyboard layout, Caps Lock): its icon and text.
+    pub(crate) notice: Option<(&'static str, String)>,
     /// What the bars show: the level eased towards the real one, so a level that arrives in steps moves smoothly.
     pub(crate) osd_shown: f64,
     levels_init: bool,
@@ -795,13 +861,27 @@ pub struct Island {
     pub(crate) spectrum_at: i64,
     /// When the calendars were last asked to refresh (so opening pages does not ask over and over).
     last_refresh_req: i64,
+    /// The months asked for and not answered yet: ((year, month), when).
+    months_asked: Vec<((i32, u32), i64)>,
     pub(crate) copied: Option<(usize, i64)>,
     pub(crate) pending: Vec<Command>,
-    dnd_seen: bool,
+    dnd_seen: (bool, Option<i64>),
     /// Why notifications are held without the user having asked (a meeting, the microphone, a screen share).
     pub(crate) auto_quiet: Option<&'static str>,
     /// The reasons for it that were switched off by hand, until each of them ends.
     quiet_set_aside: Vec<&'static str>,
+    /// When a do not disturb that was given a length ends.
+    pub(crate) dnd_until: Option<i64>,
+    /// The password request on show, those waiting behind it, and whether the keyboard is the island's.
+    pub(crate) auth: Option<auth::AuthPrompt>,
+    auth_queue: std::collections::VecDeque<crate::model::AuthRequest>,
+    pub(crate) auth_focus: bool,
+    /// The drop of a request that is over, on its way back into the pill: the moment it was born, and its motion.
+    pub(crate) auth_leaving: Option<(i64, island_core::droplet::Animator)>,
+    /// How tall the screen the island is on is, when the platform knows (logical pixels): where its middle is.
+    screen_height: Option<f64>,
+    /// The screens beyond the machine's own at the last look.
+    externals: Vec<String>,
     /// When the notifications were first held, for the recap that comes when they are let through again.
     quiet_since: Option<i64>,
     recap_id: u32,
@@ -884,6 +964,14 @@ impl Island {
             evening_day: i64::MIN,
             morning_id: 0,
             leave_id: 0,
+            ends_told: Vec::new(),
+            distraction_told: None,
+            mic_seen: None,
+            places: Vec::new(),
+            at_places: Vec::new(),
+            shelf: Vec::new(),
+            shelf_pressed: (0.0, 0.0),
+            place_asked_at: 0,
             train_alerted: None,
             left_for: None,
             first_tick_ms: None,
@@ -925,6 +1013,7 @@ impl Island {
             waiting: Default::default(),
             history: vec![],
             osd: None,
+            notice: None,
             osd_shown: 0.0,
             levels_init: false,
             volume_shown: 0.0,
@@ -949,11 +1038,19 @@ impl Island {
             spectrum: vec![],
             spectrum_at: -100_000,
             last_refresh_req: -100_000,
+            months_asked: vec![],
             copied: None,
             pending: vec![],
-            dnd_seen: false,
+            dnd_seen: (false, None),
             auto_quiet: None,
             quiet_set_aside: Vec::new(),
+            dnd_until: None,
+            auth: None,
+            auth_queue: Default::default(),
+            auth_focus: false,
+            auth_leaving: None,
+            screen_height: None,
+            externals: Vec::new(),
             plan_hours: false,
             quiet_since: None,
             recap_id: 0,
@@ -978,15 +1075,18 @@ pub(crate) mod liquid;
 use card::{Shown, STACK_MAX};
 mod frame;
 mod inputs;
+pub(crate) mod auth;
 mod organizer;
+mod screens;
+mod session;
+mod places;
+mod shelf;
 pub(crate) use organizer::{PLAN_ROWS, SPLIT_ROWS};
 mod pointer;
 mod power;
 mod study;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod tests_effects;
 
 trait OpRunning {
     fn is_some_and_running(&self) -> bool;
@@ -1029,7 +1129,7 @@ pub(crate) fn notif_code(n: &Incoming) -> Option<String> {
 
 /// Faces that are pages: they carry the dock at the bottom.
 pub(crate) fn has_dock(f: Face) -> bool {
-    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Settings | Face::Options | Face::Audio | Face::Today | Face::Plan | Face::Find | Face::Send | Face::Activity | Face::Map | Face::Phone | Face::Grid)
+    matches!(f, Face::IdleHover | Face::MediaFull | Face::MediaLyric | Face::TimerFull | Face::FocusFull | Face::Cal | Face::Weather | Face::Qs | Face::Sys | Face::Notifs | Face::Clip | Face::Shelf | Face::Settings | Face::Options | Face::Audio | Face::Today | Face::Plan | Face::Find | Face::Send | Face::Activity | Face::Map | Face::Phone | Face::Grid)
 }
 
 pub(crate) fn page_of(f: Face) -> Option<Page> {
@@ -1044,6 +1144,7 @@ pub(crate) fn page_of(f: Face) -> Option<Page> {
         Face::Sys => Page::Sys,
         Face::Notifs => Page::Notifs,
         Face::Clip => Page::Clip,
+        Face::Shelf => Page::Shelf,
         Face::Settings => Page::Settings,
         Face::Weather => Page::Weather,
         Face::Options => Page::Options,

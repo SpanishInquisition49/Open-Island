@@ -29,7 +29,8 @@ arrived, the timer running out. Hover it or click it to open it.
 
 ### Music at a glance
 
-The cover, the controls and the lyrics in time with the song. Closed, it keeps the title and a small equalizer in view.
+The cover, the controls and the lyrics in time with the song, with shuffle and repeat when the player offers them. Closed,
+it keeps the title and a small equalizer in view.
 
 <p align="center">
   <img src="docs/images/pill.png" width="430" alt="The closed island showing the song title, an equalizer and the time">
@@ -39,7 +40,8 @@ The cover, the controls and the lyrics in time with the song. Closed, it keeps t
 
 Messages drop out as soft cards, up to three at a time, with their buttons and replies. One-time codes show large, and a
 click copies them. In a meeting, on a call or while sharing your screen the island stays quiet, then tells you what you
-missed.
+missed. You can also ask for quiet for an hour, or until the lesson ends. A screenshot's card lets you copy its text,
+send it to your phone, open its folder or throw it away.
 
 <table>
   <tr>
@@ -51,7 +53,9 @@ missed.
 ### Your day, in one place
 
 Classes, appointments, deadlines and to-dos in order, with the time you need to leave to get there. If you like, a card
-in the morning and one in the evening sum it up, weather included.
+in the morning and one in the evening sum it up, weather included. Five minutes before a lesson ends it says what comes
+next and where, and as an exam gets close the days left show beside the clock (you choose how early). Reminders can wait for a place too: "when I
+get home, water the plants".
 
 <table>
   <tr>
@@ -66,6 +70,12 @@ Add your exams with their date and either their credits or the hours you expect 
 each day: more on free days, less on busy ones, and never more than the day can hold. You choose when your study day
 starts and ends, weekday by weekday, when you break for lunch, and which days are off. Each of your calendars keeps its own colour.
 
+Press ▶ on something to study and a Pomodoro starts: notifications wait for the break and the time is logged by itself. Under
+each exam with hours, the island says whether your pace of the last days gets you there.
+
+Mark the apps that pull you away, and the island tells you when you have been on them too long during study hours. A week
+view shows where your time went, app by app.
+
 ### Timers, and a bar you can talk to
 
 Several countdowns at once, a Pomodoro and a stopwatch. Open the command bar (give `open-island msg bar` a keyboard
@@ -77,8 +87,11 @@ shortcut) and just type:
 | `remind friday 9:00 call the office` | a reminder |
 | `todo report due fri` | a task for your list |
 | `exam 15 dec Algorithms 9cfu` | an exam in your study plan |
+| `dnd 1h` | an hour of quiet |
+| `remind me when i get home water the plants` | a reminder that waits until you are there |
 | `20% of 150` | the answer, ready to paste |
 | `5 km in mi` | a conversion |
+| `emoji fire`, `symbol implies` | emoji and symbols to pick and paste |
 
 <table>
   <tr>
@@ -117,12 +130,19 @@ app, and see your headphones' battery when they connect.
 
 ### And the small things
 
-- **Send files** to your phone or another computer nearby (with [LocalSend](https://localsend.org)).
+- **A shelf for files** (Linux): drop them on the island, and drag them out again where you need them.
+- **Send files** to your phone or another computer nearby (with [LocalSend](https://localsend.org)), and receive them on
+  Linux once you switch that on: you accept each transfer from its card.
+- **Caps Lock and keyboard layout:** a short notice when they change (Linux; the layout on niri).
 - **Clipboard history**, with the entries you want to keep pinned.
 - **Downloads and long jobs** beside the island, as a drop of liquid: it fills up with a job that says how far it is,
   and sloshes while your browser downloads a file.
 - **A heads-up** when a program is slowing the computer down, or the network stops working.
-- **Camera and microphone dots**, so you know when they are in use.
+- **Battery:** plug in and it pours like liquid, with the time to full.
+- **A second screen** (niri): choose to extend or use only one, and it comes back by itself if you do not confirm.
+- **Administrator passwords** (Linux, off until you [switch it on](docs/guide.md#administrator-passwords-linux-off-by-default)):
+  a drop falls from the island and becomes the request, and with [Gaze](https://gaze.gundulabs.com) your face can answer it.
+- **Camera and microphone**: you see when they are in use, and mute the microphone with a click or a key.
 - **Make it yours:** most things can be switched on or off from the options page.
 
 <p align="center">
@@ -194,7 +214,8 @@ weather location and pick a sound. The **options** page switches features on and
 - No sign-up, no ads, no tracking.
 - Some features ask public services for what they need: weather, maps, directions, trains, lyrics and exchange rates.
   Each can be switched off or left unused.
-- The weather and the map follow your computer's location. You can set a fixed place instead.
+- The weather, the map and place reminders follow your computer's location. You can set a fixed place instead. The places
+  you save stay on your computer.
 - Your clipboard history stays in memory, apart from what you pin, and one-time codes are kept out of it.
 
 The guide lists exactly [what leaves your computer](docs/guide.md#what-leaves-the-machine).

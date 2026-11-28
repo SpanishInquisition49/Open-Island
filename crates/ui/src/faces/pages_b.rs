@@ -217,21 +217,86 @@ impl Island {
     /// Where the attention went today, and the last half hour.
     pub(super) fn face_activity(&self, p: P, w: f64, _h: f64) {
         let hy = self.page_header(p, w, "Activity");
-        // two tabs on the right of the header
-        for (n, name) in ["Today", "Rewind"].into_iter().enumerate() {
+        // the tabs on the right of the header, laid out from the right
+        let mut x1 = w - 14.0;
+        for (n, name) in [(1, "Rewind"), (2, "Week"), (0, "Today")] {
             let tw = p.button_width(name);
-            let x1 = w - 14.0 - if n == 0 { p.button_width("Rewind") + 6.0 } else { 0.0 };
             let r = rect(x1 - tw, hy - 14.0, tw, 28.0);
             let on = self.activity_tab == n;
             p.rrect(r, 14.0, if on { theme::ACCENT } else if p.hovered(r) { theme::HOT_CHIP } else { theme::CHIP });
             p.text(name, r.center().x, r.center().y, 12.0, SEMI, if on { theme::ON_ACCENT } else { theme::FG }, Align::Center, (tw - 8.0) as f32);
             p.hit(r, Action::ActivityTab(n));
+            x1 -= tw + 6.0;
         }
         let top = 14.0 + 34.0 + 8.0;
-        if self.activity_tab == 0 {
-            self.attention_tab(p, w, top);
-        } else {
-            self.rewind_tab(p, w, top);
+        match self.activity_tab {
+            0 => self.attention_tab(p, w, top),
+            2 => self.week_tab(p, w, top),
+            _ => self.rewind_tab(p, w, top),
+        }
+    }
+
+    pub(crate) fn activity_height(&self) -> f64 {
+        let body = match self.activity_tab {
+            // the five apps and the line about today, then what the marks are for, and the marked ones
+            0 => 6.0 * 30.0 + 18.0 + if self.cfg.distraction_apps.is_empty() { 0.0 } else { 28.0 },
+            2 => {
+                let apps = self.week_apps().len().min(5) as f64;
+                7.0 * 24.0 + if apps > 0.0 { 22.0 + apps * 24.0 } else { 0.0 }
+            }
+            _ => 6.0 * 30.0,
+        };
+        14.0 + 34.0 + 8.0 + body + 10.0
+    }
+
+    /// The apps of the last seven days, the one with most time first.
+    fn week_apps(&self) -> Vec<(String, i64)> {
+        let mut week: Vec<(String, i64)> = vec![];
+        for (app, ms) in self.ledger.days(self.now, self.day_start_ms(self.today_day()), 6).into_iter().flat_map(|(_, t)| t) {
+            match week.iter_mut().find(|(a, _)| *a == app) {
+                Some((_, sum)) => *sum += ms,
+                None => week.push((app, ms)),
+            }
+        }
+        week.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        week
+    }
+
+    /// The last seven days: how long the attention was somewhere on each, and the apps that took most of them.
+    fn week_tab(&self, p: P, w: f64, top: f64) {
+        let ds = self.day_start_ms(self.today_day());
+        let days = self.ledger.days(self.now, ds, 6);
+        let total = |apps: &[(String, i64)]| apps.iter().map(|(_, ms)| ms).sum::<i64>();
+        let longest = days.iter().map(|(_, t)| total(t)).max().unwrap_or(0).max(1);
+        for (n, (_, apps)) in days.iter().enumerate() {
+            p.stagger(1 + n);
+            let cy = top + n as f64 * 24.0 + 12.0;
+            let number = self.today_day() - (6 - n as i64);
+            let (_, _, dom) = island_core::calendar::civil_from_days(number);
+            let name = &clock::WEEKDAYS[island_core::calendar::weekday_of_days(number) as usize][..3];
+            let label = if number == self.today_day() { "Today".to_string() } else { format!("{name} {dom}") };
+            p.text(&label, 20.0, cy, 12.0, REG, theme::FG, Align::Left, 60.0);
+            let ms = total(apps);
+            p.bar(rect(88.0, cy - 3.0, w - 88.0 - 82.0, 6.0), ms as f64 / longest as f64, theme::ACCENT, theme::TRACK);
+            let took = if ms == 0 { "–".to_string() } else { duration::fmt_took(ms) };
+            p.text(&took, w - 20.0, cy, 11.0, REG, theme::DIM, Align::Right, 60.0);
+        }
+        let week = self.week_apps();
+        if week.is_empty() {
+            return;
+        }
+        let mut y = top + 7.0 * 24.0;
+        p.stagger(8);
+        p.text("Most of the week", 20.0, y + 12.0, 10.0, SEMI, theme::DIM, Align::Left, 160.0);
+        y += 22.0;
+        let biggest = week.first().map_or(1, |(_, ms)| *ms).max(1);
+        for (app, ms) in week.iter().take(5) {
+            let cy = y + 12.0;
+            let color = if self.is_distraction(app) { theme::ORANGE } else { theme::ACCENT };
+            p.text(app, 20.0, cy, 12.0, REG, theme::FG, Align::Left, 110.0);
+            p.bar(rect(136.0, cy - 3.0, w - 136.0 - 82.0, 6.0), *ms as f64 / biggest as f64, color, theme::TRACK);
+            p.text(&duration::fmt_took(*ms), w - 20.0, cy, 11.0, REG, theme::FG, Align::Right, 60.0);
+            y += 24.0;
         }
     }
 
@@ -255,8 +320,17 @@ impl Island {
             let y = top + n as f64 * 30.0 + 15.0;
             p.text(app, 20.0, y, 12.0, SEMI, theme::FG, Align::Left, 110.0);
             p.text(&format!("{}%", (*ms as f64 / total as f64 * 100.0).round() as i64), 188.0, y, 10.0, REG, theme::DIM, Align::Right, 34.0);
-            p.bar(rect(196.0, y - 3.0, w - 196.0 - 78.0, 6.0), *ms as f64 / biggest as f64, theme::ACCENT, theme::TRACK);
-            p.text(&duration::fmt_took(*ms), w - 20.0, y, 11.0, REG, theme::FG, Align::Right, 64.0);
+            let marked = self.is_distraction(app);
+            let color = if marked { theme::ORANGE } else { theme::ACCENT };
+            p.bar(rect(196.0, y - 3.0, w - 196.0 - 106.0, 6.0), *ms as f64 / biggest as f64, color, theme::TRACK);
+            p.text(&duration::fmt_took(*ms), w - 46.0, y, 11.0, REG, theme::FG, Align::Right, 54.0);
+            // the mark: lit for an app that counts as a distraction
+            let mark = rect(w - 38.0, y - 11.0, 24.0, 22.0);
+            if marked || p.hovered(mark) {
+                p.rrect(mark, 11.0, if marked { theme::ORANGE } else { theme::HOT_CHIP });
+            }
+            p.icon("ban", mark.center().x, y, 12.0, if marked { theme::ON_ACCENT } else { theme::DIM });
+            p.hit(mark, Action::ToggleDistraction(app.clone()));
         }
         let y = top + 5.0 * 30.0 + 15.0;
         p.stagger(7);
@@ -267,6 +341,22 @@ impl Island {
             _ => format!("Active today {}", duration::fmt_took(total)),
         };
         p.text(&line, 20.0, y, 11.0, REG, theme::DIM, Align::Left, (w - 40.0) as f32);
+        let hint = match self.cfg.distraction_minutes {
+            0 => "Distraction cards are off (Options, Quiet)".to_string(),
+            n => format!("Mark an app: told after {n} min on it in study hours"),
+        };
+        p.text(&hint, 20.0, y + 18.0, 10.0, REG, theme::DIM, Align::Left, (w - 40.0) as f32);
+        // what is marked, also when it is not among today's first five: a click takes the mark off
+        let mut x = 16.0;
+        for app in &self.cfg.distraction_apps {
+            let label = format!("{app} ×");
+            let bw = p.button_width(&label) - 10.0;
+            if x + bw > w - 16.0 {
+                break;
+            }
+            p.button(rect(x, y + 30.0, bw, 22.0), &label, Action::ToggleDistraction(app.clone()));
+            x += bw + 6.0;
+        }
     }
 
     pub(super) fn rewind_tab(&self, p: P, w: f64, top: f64) {
@@ -466,6 +556,7 @@ impl Island {
             + if tomorrow > 0 { 22.0 + tomorrow as f64 * 28.0 } else { 0.0 }
             + self.lecture_files().map_or(0.0, |(_, f)| 22.0 + f.len().min(3) as f64 * 28.0)
             + if self.pins.is_empty() { 0.0 } else { 22.0 + self.pins.len().min(PIN_ROWS) as f64 * 28.0 }
+            + if self.at_places.is_empty() { 0.0 } else { 22.0 + self.at_places.len().min(PIN_ROWS) as f64 * 28.0 }
             + if self.deadline_rows().is_empty() { 0.0 } else { 22.0 + self.deadline_rows().len() as f64 * 28.0 }
             + if self.todo_rows() > 0 { 22.0 + self.todo_rows() as f64 * 28.0 } else { 0.0 }
             + if self.trip_event().is_some() { 38.0 } else { 0.0 }
@@ -641,6 +732,20 @@ impl Island {
                 p.text(t, 44.0, cy, 12.0, REG, theme::FG, Align::Left, (w - 44.0 - 34.0) as f32);
                 p.hit(row, Action::PinCopy(n));
                 p.icon_button(row.x1 - 14.0, cy, 22.0, "x", 11.0, Action::PinRemove(n));
+                y += 28.0;
+            }
+        }
+        // reminders waiting for a place: the cross takes one off
+        if !self.at_places.is_empty() {
+            p.text("Waiting for a place", 20.0, y + 8.0, 10.0, SEMI, theme::DIM, Align::Left, 160.0);
+            y += 22.0;
+            for (n, one) in self.at_places.iter().take(PIN_ROWS).enumerate() {
+                let row = rect(8.0, y, w - 16.0, 26.0);
+                let cy = y + 13.0;
+                p.icon("map-pin", 26.0, cy, 13.0, theme::ACCENT);
+                p.text(&one.text, 44.0, cy, 12.0, REG, theme::FG, Align::Left, (w - 44.0 - 180.0) as f32);
+                p.text(&one.when(), row.x1 - 30.0, cy, 10.5, REG, theme::DIM, Align::Right, 140.0);
+                p.icon_button(row.x1 - 14.0, cy, 22.0, "x", 11.0, Action::WaitingRemove(n));
                 y += 28.0;
             }
         }
@@ -846,7 +951,7 @@ impl Island {
                 Some(t) if t.mode == TimerMode::Stopwatch => duration::fmt_elapsed(self.now - t.start_ms),
                 _ => duration::fmt_bubble(self.remaining_ms()),
             }),
-            Side::Meeting => ("calendar-event", self.next_event().map(|e| duration::fmt_bubble((e.start_ms - self.now).max(0))).unwrap_or_default()),
+            Side::Meeting => ("calendar-event", self.meeting_event().map(|e| duration::fmt_bubble((e.start_ms - self.now).max(0))).unwrap_or_default()),
             Side::Focus => ("target", self.focus_minutes_left().map_or("on".to_string(), |m| format!("{m}m"))),
             Side::Media => ("music", String::new()),
             Side::Op | Side::OpAt(_) => match &op {

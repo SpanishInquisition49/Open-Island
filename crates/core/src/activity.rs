@@ -4,6 +4,11 @@
 use std::collections::{HashMap, VecDeque};
 
 const MAX_SPANS: usize = 400;
+/// The earlier days whose totals are kept.
+const HISTORY_DAYS: usize = 13;
+
+/// The totals of one day: its start (epoch ms) and the milliseconds per app.
+pub type DayTotals = (i64, Vec<(String, i64)>);
 
 /// Apps that count as work by default (part of the name, any case): editors, terminals, readers of papers and notes.
 pub const DEEP_WORK_APPS: &[&str] = &[
@@ -48,15 +53,40 @@ pub struct Ledger {
     /// Totals of the day in progress, per app, in milliseconds (the open span is not in them).
     day_start: i64,
     totals: HashMap<String, i64>,
+    /// The days before it that had anything, oldest first.
+    history: Vec<DayTotals>,
+}
+
+fn sorted(totals: HashMap<String, i64>) -> Vec<(String, i64)> {
+    let mut v: Vec<(String, i64)> = totals.into_iter().filter(|(_, ms)| *ms > 0).collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    v
 }
 
 impl Ledger {
-    fn roll_day(&mut self, now: i64, day_start: i64) {
-        if day_start != self.day_start {
-            self.day_start = day_start;
-            self.totals.clear();
+    /// Starts the totals of a new day: what the one before had goes to the history, a span that runs across midnight
+    /// cut there.
+    fn roll_day(&mut self, day_start: i64) {
+        if day_start == self.day_start {
+            return;
         }
-        let _ = now;
+        if self.day_start != 0 && day_start > self.day_start {
+            if let Some((app, _, start)) = &mut self.open {
+                if *start < day_start {
+                    *self.totals.entry(app.clone()).or_insert(0) += day_start - (*start).max(self.day_start);
+                    *start = day_start;
+                }
+            }
+            let day = sorted(std::mem::take(&mut self.totals));
+            if !day.is_empty() {
+                self.history.retain(|(d, _)| *d != self.day_start);
+                self.history.push((self.day_start, day));
+                let extra = self.history.len().saturating_sub(HISTORY_DAYS);
+                self.history.drain(..extra);
+            }
+        }
+        self.day_start = day_start;
+        self.totals.clear();
     }
 
     fn close(&mut self, end_ms: i64, day_start: i64) {
@@ -74,7 +104,7 @@ impl Ledger {
 
     /// The window with the focus changed (or its title did). `day_start` is the start of today in epoch ms.
     pub fn focus(&mut self, now: i64, day_start: i64, app: &str, title: &str) {
-        self.roll_day(now, day_start);
+        self.roll_day(day_start);
         match &mut self.open {
             Some((a, t, _)) if a == app => *t = title.to_string(),
             _ => {
@@ -101,7 +131,7 @@ impl Ledger {
 
     /// The person is back.
     pub fn resume(&mut self, now: i64, day_start: i64) {
-        self.roll_day(now, day_start);
+        self.roll_day(day_start);
         if let Some((a, t)) = self.resume_with.take() {
             self.open = Some((a, t, now));
         }
@@ -117,9 +147,40 @@ impl Ledger {
         if let Some((a, _, s)) = &self.open {
             *m.entry(a.clone()).or_insert(0) += (now - s.max(&day_start)).max(0);
         }
-        let mut v: Vec<(String, i64)> = m.into_iter().filter(|(_, ms)| *ms > 0).collect();
-        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        v
+        sorted(m)
+    }
+
+    /// The earlier days that are kept, oldest first.
+    pub fn history(&self) -> &[DayTotals] {
+        &self.history
+    }
+
+    pub fn restore_history(&mut self, history: Vec<DayTotals>) {
+        self.history = history;
+        let extra = self.history.len().saturating_sub(HISTORY_DAYS);
+        self.history.drain(..extra);
+    }
+
+    /// Where the attention went over today and the `before` days before it: each day's totals (empty for a day with
+    /// nothing), today last. `day_start` is today's; a day is 24 hours.
+    pub fn days(&self, now: i64, day_start: i64, before: i64) -> Vec<DayTotals> {
+        const DAY: i64 = 86_400_000;
+        (0..=before)
+            .rev()
+            .map(|back| {
+                let day = day_start - back * DAY;
+                let totals = if back == 0 {
+                    self.today(now, day_start)
+                } else if day == self.day_start {
+                    // a day that has not been rolled over yet (nothing happened since)
+                    sorted(self.totals.clone())
+                } else {
+                    // within half a day: the start of a day moves by an hour when the clocks change
+                    self.history.iter().find(|(d, _)| (d - day).abs() < DAY / 2).map_or_else(Vec::new, |(_, t)| t.clone())
+                };
+                (day, totals)
+            })
+            .collect()
     }
 
     /// How long the attention has been on apps that satisfy `is_it`, counting through gaps shorter than `gap_ms`.
@@ -223,6 +284,30 @@ mod tests {
         let next = 1440 * MIN;
         l.focus(next + 30 * MIN, next, "zen", "y");
         assert_eq!(l.today(next + 40 * MIN, next), vec![("code".into(), 30 * MIN), ("zen".into(), 10 * MIN)]);
+    }
+
+    #[test]
+    fn earlier_days_are_kept_and_a_span_across_midnight_is_cut() {
+        let day = |n: i64| n * 1440 * MIN;
+        let mut l = Ledger::default();
+        l.focus(day(10) + 23 * 60 * MIN, day(10), "code", "x");
+        // the next window change is after midnight: an hour was the day before, half an hour is today
+        l.focus(day(11) + 30 * MIN, day(11), "zen", "y");
+        assert_eq!(l.history(), [(day(10), vec![("code".to_string(), 60 * MIN)])]);
+        assert_eq!(l.today(day(11) + 40 * MIN, day(11)), vec![("code".into(), 30 * MIN), ("zen".into(), 10 * MIN)]);
+        let week = l.days(day(11) + 40 * MIN, day(11), 2);
+        assert_eq!(week.iter().map(|(d, t)| (*d, t.len())).collect::<Vec<_>>(), [(day(9), 0), (day(10), 1), (day(11), 2)]);
+        // restored from disk on a later day: the saved day moves into the history
+        let mut next = Ledger::default();
+        next.restore_history(l.history().to_vec());
+        next.restore(day(11), vec![("code".into(), 5 * MIN)]);
+        next.focus(day(13), day(13), "zen", "");
+        assert_eq!(next.history().iter().map(|h| h.0).collect::<Vec<_>>(), [day(10), day(11)]);
+        for n in 14..40 {
+            next.focus(day(n), day(n), "code", "");
+            next.focus(day(n) + MIN, day(n), "zen", "");
+        }
+        assert_eq!(next.history().len(), 13, "two weeks with today, no more");
     }
 
     #[test]

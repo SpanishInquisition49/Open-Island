@@ -184,6 +184,8 @@ pub(crate) struct Effects {
     pub catch: Option<Catch>,
     /// A device that connected without saying its battery, and until when it is worth waiting for it.
     pub awaiting_battery: Option<(String, i64)>,
+    /// A battery card waiting for its estimate: from when it is taken, and until when the card is up.
+    pub awaiting_eta: Option<(i64, i64)>,
 }
 
 impl Effects {

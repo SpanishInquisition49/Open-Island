@@ -196,7 +196,12 @@ fn candidate_families(c: char) -> Vec<&'static str> {
         "Noto Sans", "Noto Sans Symbols", "Noto Sans Symbols 2", "Noto Sans Math", "DejaVu Sans", "Segoe UI Symbol", "Apple Symbols", "Arial Unicode MS", "Noto Sans Arabic", "Noto Sans Hebrew", "Noto Sans Thai",
         "Noto Sans Devanagari", "Noto Sans Bengali", "Noto Sans Tamil", "Noto Sans Georgian", "Noto Sans Armenian", "Noto Sans Ethiopic", "Symbola",
     ];
+    // colour emoji have fonts of their own, which a search through every font may never reach
+    const EMOJI: &[&str] = &["Noto Color Emoji", "Segoe UI Emoji", "Apple Color Emoji", "Twitter Color Emoji", "Twemoji", "Noto Emoji"];
     let u = c as u32;
+    if matches!(u, 0x1F000..=0x1FAFF) {
+        return [EMOJI, OTHER].concat();
+    }
     let hangul = matches!(u, 0x1100..=0x11FF | 0x3130..=0x318F | 0xA960..=0xA97F | 0xAC00..=0xD7FF);
     let cjk = matches!(u, 0x2E80..=0x2FDF | 0x3000..=0x30FF | 0x31C0..=0x31FF | 0x3200..=0x33FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF | 0x20000..=0x2FA1F);
     let mut v: Vec<&'static str> = vec![];
@@ -210,6 +215,10 @@ fn candidate_families(c: char) -> Vec<&'static str> {
         v.extend(KR);
     } else {
         v.extend(OTHER);
+        // the older ones (clocks, stars, warnings) are in the symbol fonts too: those first
+        if matches!(u, 0x2300..=0x2BFF) {
+            v.extend(EMOJI);
+        }
     }
     v
 }
@@ -526,6 +535,13 @@ mod tests {
             assert!(f.icons.glyph(c).is_some(), "icon {name} (U+{cp:X}) is missing from the subset font");
         }
         assert!(f.has_icon("player-play") && !f.has_icon("nope"));
+    }
+
+    #[test]
+    fn emoji_ask_the_colour_emoji_fonts_first() {
+        assert_eq!(candidate_families('🔥')[0], "Noto Color Emoji");
+        assert_eq!(candidate_families('→')[0], "Noto Sans");
+        assert!(candidate_families('⏰').contains(&"Noto Color Emoji"));
     }
 
     #[test]

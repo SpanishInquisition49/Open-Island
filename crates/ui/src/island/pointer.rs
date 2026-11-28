@@ -65,6 +65,11 @@ impl Island {
         if let Some(Action::SeekBar | Action::VolumeBar | Action::BrightnessBar) = self.dragging.clone() {
             return self.slider_at(x, y);
         }
+        if let Some(Action::ShelfDrag(n)) = self.dragging {
+            if let Some(drag) = self.shelf_drag(n, (x, y)) {
+                return drag;
+            }
+        }
         std::mem::take(&mut self.pending)
     }
 
@@ -115,12 +120,21 @@ impl Island {
         self.now = now;
         self.pointer = Some((x, y));
         let Some(action) = self.hit_at(x, y).map(|h| h.action.clone()) else {
-            return self.click_background(x, y);
+            return if self.auth_open() { vec![] } else { self.click_background(x, y) };
         };
+        // no dragging of anything while a password is asked
+        if self.auth_open() {
+            return self.activate(action);
+        }
         match action {
             Action::SeekBar | Action::VolumeBar | Action::BrightnessBar => {
                 self.dragging = Some(action);
                 self.slider_at(x, y)
+            }
+            Action::ShelfDrag(_) => {
+                self.dragging = Some(action);
+                self.shelf_pressed = (x, y);
+                vec![]
             }
             Action::MapPan => {
                 self.dragging = Some(action);
@@ -160,6 +174,9 @@ impl Island {
     /// The middle button on the small pill mutes the sound.
     pub fn middle_click(&mut self, now: i64) -> Vec<Command> {
         self.now = now;
+        if self.auth_open() {
+            return vec![];
+        }
         if self.shown.is_compact() {
             return vec![Command::ToggleMute];
         }
@@ -168,6 +185,9 @@ impl Island {
 
     pub fn right_click(&mut self, now: i64) {
         self.now = now;
+        if self.auth_open() {
+            return;
+        }
         // anywhere on a card: take it away
         if let Some(id) = self.card_under_pointer() {
             let cmds = self.on_card(id, Action::Dismiss);
@@ -196,6 +216,9 @@ impl Island {
 
     pub fn scroll(&mut self, now: i64, dx: f64, dy: f64) -> Vec<Command> {
         self.now = now;
+        if self.auth_open() {
+            return vec![];
+        }
         // the card under the pill is not the pill
         if self.over_card() {
             return vec![];
@@ -312,6 +335,9 @@ impl Island {
         if self.cfg.clipboard_history {
             v.push(Page::Clip);
         }
+        if !self.shelf.is_empty() {
+            v.push(Page::Shelf);
+        }
         if let Some(at) = v.iter().position(|p| *p == Page::Sys) {
             v.insert(at + 1, Page::Activity);
         }
@@ -368,6 +394,11 @@ impl Island {
         calendar::next_event(&self.data.events, self.now)
     }
 
+    /// The event the meeting pill and page are about: the one about to start, else the next one.
+    pub(crate) fn meeting_event(&self) -> Option<&calendar::Event> {
+        self.soon().or_else(|| self.next_event())
+    }
+
     /// Makes a place the destination of the map and asks for the way from where the machine is.
     fn map_go_to(&mut self, place: island_core::travel::Place) -> Vec<Command> {
         let Some(from) = self.data.position.as_ref().map(|p| (p.lat, p.lon)) else {
@@ -385,6 +416,18 @@ impl Island {
     }
 
     pub(super) fn activate(&mut self, a: Action) -> Vec<Command> {
+        // a password request is all there is to press while it is up
+        if self.auth_open() {
+            match a {
+                Action::AuthSubmit => self.auth_submit(),
+                Action::AuthCancel => self.auth_dismiss(),
+                Action::AuthUser => self.auth_next_user(),
+                Action::AuthFace => self.auth_face(),
+                Action::AuthConfirm => self.auth_confirm(),
+                _ => return vec![],
+            }
+            return std::mem::take(&mut self.pending);
+        }
         let now = self.now;
         if !matches!(a, Action::OnCard(..)) {
             self.expand_until = self.expand_until.max(now + 4000);
@@ -407,6 +450,16 @@ impl Island {
                 }
                 // the chips answer at once; the next sample confirms
                 match &c {
+                    Command::MediaShuffle(on) => {
+                        if let Some(m) = self.data.media.as_mut() {
+                            m.shuffle = Some(*on);
+                        }
+                    }
+                    Command::MediaLoop(mode) => {
+                        if let Some(m) = self.data.media.as_mut() {
+                            m.repeat = Some(*mode);
+                        }
+                    }
                     Command::ToggleWifi => self.data.wifi = self.data.wifi.map(|v| !v),
                     Command::ToggleBluetooth => self.data.bluetooth = self.data.bluetooth.map(|v| !v),
                     Command::ToggleKeepAwake => self.data.keep_awake = !self.data.keep_awake,
@@ -434,6 +487,10 @@ impl Island {
             Action::PomodoroStart => self.start_pomodoro(),
             Action::StopwatchStart => self.push(now, Input::StartStopwatch),
             Action::TimerCancel => self.cancel_timer(),
+            Action::StudyStart(row) => self.study_start(row),
+            Action::BarPick(n) => self.bar_pick(n),
+            // handled above: there is nothing to press when no password is asked
+            Action::AuthSubmit | Action::AuthCancel | Action::AuthUser | Action::AuthFace | Action::AuthConfirm => {}
             Action::DeadlineDone(n) => {
                 if n < self.deadlines.len() {
                     self.deadlines.remove(n);
@@ -695,7 +752,7 @@ impl Island {
                 return self.activate(Action::Open(Page::Notifs));
             }
             // a question is answered by its buttons: a stray click on it must not count as "nobody answered"
-            Action::NotifOpen if self.notif.as_ref().is_some_and(|n| is_script(n) && n.actions.iter().any(|a| a.key == "yes")) => {}
+            Action::NotifOpen if self.notif.as_ref().is_some_and(|n| (is_script(n) && n.actions.iter().any(|a| a.key == "yes")) || card_offer(n.id).is_some()) => {}
             Action::NotifOpen if self.notif.as_ref().and_then(Self::body_action).is_some() => {
                 if let Some(key) = self.notif.as_ref().and_then(Self::body_action) {
                     self.event_action(&key);
@@ -740,6 +797,13 @@ impl Island {
                     return vec![Command::OpenUrl(act.target)];
                 }
             }
+            Action::FaceChoice(choice) => {
+                // shown at once; the platform writes it and says again what it means
+                if let Some(face) = self.data.config.face.as_mut() {
+                    face.chosen = choice;
+                    return vec![Command::SetOption { key: "polkit_face".into(), value: OptionValue::Text(choice.setting().into()) }];
+                }
+            }
             Action::TravelMode(m) => {
                 self.cfg.travel_mode = m;
                 self.trip_asked.retain(|(_, mode), _| *mode == m);
@@ -751,7 +815,14 @@ impl Island {
                 }
                 return out;
             }
-            Action::ActivityTab(t) => self.activity_tab = t.min(1),
+            Action::ActivityTab(t) => self.activity_tab = t.min(2),
+            Action::ToggleDistraction(app) => {
+                match self.cfg.distraction_apps.iter().position(|a| a.eq_ignore_ascii_case(&app)) {
+                    Some(at) => drop(self.cfg.distraction_apps.remove(at)),
+                    None => self.cfg.distraction_apps.push(app),
+                }
+                return vec![Command::SetOption { key: "distraction_apps".into(), value: OptionValue::Text(self.cfg.distraction_apps.join(",")) }];
+            }
             Action::RewindCopy(i) => {
                 if let Some(t) = self.rewind_rows().get(i).and_then(|r| r.copy.clone()) {
                     return vec![Command::RestoreClipboard(t)];
@@ -813,6 +884,30 @@ impl Island {
             Action::ClipForget(i) => {
                 if let Some(t) = self.data.clipboard.get(i).cloned() {
                     return vec![Command::ForgetClipboard(t)];
+                }
+            }
+            Action::MicToggle => return vec![self.set_mic(None)],
+            // (a press on a file starts a drag; the click itself does nothing)
+            Action::ShelfDrag(_) => {}
+            Action::ShelfOpen(n) => {
+                if let Some(path) = self.shelf.get(n) {
+                    return vec![Command::OpenFile(path.clone())];
+                }
+            }
+            Action::ShelfRemove(n) => {
+                if n < self.shelf.len() {
+                    self.shelf.remove(n);
+                }
+            }
+            Action::ShelfClear => self.shelf.clear(),
+            Action::ShelfSend => {
+                if !self.shelf.is_empty() {
+                    self.push(now, Input::SendFiles(self.shelf.clone()));
+                }
+            }
+            Action::WaitingRemove(n) => {
+                if n < self.at_places.len() {
+                    self.at_places.remove(n);
                 }
             }
             // what the button shows lit, a press puts out, whoever lit it

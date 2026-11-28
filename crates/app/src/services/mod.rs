@@ -7,6 +7,8 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 
 pub mod art;
+#[cfg(target_os = "linux")]
+pub mod avatar;
 pub mod awake;
 pub mod clipboard_history;
 pub mod caldav;
@@ -23,6 +25,15 @@ pub mod downloads;
 pub mod materials;
 pub mod organizer;
 pub mod ocr;
+pub mod screenshots;
+#[cfg(target_os = "linux")]
+pub mod screens;
+#[cfg(target_os = "linux")]
+pub mod polkit;
+#[cfg(target_os = "linux")]
+pub mod polkit_face;
+#[cfg(target_os = "linux")]
+mod polkit_talk;
 pub mod phone;
 pub mod watchpid;
 pub mod location;
@@ -34,6 +45,7 @@ pub mod travel;
 #[cfg(target_os = "linux")]
 pub mod audio_route;
 pub mod windows_focus;
+pub mod secrets;
 pub mod sound;
 pub mod tz;
 pub mod ipc;
@@ -45,6 +57,10 @@ pub mod send;
 pub mod linux;
 #[cfg(target_os = "linux")]
 pub mod notif;
+#[cfg(target_os = "linux")]
+pub mod receive;
+#[cfg(target_os = "linux")]
+pub mod keys;
 #[cfg(target_os = "linux")]
 pub mod clipboard;
 #[cfg(target_os = "linux")]
@@ -106,6 +122,8 @@ pub enum Msg {
     Input(Input),
     /// A command as if the island had issued it (settings from a script).
     Exec(Command),
+    /// A change of the settings file that a service made (or the reason it could not).
+    ConfigSaved(Result<(), String>),
     Quit,
     Fullscreen(bool),
     /// A maximized window covers the island's screen, and whether the pointer is at the top edge asking for it.
@@ -127,6 +145,17 @@ impl Reporter {
 
     pub fn exec(&self, c: Command) {
         let _ = self.tx.send(Msg::Exec(c));
+        (self.waker)();
+    }
+
+    /// A reporter whose messages a test reads.
+    #[cfg(test)]
+    pub fn for_tests(tx: Sender<Msg>) -> Self {
+        Self { tx, waker: Arc::new(|| {}) }
+    }
+
+    pub fn config_saved(&self, result: Result<(), String>) {
+        let _ = self.tx.send(Msg::ConfigSaved(result));
         (self.waker)();
     }
 
@@ -159,7 +188,7 @@ pub fn start(tx: Sender<Msg>, waker: Arc<dyn Fn() + Send + Sync>) -> Sender<Comm
     let rep = Reporter { tx, waker };
     let (cmd_tx, cmd_rx) = channel::<Command>();
     let settings = Arc::new(crate::config::load());
-    let dnd = load_dnd();
+    let dnd = load_dnd(now_ms()).0;
     rep.patch(move |d| d.dnd = dnd);
     clock::start(rep.clone());
     ipc::start(rep.clone());
@@ -178,6 +207,10 @@ pub fn start(tx: Sender<Msg>, waker: Arc<dyn Fn() + Send + Sync>) -> Sender<Comm
         devices::start(rep.clone());
         audio_route::start(rep.clone());
         audio_mixer::start(rep.clone());
+        receive::start(rep.clone());
+        keys::start(rep.clone());
+        screens::start(rep.clone());
+        polkit::start(rep.clone());
         location::start(rep.clone());
         linux::start(rep.clone(), cmd_rx, settings, dnd);
     }
@@ -214,13 +247,46 @@ pub fn save_announced_if_changed(keys: &[String]) {
     }
 }
 
-pub fn load_dnd() -> bool {
-    state_file("dnd").and_then(|p| std::fs::read_to_string(p).ok()).is_some_and(|s| s.trim() == "on")
+pub(crate) fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
 
-pub fn save_dnd(on: bool) {
+/// "on", "off" or "on 1795700000000" (on until then): whether do not disturb is on at `now`, and its end if it has one.
+pub fn parse_dnd(text: &str, now: i64) -> (bool, Option<i64>) {
+    match text.trim().split_once(' ') {
+        Some(("on", until)) => match until.trim().parse::<i64>() {
+            Ok(until) if until > now => (true, Some(until)),
+            _ => (false, None),
+        },
+        _ => (text.trim() == "on", None),
+    }
+}
+
+pub fn load_dnd(now: i64) -> (bool, Option<i64>) {
+    state_file("dnd").and_then(|p| std::fs::read_to_string(p).ok()).map_or((false, None), |t| parse_dnd(&t, now))
+}
+
+pub fn save_dnd((on, until): (bool, Option<i64>)) {
     if let Some(p) = state_file("dnd") {
-        let _ = std::fs::write(p, if on { "on" } else { "off" });
+        let text = match until {
+            Some(until) if on => format!("on {until}"),
+            _ => if on { "on".into() } else { "off".to_string() },
+        };
+        let _ = std::fs::write(p, text);
+    }
+}
+
+#[cfg(test)]
+mod dnd_tests {
+    use super::parse_dnd;
+
+    #[test]
+    fn a_do_not_disturb_with_an_end_comes_back_only_until_then() {
+        assert_eq!(parse_dnd("on\n", 100), (true, None));
+        assert_eq!(parse_dnd("off", 100), (false, None));
+        assert_eq!(parse_dnd("on 200", 100), (true, Some(200)));
+        assert_eq!(parse_dnd("on 100", 100), (false, None), "its time is up");
+        assert_eq!(parse_dnd("on soon", 100), (false, None));
     }
 }
 
@@ -232,9 +298,15 @@ pub fn load_attention() -> Option<(i64, Vec<(String, i64)>)> {
     Some((day, apps))
 }
 
-pub fn save_attention(day: i64, apps: &[(String, i64)]) {
+/// The totals of the days before the saved one.
+pub fn load_attention_history() -> Vec<island_core::activity::DayTotals> {
+    let Some(v) = state_file("attention.json").and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return vec![] };
+    v.get("history").and_then(|h| serde_json::from_value(h.clone()).ok()).unwrap_or_default()
+}
+
+pub fn save_attention(day: i64, apps: &[(String, i64)], history: &[island_core::activity::DayTotals]) {
     let Some(p) = state_file("attention.json") else { return };
-    let _ = std::fs::write(p, serde_json::json!({"day": day, "apps": apps}).to_string());
+    let _ = std::fs::write(p, serde_json::json!({"day": day, "apps": apps, "history": history}).to_string());
 }
 
 /// The reminders set from the command bar, kept between runs.
@@ -406,6 +478,88 @@ pub fn save_pins_if_changed(pins: &[String]) {
     }
     *last = Some(pins.to_vec());
     if let (Some(p), Ok(text)) = (state_file("pins.json"), serde_json::to_string(pins)) {
+        let _ = std::fs::write(p, text);
+    }
+}
+
+/// Saved places and the reminders waiting for them, kept between runs (`places.json`).
+pub type Places = (Vec<(String, f64, f64)>, Vec<island_core::places::Waiting>);
+
+fn places_json((places, waiting): (&[(String, f64, f64)], &[island_core::places::Waiting])) -> serde_json::Value {
+    let waiting: Vec<_> = waiting.iter().map(|w| serde_json::json!({"place": w.place, "leaving": w.leaving, "text": w.text, "armed": w.armed})).collect();
+    serde_json::json!({"places": places, "waiting": waiting})
+}
+
+fn places_from(v: &serde_json::Value) -> Places {
+    let places = v.get("places").and_then(|p| serde_json::from_value(p.clone()).ok()).unwrap_or_default();
+    let waiting = v
+        .get("waiting")
+        .and_then(|w| w.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|w| Some(island_core::places::Waiting { place: w.get("place")?.as_str()?.to_string(), leaving: w.get("leaving")?.as_bool()?, text: w.get("text")?.as_str()?.to_string(), armed: w.get("armed").and_then(|a| a.as_bool()).unwrap_or(false) }))
+                .collect()
+        })
+        .unwrap_or_default();
+    (places, waiting)
+}
+
+pub fn load_places() -> Places {
+    state_file("places.json").and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).map_or_else(Default::default, |v| places_from(&v))
+}
+
+pub fn save_places_if_changed(places: &[(String, f64, f64)], waiting: &[island_core::places::Waiting]) {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<String>> = Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return };
+    let text = places_json((places, waiting)).to_string();
+    if last.as_ref() == Some(&text) || (last.is_none() && places.is_empty() && waiting.is_empty()) {
+        return;
+    }
+    if let Some(p) = state_file("places.json") {
+        // where the person has been is private: owner-only
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&p) {
+                let _ = f.write_all(text.as_bytes());
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = std::fs::write(p, &text);
+    }
+    *last = Some(text);
+}
+
+#[cfg(test)]
+mod places_tests {
+    use super::{places_from, places_json};
+
+    #[test]
+    fn places_and_what_waits_for_them_come_back() {
+        let places = vec![("uni".to_string(), 43.7, 10.4)];
+        let waiting = vec![island_core::places::Waiting { place: "uni".into(), leaving: true, text: "call".into(), armed: true }];
+        assert_eq!(places_from(&places_json((&places, &waiting))), (places, waiting));
+        assert_eq!(places_from(&serde_json::json!({"waiting": [{"place": "x"}]})), (vec![], vec![]));
+    }
+}
+
+/// The files on the shelf, kept between runs; those that are gone meanwhile are left out.
+pub fn load_shelf() -> Vec<String> {
+    let Some(text) = state_file("shelf.json").and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };
+    serde_json::from_str::<Vec<String>>(&text).unwrap_or_default().into_iter().filter(|p| std::path::Path::new(p).exists()).collect()
+}
+
+pub fn save_shelf_if_changed(shelf: &[String]) {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<Vec<String>>> = Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return };
+    if last.as_deref() == Some(shelf) || (last.is_none() && shelf.is_empty()) {
+        return;
+    }
+    *last = Some(shelf.to_vec());
+    if let (Some(p), Ok(text)) = (state_file("shelf.json"), serde_json::to_string(shelf)) {
         let _ = std::fs::write(p, text);
     }
 }

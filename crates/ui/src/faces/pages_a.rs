@@ -1,6 +1,8 @@
 //! Part of the faces of `Island` (see `mod.rs`).
 
 use super::*;
+use crate::model::AuthFaceUse;
+use crate::island::FACE_NOTE_H;
 
 impl Island {
     pub(super) fn face_cal(&self, p: P, w: f64, h: f64) {
@@ -51,11 +53,10 @@ impl Island {
         p.stagger(2 + grid.len());
         let evs = self.day_events();
         if evs.is_empty() {
-            p.text(if self.data.events.is_empty() { "Calendar not synced yet" } else { "No events" }, 14.0, y, 12.0, REG, theme::DIM, Align::Left, 300.0);
+            p.text(self.no_events_text(), 14.0, y, 12.0, REG, theme::DIM, Align::Left, 300.0);
         }
-        let off = self.data.utc_offset_secs;
         for e in evs.iter().take(4) {
-            let when = if e.all_day { "All day".to_string() } else { clock::civil(e.start_ms, off).hhmm() };
+            let when = if e.all_day { "All day".to_string() } else { clock::civil(e.start_ms, self.offset_at(e.start_ms)).hhmm() };
             let row = rect(8.0, y - 11.0, w - 16.0, 22.0);
             let has_url = e.url.as_deref().is_some_and(|u| !u.is_empty());
             if has_url && p.hovered(row) {
@@ -77,14 +78,14 @@ impl Island {
     }
 
     /// Days (index = day of month) of the shown month that have an event, with the first event's colour.
-    pub(super) fn month_marks(&self) -> Vec<Option<Color>> {
+    pub(crate) fn month_marks(&self) -> Vec<Option<Color>> {
         let c = &self.cal;
-        let off = self.data.utc_offset_secs;
         let days = calendar::days_in_month(c.year, c.month);
         let mut marks = vec![None; days as usize + 2];
+        let events = self.calendar_events();
         for d in 1..=days {
-            let (s, e) = (clock::midnight_ms(c.year, c.month, d, off), clock::midnight_ms(c.year, c.month, d + 1, off));
-            if let Some(ev) = self.data.events.iter().find(|ev| ev.start_ms < e && ev.end_ms > s) {
+            let (s, e) = (self.local_midnight_ms(c.year, c.month, d), self.local_midnight_ms(c.year, c.month, d + 1));
+            if let Some(ev) = events.iter().find(|ev| ev.start_ms < e && ev.end_ms > s) {
                 marks[d as usize] = Some(ev.color.map(|c| theme::rgb(color::readable_tint(c, true))).unwrap_or(theme::ORANGE));
             }
         }
@@ -109,7 +110,11 @@ impl Island {
         if let Some(on) = d.bluetooth {
             v.push((if on { "bluetooth" } else { "bluetooth-off" }, "Bluetooth".into(), on, Action::Cmd(Command::ToggleBluetooth)));
         }
-        v.push(("bell-off", "DND".into(), d.dnd || self.auto_quiet.is_some(), Action::ToggleDnd));
+        let dnd = match self.dnd_until.filter(|_| d.dnd) {
+            Some(until) => format!("DND {}", crate::clock::civil(until, d.utc_offset_secs).hhmm()),
+            None => "DND".into(),
+        };
+        v.push(("bell-off", dnd, d.dnd || self.auto_quiet.is_some(), Action::ToggleDnd));
         v.push(("coffee", "Keep awake".into(), d.keep_awake, Action::Cmd(Command::ToggleKeepAwake)));
         if let Some(profile) = d.profile.as_deref().filter(|p| !p.is_empty()) {
             let label = profile[..1].to_uppercase() + &profile[1..];
@@ -548,6 +553,28 @@ impl Island {
         y += 22.0;
         kv(p, y, "API key", if c.map_key_set { "set" } else { "not set" }, Field::MapKey, "The key of the tile provider, for {key} in the tile URL; empty = remove it", n + 10);
         y += 34.0;
+        if let Some(face) = &c.face {
+            section(p, y, "Passwords", n + 14);
+            y += 22.0;
+            p.stagger(n + 15);
+            let r = rect(14.0, y, w - 28.0, 30.0);
+            p.rrect(r, 10.0, theme::CHIP);
+            p.text("Face unlock", r.x0 + 12.0, y + 15.0, 12.0, SEMI, theme::FG, Align::Left, 120.0);
+            // the three ways side by side, from the right: the one chosen is lit
+            let mut x = r.x1 - 4.0;
+            for (choice, label) in [(AuthFaceUse::Auto, "Automatic"), (AuthFaceUse::Ask, "When asked"), (AuthFaceUse::No, "Off")] {
+                let bw = p.button_width(label);
+                let b = rect(x - bw, y + 4.0, bw, 22.0);
+                let on = face.chosen == choice;
+                p.rrect(b, 11.0, if on { theme::ACCENT } else if p.hovered(b) { theme::HOT_CHIP } else { theme::CHIP });
+                p.text(label, b.center().x, b.center().y, 11.5, SEMI, if on { theme::ON_ACCENT } else { theme::FG }, Align::Center, bw as f32);
+                p.hit(b, Action::FaceChoice(choice));
+                x -= bw + 4.0;
+            }
+            y += 34.0;
+            p.text(&face.note, 18.0, y + 5.0, 10.0, REG, theme::DIM, Align::Left, (w - 36.0) as f32);
+            y += FACE_NOTE_H;
+        }
         if let Some((t, _)) = &self.note {
             p.text(t, w / 2.0, y + 8.0, 11.0, SEMI, theme::ORANGE, Align::Center, (w - 28.0) as f32);
         }

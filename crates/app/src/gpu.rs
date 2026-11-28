@@ -182,6 +182,12 @@ impl Gpu {
         Ok(())
     }
 
+    /// Lets go of the window surface, before the window itself goes.
+    #[cfg(target_os = "linux")]
+    pub fn detach(&mut self) {
+        self.surface = None;
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         if let Some(s) = self.surface.as_mut() {
             if (s.config.width, s.config.height) != (width.max(1), height.max(1)) {

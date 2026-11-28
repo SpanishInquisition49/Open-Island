@@ -1,6 +1,12 @@
 //! Reading the text of an image on the clipboard (a screenshot of a slide, a scanned page) with Tesseract.
 //! The pure parts: which clipboard type is an image, which languages to ask for, and tidying what comes out.
 
+/// Whether a notification with this summary tells of a screenshot just taken (a compositor's or a tool's).
+pub fn is_screenshot(summary: &str) -> bool {
+    let s = summary.to_lowercase();
+    ["screenshot", "schermata", "screen capture"].iter().any(|w| s.contains(w))
+}
+
 /// The image type to ask the clipboard for, out of `wl-paste --list-types` (one MIME type per line): PNG first.
 pub fn pick_image_type(list: &str) -> Option<&str> {
     const WANTED: [&str; 5] = ["image/png", "image/jpeg", "image/webp", "image/bmp", "image/tiff"];

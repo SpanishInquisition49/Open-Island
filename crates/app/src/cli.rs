@@ -168,6 +168,20 @@ pub fn progress(args: &[String]) -> i32 {
 /// `activity run|done|fail|clear [label] [--detail text] [--icon name] [--color name|#hex] [--progress N]`: the
 /// status of something a script watches (a build, a deploy, a CI run), with its own icon, colour and status line.
 /// The control-socket line for `open-island send`: the files by absolute path, separated by tabs.
+pub fn shelf(args: &[String]) -> i32 {
+    match send_line(args) {
+        Ok(line) if crate::services::ipc::send(&format!("shelf{}", line.trim_start_matches("send"))) => 0,
+        Ok(_) => {
+            eprintln!("open-island is not running");
+            1
+        }
+        Err(e) => {
+            eprintln!("open-island: {}", e.replace("open-island send", "open-island shelf"));
+            2
+        }
+    }
+}
+
 pub fn send_line(args: &[String]) -> Result<String, String> {
     if args.is_empty() {
         return Err("usage: open-island send <file>...".into());

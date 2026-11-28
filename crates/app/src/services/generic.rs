@@ -83,8 +83,13 @@ fn battery_now() -> Option<(Battery, Option<f32>, Option<u64>)> {
 
 pub fn start_battery(rep: Reporter) {
     std::thread::spawn(move || loop {
-        let b = battery_now().map(|b| b.0);
-        rep.patch(move |d| d.battery = b);
+        let now = battery_now();
+        let eta = now.and_then(|(b, _, eta)| eta.map(|m| (m, b.charging)));
+        let b = now.map(|b| b.0);
+        rep.patch(move |d| {
+            d.battery = b;
+            d.battery_eta = eta;
+        });
         std::thread::sleep(Duration::from_secs(10));
     });
 }

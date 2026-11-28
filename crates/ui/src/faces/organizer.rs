@@ -5,6 +5,19 @@ use crate::island::{PLAN_ROWS, SPLIT_ROWS};
 use island_core::plan::{self, Edge, HitKind};
 use island_core::task;
 
+/// "3h short: 60% by then · 45m a day, 1h30 needed", and the colour that says how it goes.
+pub(crate) fn pace_line(pace: &plan::Pace) -> (String, Color) {
+    let needed = task::fmt_minutes(pace.needed_per_day);
+    if pace.short_min == 0 {
+        (format!("On track: all of it by then at {} a day", task::fmt_minutes(pace.now_per_day)), theme::GREEN)
+    } else if pace.now_per_day == 0 && pace.percent == 0 {
+        (format!("Not started · {needed} a day needed"), theme::DIM)
+    } else {
+        let now = if pace.now_per_day == 0 { "nothing lately".to_string() } else { format!("{} a day", task::fmt_minutes(pace.now_per_day)) };
+        (format!("{} short: {}% by then · {now}, {needed} needed", task::fmt_minutes(pace.short_min), pace.percent), theme::ORANGE)
+    }
+}
+
 /// A calendar's own colour, white when it has none.
 fn calendar_color(c: Option<(u8, u8, u8)>) -> Color {
     c.map_or(theme::ACCENT, theme::rgb)
@@ -15,6 +28,8 @@ const DAY_ROW: f64 = 26.0;
 const SECTION: f64 = 22.0;
 const PLAN_ROW: f64 = 26.0;
 const GAP: f64 = 6.0;
+/// The line under a deadline that says its pace.
+const PACE_LINE: f64 = 14.0;
 /// A day of the study hours editor, and the line its second stretch adds.
 const HOURS_ROW: f64 = 32.0;
 const STRETCH_ROW: f64 = 28.0;
@@ -35,7 +50,7 @@ impl Island {
         14.0 + 34.0
             + SECTION + today * PLAN_ROW + GAP
             + SECTION + v.week.len() as f64 * DAY_ROW + GAP
-            + SECTION + deadlines * PLAN_ROW
+            + SECTION + deadlines * PLAN_ROW + v.deadlines.iter().take(PLAN_ROWS).filter(|d| d.pace.is_some()).count() as f64 * PACE_LINE
             + if split > 0 { GAP + SECTION + split as f64 * 24.0 } else { 0.0 }
             + if studied > 0 { GAP + SECTION + studied as f64 * 24.0 } else { 0.0 }
             + 10.0
@@ -147,14 +162,27 @@ impl Island {
             p.text(msg, 20.0, y + PLAN_ROW / 2.0, 11.5, REG, theme::DIM, Align::Left, (w - 40.0) as f32);
             y += PLAN_ROW;
         }
-        for row in view.today.iter().take(PLAN_ROWS) {
+        for (n, row) in view.today.iter().take(PLAN_ROWS).enumerate() {
             let cy = y + PLAN_ROW / 2.0;
-            p.icon("target", 26.0, cy, 13.0, theme::ACCENT);
+            // play starts a session on it; while it runs the row shows the clock, and the cross stops it
+            let running = self.session().filter(|t| t.label == row.session);
+            match running {
+                Some(_) => p.icon_button(26.0, cy, 22.0, "x", 11.0, Action::TimerCancel),
+                None => p.icon_button(26.0, cy, 22.0, "player-play", 11.0, Action::StudyStart(n)),
+            }
             p.text(&row.what, 44.0, cy, 12.0, REG, theme::FG, Align::Left, (w - 44.0 - 160.0) as f32);
             p.text(&format!("due {}", task::due_label(row.due, today)), w - 78.0, cy, 10.5, REG, theme::DIM, Align::Right, 90.0);
             // a suggestion from the credits is marked as one
             let amount = format!("{}{}", if row.suggested { "≈ " } else { "" }, task::fmt_minutes(row.min));
-            p.text(&amount, w - 18.0, cy, 12.0, SEMI, theme::FG, Align::Right, 58.0);
+            match running {
+                Some(t) => {
+                    let color = if t.phase == island_core::pomodoro::Phase::Break { theme::GREEN } else { theme::ACCENT };
+                    p.text(&island_core::duration::fmt_remaining(self.remaining_ms()), w - 18.0, cy, 12.0, SEMI, color, Align::Right, 58.0);
+                }
+                None => {
+                    p.text(&amount, w - 18.0, cy, 12.0, SEMI, theme::FG, Align::Right, 58.0);
+                }
+            }
             y += PLAN_ROW;
         }
         y += GAP;
@@ -232,7 +260,8 @@ impl Island {
             y += PLAN_ROW;
         }
         for d in view.deadlines.iter().take(PLAN_ROWS) {
-            let row = rect(8.0, y, w - 16.0, PLAN_ROW - 2.0);
+            let height = PLAN_ROW + if d.pace.is_some() { PACE_LINE } else { 0.0 };
+            let row = rect(8.0, y, w - 16.0, height - 2.0);
             if p.hovered(row) {
                 p.rrect(row, 8.0, theme::CHIP);
             }
@@ -269,7 +298,11 @@ impl Island {
             p.text(&amount, w - 38.0, cy, 10.5, REG, color, Align::Right, 76.0);
             p.hit(row, Action::DeadlineEdit(d.index));
             p.icon_button(row.x1 - 12.0, cy, 20.0, "x", 10.0, Action::DeadlineDone(d.index));
-            y += PLAN_ROW;
+            if let Some(pace) = &d.pace {
+                let (text, color) = pace_line(pace);
+                p.text(&text, 44.0, cy + PACE_LINE + 1.0, 10.0, REG, color, Align::Left, (w - 44.0 - 20.0) as f32);
+            }
+            y += height;
         }
 
         // the suggestion at a glance: how the study of the next seven days divides among the exams

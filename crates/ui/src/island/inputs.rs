@@ -7,8 +7,15 @@ impl Island {
 
     pub fn push(&mut self, now: i64, input: Input) {
         self.now = now;
+        // while a password is asked, keys and clicks come from the keyboard and the pointer alone: those sent as inputs
+        // (the control socket) are dropped
+        if self.auth_open() && matches!(input, Input::Key(_) | Input::Click(..)) {
+            return;
+        }
         match input {
             Input::Notification(n) => self.on_notification(n),
+            Input::AuthAsk(req) => self.auth_ask(req),
+            Input::AuthState { id, update } => self.auth_update(id, update),
             Input::NotificationClosed(id) => {
                 // closed by the sender: no signal back
                 if self.notif.as_ref().is_some_and(|n| n.id == id) {
@@ -76,6 +83,10 @@ impl Island {
                     self.recap(now - away_ms, "while you were away");
                 }
             }
+            Input::Mic(muted) => {
+                let tell = self.set_mic(muted);
+                self.pending.push(tell);
+            }
             Input::SetDnd(on) => {
                 let tell = self.set_dnd(on);
                 self.pending.push(tell);
@@ -95,6 +106,7 @@ impl Island {
                     self.osd_shown = before.unwrap_or(level) as f64;
                 }
                 self.osd = Some(Osd { kind, level, muted });
+                self.notice = None;
                 self.osd_until = now + self.cfg.osd_ms;
             }
             Input::Power(p) => self.power_event_card(p),
@@ -165,17 +177,27 @@ impl Island {
             Input::ActivityClear(id) => self.ops.clear_id(&id),
             Input::StartPomodoro => self.start_pomodoro(),
             Input::StartStopwatch => {
+                self.leave_session();
                 self.keep_countdown();
                 self.timer = Some(Timer { mode: TimerMode::Stopwatch, start_ms: now, end_ms: None, total_ms: 0, phase: Phase::Focus, round: 1, label: String::new() })
             }
             Input::CancelTimer => self.cancel_timer(),
             Input::Peek => self.expand_until = now + 3000,
+            Input::Screens { all, asked } => self.screens_seen(all, asked),
+            Input::ScreensChanged => self.screens_changed(),
             Input::FileDrag(at) => self.file_drag(at),
             Input::FileDropped => self.file_dropped(),
             Input::OpenPage(p) => {
                 self.activate(Action::Open(p));
                 self.expand_until = now + 5000;
             }
+            Input::Shelve(paths) => self.shelve(paths),
+            Input::ShelveQuietly(paths) => {
+                self.keep_on_shelf(paths);
+            }
+            Input::FileOffer { id, summary, body, message } => self.offer_card(id, summary, body, message),
+            Input::KeyboardLayout(name) => self.key_notice("keyboard", name),
+            Input::CapsLock(on) => self.key_notice("keyboard", if on { "Caps Lock on" } else { "Caps Lock off" }.into()),
             Input::SendFiles(paths) => {
                 if !paths.is_empty() {
                     self.send_files = paths;
@@ -187,10 +209,41 @@ impl Island {
         }
     }
 
+    /// A word about the keyboard, where the volume bar shows and for as long.
+    fn key_notice(&mut self, icon: &'static str, text: String) {
+        if !self.cfg.keyboard_alerts || text.is_empty() {
+            return;
+        }
+        self.notice = Some((icon, text));
+        self.osd = None;
+        self.osd_until = self.now + self.cfg.osd_ms;
+    }
+
     /// A screenshot taken by the compositor or a tool: its card has no use for the island's own, so it is told apart by its words.
     fn is_screenshot(n: &Incoming) -> bool {
-        let s = n.summary.to_lowercase();
-        !is_own(n) && n.app != "open-island" && (s.contains("screenshot") || s.contains("schermata") || s.contains("screen capture"))
+        !is_own(n) && n.app != "open-island" && island_core::ocr::is_screenshot(&n.summary)
+    }
+
+    /// The island's own card in place of a screenshot's: the text in it, and, when the file is known, sending it, its
+    /// folder, and the bin.
+    fn screenshot_card(&mut self, n: &Incoming) -> Incoming {
+        let button = |key: String, label: &str| NotifAction { key, label: label.into() };
+        let mut actions = vec![];
+        if self.cfg.ocr_screenshots {
+            actions.push(button("open-island:ocr".into(), if n.file.is_some() { "Text" } else { "Copy text" }));
+        }
+        let mut body = "Copy the text in it?".to_string();
+        if let Some(file) = &n.file {
+            let path = std::path::Path::new(file);
+            actions.push(button(format!("open-island:shot-send:{file}"), "Send"));
+            if let Some(folder) = path.parent().and_then(|p| p.to_str()).filter(|p| !p.is_empty()) {
+                actions.push(button(format!("open-island:file:{folder}"), "Folder"));
+            }
+            actions.push(button(format!("open-island:shot-trash:{file}"), "Trash"));
+            body = path.file_name().map_or_else(|| file.clone(), |f| f.to_string_lossy().into_owned());
+        }
+        self.next_own_id += 1;
+        Incoming { id: self.next_own_id, app: "open-island".into(), summary: n.summary.clone(), body, image: n.image.clone(), actions, expire_ms: Some(8000), ..Default::default() }
     }
 
     pub(super) fn on_notification(&mut self, n: Incoming) {
@@ -203,13 +256,9 @@ impl Island {
                 self.log_event(LogKind::Notification, text);
             }
         }
-        // a screenshot's card becomes one that offers the text in the picture
-        let n = if self.cfg.ocr_screenshots && self.cfg.show_notifications && !self.quiet() && Self::is_screenshot(&n) {
-            self.next_own_id += 1;
-            Incoming { id: self.next_own_id, app: "open-island".into(), summary: n.summary.clone(), body: "Copy the text in it?".into(), actions: vec![NotifAction { key: "open-island:ocr".into(), label: "Copy text".into() }], expire_ms: Some(8000), ..Default::default() }
-        } else {
-            n
-        };
+        // a screenshot's card becomes one that offers what can be done with the picture
+        let offers = self.cfg.ocr_screenshots || n.file.is_some();
+        let n = if offers && self.cfg.show_notifications && !self.quiet() && Self::is_screenshot(&n) { self.screenshot_card(&n) } else { n };
         // a script's question shows even then: whoever asked is waiting for the answer
         let question = is_script(&n) && n.actions.iter().any(|a| a.key == "yes");
         if (self.quiet() || !self.cfg.show_notifications) && !n.critical && !is_own(&n) && !question {
@@ -712,16 +761,24 @@ impl Island {
         let Some(b) = self.bar.as_mut() else { return };
         b.until = now + BAR_IDLE_MS;
         if edit_text(&mut b.text, &mut b.cursor, &k) {
+            // another search: the first result again
+            b.pick = 0;
             return;
         }
         match k {
+            KeyInput::NextPage | KeyInput::PrevPage => {
+                let found = self.picks().len();
+                if let Some(b) = self.bar.as_mut().filter(|_| found > 0) {
+                    b.pick = (b.pick + if k == KeyInput::NextPage { 1 } else { found - 1 }) % found;
+                }
+            }
             KeyInput::Escape => self.bar = None,
             KeyInput::Up | KeyInput::Down => self.bar_recall(matches!(k, KeyInput::Up)),
             KeyInput::Enter => {
                 // nothing understood: the bar stays, its preview line says so
                 if let Some(c) = self.bar_cmd() {
                     let line = self.bar.as_ref().map(|b| b.text.trim().to_string()).unwrap_or_default();
-                    let replaces = self.bar.take().and_then(|b| b.replaces);
+                    let (replaces, pick) = self.bar.take().map_or((None, 0), |b| (b.replaces, b.pick));
                     // a line that made a password is not kept
                     if !matches!(c, island_core::bar::Cmd::Gen(island_core::quick::Gen::Password(_))) {
                         self.bar_history.retain(|h| *h != line);
@@ -731,11 +788,36 @@ impl Island {
                     }
                     match c {
                         island_core::bar::Cmd::Deadline { day, text, course, est_min, cfu } => self.set_deadline(Deadline { day, text, course, est_min, cfu, ..Default::default() }, replaces),
+                        island_core::bar::Cmd::Pick { symbols, query } => self.copy_pick(island_core::emoji::search(symbols, &query).get(pick).copied()),
                         c => self.run_bar(c),
                     }
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The emoji or symbols the line in the bar finds.
+    pub(crate) fn picks(&self) -> Vec<island_core::emoji::Found> {
+        match self.bar_cmd() {
+            Some(island_core::bar::Cmd::Pick { symbols, query }) => island_core::emoji::search(symbols, &query),
+            _ => vec![],
+        }
+    }
+
+    fn copy_pick(&mut self, found: Option<island_core::emoji::Found>) {
+        if let Some(f) = found {
+            self.pending.push(Command::RestoreClipboard(f.text.into()));
+            self.say("Copied", &format!("{}  {}", f.text, f.name));
+        }
+    }
+
+    /// A result of the bar was clicked.
+    pub(super) fn bar_pick(&mut self, n: usize) {
+        let found = self.picks().get(n).copied();
+        if found.is_some() {
+            self.bar = None;
+            self.copy_pick(found);
         }
     }
 
@@ -773,6 +855,8 @@ impl Island {
             Cmd::Timer { secs, label } => self.start_named_timer(secs, label),
             Cmd::Pomodoro => self.start_pomodoro(),
             Cmd::Stopwatch => self.push(now, Input::StartStopwatch),
+            Cmd::Screens => self.pending.push(Command::ShowScreens),
+            Cmd::DndFor { secs } => self.set_dnd_for(secs),
             Cmd::Dnd(on) => {
                 let tell = self.set_dnd(on);
                 self.pending.push(tell);
@@ -786,6 +870,18 @@ impl Island {
             }
             Cmd::RemindBefore { secs, query } => self.remind_before(secs, &query),
             Cmd::Ocr => self.pending.push(Command::Ocr),
+            Cmd::RemindAt { place, leaving, text } => self.remind_at(place, leaving, text),
+            Cmd::Place { name, forget } => self.set_place(name, forget),
+            Cmd::Countdown(days) => {
+                self.cfg.countdown_days = days;
+                self.pending.push(Command::SetOption { key: "countdown_days".into(), value: OptionValue::Num(days.into()) });
+                let said = if days == 0 { "Countdown off".to_string() } else { format!("Countdown: {days} days ahead") };
+                self.say(&said, "Also in Options > Day");
+            }
+            Cmd::Mic(muted) => {
+                let tell = self.set_mic(muted);
+                self.pending.push(tell);
+            }
             Cmd::Go(page) => self.push(now, Input::OpenPage(page)),
             Cmd::Bring { text, course } => self.add_bring(&text, &course),
             Cmd::Unbring(what) => self.remove_bring(&what),
@@ -819,12 +915,7 @@ impl Island {
             }
             Cmd::Find(query) => self.start_find(query),
             Cmd::Study { minutes, course } => self.log_study(minutes, &course),
-            Cmd::PomodoroFor(course) => {
-                self.start_pomodoro();
-                if let Some(t) = self.timer.as_mut() {
-                    t.label = course;
-                }
-            }
+            Cmd::PomodoroFor(course) => self.start_session(course),
             Cmd::UntilNext => {
                 let next = self.data.events.iter().filter(|e| !e.all_day && e.start_ms > now).min_by_key(|e| e.start_ms).map(|e| (e.start_ms, e.title.clone()));
                 match next {
@@ -856,6 +947,7 @@ impl Island {
                     self.say("Copied", &copy);
                 }
             }
+            Cmd::Pick { symbols, query } => self.copy_pick(island_core::emoji::search(symbols, &query).first().copied()),
             Cmd::Value(v) => {
                 let copy = v.rsplit_once(" = ").map_or(v.clone(), |(_, r)| r.to_string());
                 self.pending.push(Command::RestoreClipboard(copy.clone()));
@@ -1058,9 +1150,9 @@ impl Island {
         self.map_view().map_or((0.0, 0.0, 3), |v| (v.center.0, v.center.1, v.zoom))
     }
 
-    /// Opens a tab of the activity page (0 today, 1 rewind).
+    /// Opens a tab of the activity page (0 today, 1 rewind, 2 the week).
     pub fn show_activity_tab(&mut self, tab: usize) {
-        self.activity_tab = tab.min(1);
+        self.activity_tab = tab.min(2);
     }
 
     pub fn history(&self) -> &[(Incoming, i64)] {
@@ -1072,11 +1164,12 @@ impl Island {
         self.history.truncate(30);
     }
 
-    /// The new do-not-disturb state when it changed since the last call (to persist it).
-    pub fn dnd_changed(&mut self) -> Option<bool> {
-        (self.dnd_seen != self.data.dnd).then(|| {
-            self.dnd_seen = self.data.dnd;
-            self.data.dnd
+    /// The new do-not-disturb state, and its end if it has one, when it changed since the last call (to persist it).
+    pub fn dnd_changed(&mut self) -> Option<(bool, Option<i64>)> {
+        let state = (self.data.dnd, self.dnd_until.filter(|_| self.data.dnd));
+        (self.dnd_seen != state).then(|| {
+            self.dnd_seen = state;
+            state
         })
     }
 
@@ -1324,7 +1417,7 @@ impl Island {
     }
 
     pub fn wants_keyboard(&self) -> bool {
-        self.reply.is_some() || self.kb.is_some() || self.edit.is_some() || self.bar.is_some()
+        self.auth.is_some() || self.reply.is_some() || self.kb.is_some() || self.edit.is_some() || self.bar.is_some()
     }
 
     pub(super) fn start_timer(&mut self, secs: u64) {
@@ -1342,6 +1435,7 @@ impl Island {
 
     pub(super) fn start_pomodoro(&mut self) {
         let total = pomodoro::FOCUS as i64 * 1000;
+        self.leave_session();
         self.keep_countdown();
         self.timer = Some(Timer { mode: TimerMode::Pomodoro, start_ms: self.now, end_ms: Some(self.now + total), total_ms: total, phase: Phase::Focus, round: 1, label: String::new() });
     }
@@ -1370,6 +1464,7 @@ impl Island {
 
     /// Ends the main timer; the next countdown takes its place.
     pub(super) fn cancel_timer(&mut self) {
+        self.leave_session();
         self.timer = None;
         self.rebalance_timers();
     }
@@ -1396,8 +1491,9 @@ impl Island {
         match t.mode {
             TimerMode::Pomodoro => {
                 let (phase, round, secs) = pomodoro::next(t.phase, t.round);
-                if t.phase == Phase::Focus {
-                    self.log_study((pomodoro::FOCUS / 60) as u32, &t.label);
+                // what ran of the focus: all of it at its end, less when it was skipped
+                if let Some(minutes) = self.focus_minutes(&t) {
+                    self.log_study(minutes, &t.label);
                 }
                 let card = match t.phase {
                     Phase::Focus => self.timer_card("Focus done", format!("Break: {}", duration::preset_label(secs)), None),

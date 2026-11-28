@@ -5,7 +5,7 @@
 //! type-checked with `cargo check --target x86_64-pc-windows-msvc`.
 
 use super::{art, Reporter};
-use island_ui::model::{Command, Input, Media, OsdKind, Privacy};
+use island_ui::model::{Command, Input, LoopMode, Media, OsdKind, Privacy};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -40,8 +40,8 @@ pub fn command(c: Command) {
         }
     };
     match c {
-        Command::MediaPlayPause | Command::MediaNext | Command::MediaPrevious | Command::MediaSeek { .. } | Command::MediaCyclePlayer => send(&MEDIA_TX, c),
-        Command::SetVolume(_) | Command::ToggleMute => send(&VOLUME_TX, c),
+        Command::MediaPlayPause | Command::MediaNext | Command::MediaPrevious | Command::MediaSeek { .. } | Command::MediaCyclePlayer | Command::MediaShuffle(_) | Command::MediaLoop(_) => send(&MEDIA_TX, c),
+        Command::SetVolume(_) | Command::ToggleMute | Command::SetMic(_) => send(&VOLUME_TX, c),
         Command::ToggleKeepAwake => {
             if let Some(t) = KEEP_AWAKE_TX.lock().unwrap().as_ref() {
                 let _ = t.send(true);
@@ -365,6 +365,17 @@ fn endpoint() -> windows::core::Result<windows::Win32::Media::Audio::Endpoints::
     }
 }
 
+/// The default microphone's volume and mute.
+fn microphone() -> windows::core::Result<windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume> {
+    use windows::Win32::Media::Audio::{eCapture, eCommunications, IMMDeviceEnumerator, MMDeviceEnumerator};
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
+    unsafe {
+        let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+        let device = enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications)?;
+        device.Activate(CLSCTX_ALL, None)
+    }
+}
+
 fn volume(rep: Reporter, rx: Receiver<Command>) {
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
     std::thread::spawn(move || {
@@ -372,9 +383,19 @@ fn volume(rep: Reporter, rx: Receiver<Command>) {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         }
         let mut last: Option<(f32, bool)> = None;
+        let mut last_mic: Option<bool> = None;
         loop {
             // commands first, so a slider drag feels direct; then read the state (the device can change)
             while let Ok(c) = rx.try_recv() {
+                if let Command::SetMic(muted) = c {
+                    if let Ok(mic) = microphone() {
+                        unsafe {
+                            let to = muted.unwrap_or_else(|| !mic.GetMute().map(|m| m.as_bool()).unwrap_or(false));
+                            let _ = mic.SetMute(to, std::ptr::null());
+                        }
+                    }
+                    continue;
+                }
                 if let Ok(ep) = endpoint() {
                     unsafe {
                         match c {
@@ -403,6 +424,11 @@ fn volume(rep: Reporter, rx: Receiver<Command>) {
                     });
                 }
             }
+            let mic = microphone().ok().and_then(|m| unsafe { m.GetMute() }.ok()).map(|m| m.as_bool());
+            if mic != last_mic {
+                last_mic = mic;
+                rep.patch(move |d| d.mic_muted = mic);
+            }
             std::thread::sleep(Duration::from_millis(250));
         }
     });
@@ -411,6 +437,7 @@ fn volume(rep: Reporter, rx: Receiver<Command>) {
 // ---- media (SMTC) -------------------------------------------------------------------------------------
 
 fn media(rep: Reporter, rx: Receiver<Command>) {
+    use windows::Media::MediaPlaybackAutoRepeatMode as Repeats;
     use windows::Media::Control::{GlobalSystemMediaTransportControlsSession as Session, GlobalSystemMediaTransportControlsSessionManager as Manager, GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status};
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
     std::thread::spawn(move || {
@@ -432,6 +459,22 @@ fn media(rep: Reporter, rx: Receiver<Command>) {
             while let Ok(c) = rx.try_recv() {
                 let Some(s) = chosen.as_ref() else { continue };
                 match c {
+                    Command::MediaShuffle(on) => {
+                        let _ = s.TryChangeShuffleActiveAsync(on).and_then(|o| o.join());
+                        // what the player now says goes to the island even if nothing changed: it may have refused
+                        last_sent = None;
+                        std::thread::sleep(Duration::from_millis(150));
+                    }
+                    Command::MediaLoop(mode) => {
+                        let to = match mode {
+                            LoopMode::Off => Repeats::None,
+                            LoopMode::All => Repeats::List,
+                            LoopMode::One => Repeats::Track,
+                        };
+                        let _ = s.TryChangeAutoRepeatModeAsync(to).and_then(|o| o.join());
+                        last_sent = None;
+                        std::thread::sleep(Duration::from_millis(150));
+                    }
                     Command::MediaPlayPause => drop(s.TryTogglePlayPauseAsync().and_then(|o| o.join())),
                     Command::MediaNext => drop(s.TrySkipNextAsync().and_then(|o| o.join())),
                     Command::MediaPrevious => drop(s.TrySkipPreviousAsync().and_then(|o| o.join())),
@@ -471,12 +514,18 @@ fn media(rep: Reporter, rx: Receiver<Command>) {
                     length_ms: tl.EndTime().map(ticks).unwrap_or(0.0),
                     art: art_cache.clone(),
                     can_seek: info.Controls().and_then(|c| c.IsPlaybackPositionEnabled()).unwrap_or(false),
+                    shuffle: info.Controls().and_then(|c| c.IsShuffleEnabled()).unwrap_or(false).then(|| info.IsShuffleActive().and_then(|v| v.Value()).ok()).flatten(),
+                    repeat: info.Controls().and_then(|c| c.IsRepeatEnabled()).unwrap_or(false).then(|| info.AutoRepeatMode().and_then(|v| v.Value()).ok()).flatten().map(|m| match m {
+                        Repeats::List => LoopMode::All,
+                        Repeats::Track => LoopMode::One,
+                        _ => LoopMode::Off,
+                    }),
                     players: sessions.len() as u32,
                     player: id_of(&s).trim_end_matches(".exe").rsplit(['.', '!']).next().unwrap_or("").to_string(),
                 };
                 let worth = last_sent.as_ref().is_none_or(|l| {
                     let expected = if l.playing { l.position_ms + (now - l.sampled_at_ms) as f64 } else { l.position_ms };
-                    l.track_id != m.track_id || l.playing != m.playing || l.length_ms != m.length_ms || l.players != m.players || l.art.as_ref().map(|a| a.id) != m.art.as_ref().map(|a| a.id) || (m.position_ms - expected).abs() > 1500.0
+                    l.track_id != m.track_id || l.playing != m.playing || l.length_ms != m.length_ms || l.players != m.players || l.shuffle != m.shuffle || l.repeat != m.repeat || l.art.as_ref().map(|a| a.id) != m.art.as_ref().map(|a| a.id) || (m.position_ms - expected).abs() > 1500.0
                 });
                 if worth {
                     last_sent = Some(m.clone());

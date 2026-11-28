@@ -76,7 +76,17 @@ pub fn run() {
         }
         None => println!("  missing no configuration directory"),
     }
+    match crate::services::secrets::probe() {
+        Ok(()) => println!("  ok      keyring: passwords and API keys are kept there"),
+        Err(e) => println!("  missing keyring: {e} (calendar accounts need it, or `password_cmd`)"),
+    }
+    let plain = crate::config::plain_secret_count();
+    if plain > 0 {
+        println!("  missing {plain} password(s) or key(s) written in clear in the settings file (the running island moves them to the keyring)");
+    }
 
+    #[cfg(target_os = "linux")]
+    administrator_passwords();
     your_day();
     #[cfg(target_os = "linux")]
     integrations(&path);
@@ -99,6 +109,35 @@ pub fn run() {
             Some(p) => println!("  ok      other applications' notifications are read from {}", p.display()),
             None => println!("  missing the Windows notification database was not found: only `open-island notify` will show"),
         }
+    }
+}
+
+/// Whether the island is set to ask for administrator passwords, and what that needs.
+#[cfg(target_os = "linux")]
+fn administrator_passwords() {
+    use std::os::unix::fs::MetadataExt;
+    let on = crate::config::load().polkit_agent;
+    println!("\nAdministrator passwords");
+    println!("  {} the island asks for them ({})", if on { "on     " } else { "off    " }, if on { "\"polkit_agent\" is set" } else { "add \"polkit_agent\": true to the settings file" });
+    let socket = std::path::Path::new(crate::services::polkit::HELPER_SOCKET).exists();
+    println!("  {} polkit's helper socket", if socket { "ok     " } else { "missing" });
+    {
+        use crate::services::polkit_face;
+        use island_ui::model::AuthFaceUse;
+        let setting = crate::config::load().polkit_face;
+        let (stack, confirms) = (polkit_face::in_stack(), polkit_face::confirms());
+        match polkit_face::choose(&setting, stack, confirms) {
+            AuthFaceUse::Auto => println!("  ok      face check: starts by itself, then asks to confirm"),
+            AuthFaceUse::Ask => println!("  ok      face check: when asked for{}{}", if setting == "auto" { " (\"auto\" needs require_confirmation_elevation = true in Gaze)" } else { "" }, if confirms { "" } else { "; Gaze asks no confirmation" }),
+            AuthFaceUse::No if !stack => println!("  off     face check: polkit's PAM stack has no Gaze module (see the guide)"),
+            AuthFaceUse::No => println!("  off     face check: \"polkit_face\" is off"),
+        }
+    }
+    // a binary the person's own programs can rewrite could be swapped for one that keeps the password
+    let safe = std::env::current_exe().ok().is_some_and(|exe| exe.ancestors().all(|p| std::fs::metadata(p).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o022 == 0)));
+    match safe {
+        true => println!("  ok      this program can only be changed by root"),
+        false => println!("  warning this program can be rewritten without root: for passwords, install it in /usr/local/bin (sudo install -m755)"),
     }
 }
 
@@ -175,6 +214,13 @@ fn integrations(path: &str) {
     match crate::services::downloads::folder() {
         Some(f) => println!("  {} downloads: {} {}", on(ui.watch_downloads && f.is_dir()), f.display(), if !ui.watch_downloads { "(switched off)" } else if f.is_dir() { "" } else { "(the folder does not exist)" }),
         None => println!("  off     downloads: no download folder"),
+    }
+    // receiving over LocalSend
+    #[cfg(target_os = "linux")]
+    match crate::services::receive::folder() {
+        _ if !ui.receive_files => println!("  off     receiving files: switched off (open-island msg set receive_files on)"),
+        Some(f) => println!("  ok      receiving files: into {} (LocalSend, port {}; a firewall must let it in)", f.display(), island_core::localsend::PORT),
+        None => println!("  off     receiving files: no folder to put them in"),
     }
     // OCR
     match out("tesseract", &["--list-langs"]) {

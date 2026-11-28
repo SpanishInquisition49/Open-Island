@@ -7,7 +7,7 @@ use super::*;
 use crate::island::card::{Card, CARD_MAX_W};
 use island_core::droplet::{self, Animator, Blob, Shape, Size, GAP, LINE_STAGGER, STACK_GAP};
 use island_core::notify::{button_fill, Kind};
-use vello::kurbo::{Arc as KArc, BezPath, Point, Stroke, Vec2};
+use vello::kurbo::{Arc as KArc, BezPath, Circle, Point, Stroke, Vec2};
 
 const PAD: f64 = 14.0;
 const ICON: f64 = 24.0;
@@ -17,6 +17,9 @@ const RING_ICON: f64 = 36.0;
 const RING_R: f64 = 16.0;
 const PERCENT_W: f64 = 40.0;
 const FILL_S: f64 = 0.9;
+/// The liquid of the machine's battery: how long it takes to pour, and until its surface is flat.
+const POUR_S: f64 = 1.3;
+const SETTLE_S: f64 = 1.9;
 /// A digit of a one-time code rolls in: each starts this long after the one before, takes this long, and passes this
 /// many others on its way.
 const ROLL_STAGGER: f64 = 0.07;
@@ -96,7 +99,7 @@ const FULL_LINES: usize = 32;
 
 /// `text` broken into at most `max_lines` lines no wider than `max_w`; the last one ends in an ellipsis when it does not
 /// all fit.
-fn wrap(fonts: &Fonts, text: &str, size: f32, weight: Weight, max_w: f32, max_lines: usize) -> Vec<String> {
+pub(crate) fn wrap(fonts: &Fonts, text: &str, size: f32, weight: Weight, max_w: f32, max_lines: usize) -> Vec<String> {
     let text: String = text.chars().take(600).collect();
     let mut words: std::collections::VecDeque<String> = text.split_whitespace().map(str::to_string).collect();
     let mut lines = Vec::new();
@@ -140,7 +143,8 @@ fn layout(fonts: &Fonts, c: &Card) -> Layout {
         .actions
         .iter()
         .filter(|a| a.key != "default")
-        .take(3)
+        // the island's own cards may offer one more (a screenshot's)
+        .take(if crate::island::is_own_notification(n) { 4 } else { 3 })
         .map(|a| {
             let label = if a.key == "inline-reply" { "Reply".to_string() } else { a.label.clone() };
             let label = fonts.ellipsize(&label, BUTTON_SIZE, SEMI, 110.0);
@@ -242,7 +246,7 @@ fn passed(ch: char, k: u32, n: usize) -> char {
 }
 
 /// An image faded with the content, in a rounded square.
-fn faded_image(p: P, img: &Image, x: f64, y: f64, size: f64, radius: f64) {
+pub(crate) fn faded_image(p: P, img: &Image, x: f64, y: f64, size: f64, radius: f64) {
     p.scene.push_clip_layer(Fill::NonZero, p.transform, &RoundedRect::new(x, y, x + size, y + size, radius));
     if p.opacity >= 0.999 {
         draw_image(p, img, x, y, size, radius);
@@ -431,7 +435,14 @@ impl Island {
             let t = ((up - 0.05) / FILL_S).clamp(0.0, 1.0);
             f64::from(percent) / 100.0 * (1.0 - (1.0 - t).powi(3))
         });
-        if let Some(filled) = filled {
+        if let (Some(flow), Some(percent)) = (n.liquid, n.ring) {
+            // the machine's battery: liquid that rises to its level from empty, or falls to it from full
+            let t = ((up - 0.05) / POUR_S).clamp(0.0, 1.0);
+            let from = if flow == Flow::Rising { 0.0 } else { 1.0 };
+            let level = from + (f64::from(percent) / 100.0 - from) * (1.0 - (1.0 - t).powi(3));
+            let calm = (1.0 - up / SETTLE_S).clamp(0.0, 1.0);
+            liquid_drop(p, Point::new(icon_cx, cy), RING_R, level, 2.2 * calm, up * 9.0, accent);
+        } else if let Some(filled) = filled {
             use std::f64::consts::{FRAC_PI_2, TAU};
             let centre = Point::new(icon_cx, cy);
             p.circle_stroke(centre.x, centre.y, RING_R, 3.0, with_alpha(accent, 0.25));
@@ -442,6 +453,7 @@ impl Island {
         match (&n.image, &n.app_icon, &n.icon) {
             (Some(img), ..) => faded_image(p, img, icon_cx - ICON / 2.0, cy - ICON / 2.0, ICON, ICON / 2.0),
             (None, Some(img), _) => faded_image(p, img, icon_cx - ICON / 2.0, cy - ICON / 2.0, ICON, 6.0),
+            (None, None, Some(name)) if n.liquid.is_some() => p.icon(name, icon_cx, cy, 17.0, theme::FG),
             (None, None, Some(name)) if n.ring.is_some() => p.icon(name, icon_cx, cy, 18.0, theme::FG),
             (None, None, Some(name)) => p.icon(name, icon_cx, cy, ICON as f32, accent),
             (None, None, None) => {
@@ -601,4 +613,26 @@ impl Island {
             stroke(p, &arc, 2.4, accent);
         }
     }
+}
+
+/// A round vessel with a liquid up to `level` (0 empty, 1 full), its surface a wave of height `ripple`.
+fn liquid_drop(p: P, centre: Point, r: f64, level: f64, ripple: f64, phase: f64, colour: Color) {
+    let under = p.transform * Affine::translate((centre.x, centre.y));
+    let surface = r - 2.0 * r * level.clamp(0.0, 1.0);
+    // flat at nothing and at full
+    let ripple = if level <= 0.001 || level >= 0.999 { 0.0 } else { ripple };
+    let mut wave = BezPath::new();
+    wave.move_to((-r, r + 1.0));
+    for i in 0..=24 {
+        let x = -r + 2.0 * r * f64::from(i) / 24.0;
+        wave.line_to((x, surface + ripple * (x / r * 3.6 + phase).sin()));
+    }
+    wave.line_to((r, r + 1.0));
+    wave.close_path();
+    let inside = Circle::new((0.0, 0.0), r);
+    let alpha = p.opacity;
+    p.scene.fill(Fill::NonZero, under, with_alpha(colour, 0.22 * alpha), None, &inside);
+    p.scene.push_clip_layer(Fill::NonZero, under, &inside);
+    p.scene.fill(Fill::NonZero, under, with_alpha(colour, alpha), None, &wave);
+    p.scene.pop_layer();
 }

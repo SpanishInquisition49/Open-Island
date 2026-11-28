@@ -15,6 +15,7 @@ use crate::config::Settings;
 
 pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, initial_dnd: bool) {
     battery(rep.clone());
+    mic_mute(rep.clone());
     audio_and_brightness(rep.clone(), settings.clone());
     privacy(rep.clone());
     let (media_cmd_tx, media_cmd_rx) = std::sync::mpsc::channel::<Command>();
@@ -33,9 +34,14 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
     std::thread::spawn(move || {
         for c in cmd_rx {
             match c {
-                Command::MediaPlayPause | Command::MediaNext | Command::MediaPrevious | Command::MediaSeek { .. } | Command::MediaCyclePlayer => {
+                Command::MediaPlayPause | Command::MediaNext | Command::MediaPrevious | Command::MediaSeek { .. } | Command::MediaCyclePlayer | Command::MediaShuffle(_) | Command::MediaLoop(_) => {
                     let _ = media_cmd_tx.send(c);
                 }
+                // the card of an offered file that goes unanswered is a no
+                Command::NotificationClosed { id, .. } if island_ui::model::card_offer(id).is_some() => {
+                    super::receive::answer(island_ui::model::card_offer(id).unwrap_or_default(), false);
+                }
+                Command::AnswerOffer { id, accept } => super::receive::answer(id, accept),
                 Command::InvokeAction { .. } | Command::CloseNotification(_) | Command::SetDnd(_) | Command::NotificationClosed { .. } | Command::NotificationReplied { .. } => {
                     let _ = notif_cmd_tx.send(c);
                 }
@@ -52,7 +58,10 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                         focus::run(sc, &["off"]);
                     }
                 }
-                Command::RefreshCalendars => {}
+                Command::RefreshCalendars | Command::LoadCalendarMonth { .. } => {}
+                Command::AuthSubmit { .. } | Command::AuthCancel(_) | Command::AuthFace { .. } | Command::AuthConfirm(_) => super::polkit::command(c),
+                Command::SetScreens(_) | Command::KeepScreens | Command::UndoScreens | Command::ShowScreens => super::screens::command(c),
+                c if super::secrets::handles(&c) => super::secrets::command(&rep, c),
                 // the app itself writes the configuration for these
                 Command::AddFilter { .. } | Command::RemoveFilter(_) | Command::SetOption { .. } | Command::AddCalendar(_) | Command::AddCalDav { .. } | Command::AddICloud { .. } | Command::RenameCalendar { .. } | Command::SetCalendarColor { .. } | Command::RemoveCalendar(_) | Command::SetFont(_) | Command::SetLatitude(_) | Command::SetLongitude(_) | Command::SetNotificationSound(_) => {}
                 Command::RestoreClipboard(t) => clipboard::restore(&t),
@@ -69,6 +78,13 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
                 Command::PinTrain(_) | Command::UnpinTrain | Command::SetHome(_) => super::trains::command(&rep, &c),
                 Command::PhoneOpen(_) | Command::PhoneSend { .. } | Command::PhoneSearch(_) | Command::PhoneCall(_) | Command::PhoneAudio(_) => super::phone::command(&rep, &c),
                 Command::Ocr => super::ocr::start(rep.clone()),
+                Command::TrashFile(path) => trash(rep.clone(), path),
+                // the app hands these to the window backend before they get here
+                Command::DragFiles(_) => {}
+                Command::SetMic(muted) => {
+                    let how = muted.map_or("toggle", |m| if m { "1" } else { "0" });
+                    run("pactl", &["set-source-mute", "@DEFAULT_SOURCE@", how]);
+                }
                 Command::FindMaterials(_) | Command::OpenFile(_) => super::materials::command(&rep, &c),
                 Command::SaveNote(_) | Command::Find(_) | Command::CreateEvent { .. } | Command::PushTask { .. } | Command::SyncTasks | Command::DeleteTask { .. } | Command::MoveEvent { .. } | Command::CancelEvent { .. } => {
                     super::organizer::command(&rep, &c);
@@ -123,7 +139,11 @@ fn read_num(p: &std::path::Path) -> Option<f64> {
 
 fn battery(rep: Reporter) {
     std::thread::spawn(move || {
-        let mut last: Option<Option<Battery>> = None;
+        // the battery, and the minutes to full (true) or to empty
+        type Reading = (Option<Battery>, Option<(u64, bool)>);
+        let mut last: Option<Reading> = None;
+        // when the battery last turned from charging to draining or back: the power it reports takes a moment to follow
+        let mut turned: Option<(bool, std::time::Instant)> = None;
         loop {
         let dir = std::path::Path::new("/sys/class/power_supply");
         let mut found = None;
@@ -143,12 +163,23 @@ fn battery(rep: Reporter) {
             }
         }
         let b = found.map(|(percent, charging)| Battery { percent, charging, on_ac: ac.unwrap_or(charging) });
-        // only a change is worth waking the island for
-        if last != Some(b) {
-            last = Some(b);
-            rep.patch(move |d| d.battery = b);
+        let charging = b.is_some_and(|b| b.charging);
+        if turned.is_none_or(|(c, _)| c != charging) {
+            turned = Some((charging, std::time::Instant::now()));
         }
-        std::thread::sleep(Duration::from_secs(5));
+        let settled = turned.is_some_and(|(_, since)| since.elapsed() >= Duration::from_secs(2));
+        // in steps of five minutes: an estimate that moves by less is not news
+        let eta = settled.then(|| super::sysmon::battery().1).flatten().map(|m| ((m + 2) / 5 * 5, charging));
+        // only a change is worth waking the island for
+        if last != Some((b, eta)) {
+            last = Some((b, eta));
+            rep.patch(move |d| {
+                d.battery = b;
+                d.battery_eta = eta;
+            });
+        }
+        // soon again after a turn, so that the card of the plug gets its estimate
+        std::thread::sleep(Duration::from_secs(if turned.is_some_and(|(_, since)| since.elapsed() < Duration::from_secs(8)) { 1 } else { 2 }));
         }
     });
 }
@@ -286,6 +317,51 @@ fn volume_event(line: &str) -> bool {
 /// The microphone indicator: a recording stream or an input changed.
 fn recording_event(line: &str) -> bool {
     line.contains(" on source-output #") || line.contains(" on source #")
+}
+
+/// The default input's mute changed, or which input that is.
+fn input_event(line: &str) -> bool {
+    line.contains(" on source #") || line.contains(" on server")
+}
+
+/// `pactl get-source-mute` -> muted or not; None when it says something else (no input).
+fn parse_mute(text: &str) -> Option<bool> {
+    match text.trim().strip_prefix("Mute:")?.trim() {
+        "yes" => Some(true),
+        "no" => Some(false),
+        _ => None,
+    }
+}
+
+fn mic_mute(rep: Reporter) {
+    let Some(events) = pactl_events(input_event) else { return };
+    std::thread::spawn(move || {
+        let mut last = None;
+        loop {
+            let now = run("pactl", &["get-source-mute", "@DEFAULT_SOURCE@"]).and_then(|t| parse_mute(&t));
+            if now != last {
+                last = now;
+                rep.patch(move |d| d.mic_muted = now);
+            }
+            if !next_change(&events, Duration::from_millis(60), Duration::from_millis(500)) {
+                return;
+            }
+        }
+    });
+}
+
+/// Moves a file to the bin (`gio trash`, which follows the desktop's rules); only a real file by its whole path.
+fn trash(rep: Reporter, path: String) {
+    std::thread::spawn(move || {
+        let p = std::path::Path::new(&path);
+        if !p.is_absolute() || !p.is_file() {
+            return;
+        }
+        let name = p.file_name().map_or_else(|| path.clone(), |f| f.to_string_lossy().into_owned());
+        let moved = Proc::new("gio").arg("trash").arg("--").arg(&path).status().is_ok_and(|s| s.success());
+        let (summary, body) = if moved { ("Moved to the bin", name) } else { ("Could not move it to the bin", "gio is needed (glib2)".to_string()) };
+        rep.input(Input::Toast { summary: summary.into(), body });
+    });
 }
 
 fn audio_and_brightness(rep: Reporter, settings: Arc<Settings>) {
@@ -606,9 +682,12 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
         // the track the lyrics are wanted for: an answer for a track that has gone by is dropped
         let current_track = Arc::new(std::sync::Mutex::new(String::new()));
         let (mut identity_for, mut identity_name): (Option<String>, String) = (None, String::new());
+        // a command that cut the wait short
+        let mut woken: Option<Command> = None;
         loop {
             // commands first, so a click feels instant
-            while let Ok(c) = cmd_rx.try_recv() {
+            let mut acted = false;
+            while let Some(c) = woken.take().or_else(|| cmd_rx.try_recv().ok()) {
                 let mut names = players(&conn);
                 names.sort();
                 let Some(name) = choose_player(&conn, &names, &selected) else { continue };
@@ -618,7 +697,17 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
                     continue;
                 }
                 let Some(p) = player_proxy(&conn, &name) else { continue };
+                acted = true;
                 match c {
+                    Command::MediaShuffle(on) => {
+                        let _ = p.set_property("Shuffle", on);
+                        // what the player now says goes to the island even if nothing changed: it may have refused
+                        last_sent = None;
+                    }
+                    Command::MediaLoop(mode) => {
+                        let _ = p.set_property("LoopStatus", loop_status(mode));
+                        last_sent = None;
+                    }
                     Command::MediaPlayPause => drop(p.call_method("PlayPause", &())),
                     Command::MediaNext => drop(p.call_method("Next", &())),
                     Command::MediaPrevious => drop(p.call_method("Previous", &())),
@@ -631,6 +720,10 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
                     _ => {}
                 }
             }
+            if acted {
+                // a player needs a moment to take it in
+                std::thread::sleep(Duration::from_millis(150));
+            }
             let mut names = players(&conn);
             names.sort();
             let pick = choose_player(&conn, &names, &selected);
@@ -641,7 +734,7 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
                     // hiccup) there is nothing to fetch again, and a different one replaces them
                     rep.patch(|d| d.media = None);
                 }
-                std::thread::sleep(Duration::from_millis(1500));
+                woken = wait_command(&cmd_rx, Duration::from_millis(1500));
                 continue;
             };
             current = Some(name.clone());
@@ -650,6 +743,10 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
             let status: String = p.get_property("PlaybackStatus").unwrap_or_default();
             let position_us: i64 = p.get_property("Position").unwrap_or(0);
             let can_seek: bool = p.get_property("CanSeek").unwrap_or(false);
+            // both are optional in MPRIS: a player without them has no button
+            let can_control: bool = p.get_property("CanControl").unwrap_or(true);
+            let shuffle = can_control.then(|| p.get_property::<bool>("Shuffle").ok()).flatten();
+            let repeat = can_control.then(|| p.get_property::<String>("LoopStatus").ok()).flatten().and_then(|s| loop_mode(&s));
             let length_us = match md.get("mpris:length").map(|v| &**v) {
                 Some(Value::I64(v)) => *v,
                 Some(Value::U64(v)) => *v as i64,
@@ -687,6 +784,8 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
                 can_seek,
                 players: names.len() as u32,
                 player: identity_name.clone(),
+                shuffle,
+                repeat,
             };
             // the island extrapolates the position while playing, so only a change (or a jump of the position,
             // a seek) is worth waking it for
@@ -700,6 +799,8 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
                         || l.playing != m.playing
                         || l.length_ms != m.length_ms
                         || l.can_seek != m.can_seek
+                        || l.shuffle != m.shuffle
+                        || l.repeat != m.repeat
                         || l.players != m.players
                         || l.player != m.player
                         || l.art.as_ref().map(|a| a.id) != m.art.as_ref().map(|a| a.id)
@@ -711,9 +812,39 @@ fn media(rep: Reporter, cmd_rx: Receiver<Command>) {
                 last_sent = Some(m.clone());
                 rep.patch(move |d| d.media = Some(m));
             }
-            std::thread::sleep(Duration::from_millis(if playing { 1000 } else { 2000 }));
+            woken = wait_command(&cmd_rx, Duration::from_millis(if playing { 1000 } else { 2000 }));
         }
     });
+}
+
+/// Waits `most` for the next command, so that a click does not wait for the next look at the player.
+fn wait_command(rx: &Receiver<Command>, most: Duration) -> Option<Command> {
+    match rx.recv_timeout(most) {
+        Ok(c) => Some(c),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            std::thread::sleep(most);
+            None
+        }
+    }
+}
+
+/// MPRIS's `LoopStatus`, and back.
+fn loop_mode(status: &str) -> Option<LoopMode> {
+    match status {
+        "None" => Some(LoopMode::Off),
+        "Playlist" => Some(LoopMode::All),
+        "Track" => Some(LoopMode::One),
+        _ => None,
+    }
+}
+
+fn loop_status(mode: LoopMode) -> &'static str {
+    match mode {
+        LoopMode::Off => "None",
+        LoopMode::All => "Playlist",
+        LoopMode::One => "Track",
+    }
 }
 
 #[cfg(test)]
@@ -721,6 +852,23 @@ mod event_tests {
     use super::*;
     use std::sync::mpsc::channel;
     use std::time::Instant;
+
+    #[test]
+    fn the_repeat_choices_go_round_and_keep_their_mpris_names() {
+        let mut mode = LoopMode::Off;
+        for name in ["Playlist", "Track", "None"] {
+            mode = mode.next();
+            assert_eq!(loop_status(mode), name);
+            assert_eq!(loop_mode(name), Some(mode));
+        }
+        assert_eq!(loop_mode("Sometimes"), None);
+    }
+
+    #[test]
+    fn the_microphones_mute_is_read() {
+        assert_eq!((parse_mute("Mute: yes\n"), parse_mute("Mute: no"), parse_mute("No such entity"), parse_mute("")), (Some(true), Some(false), None, None));
+        assert!(input_event("Event 'change' on source #3") && !input_event("Event 'new' on source-output #3") && !input_event("Event 'new' on client #3"));
+    }
 
     #[test]
     fn each_watcher_hears_only_what_it_asked_for_and_a_gone_one_is_forgotten() {

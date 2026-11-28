@@ -173,6 +173,7 @@ impl Daemon {
             .iter()
             .find_map(|k| hints.get(*k).and_then(|v| image_from_hint(v)))
             .or_else(|| hs.image_path.as_deref().and_then(art::load));
+        let file = super::screenshots::file_of(&summary, hs.image_path.as_deref(), &app_icon);
         let icon_name = if app_icon.is_empty() { hs.desktop_entry.clone() } else { app_icon };
         let app_icon = icons::load(&icon_name);
         let acts = actions.chunks(2).filter(|c| c.len() == 2).map(|c| NotifAction { key: c[0].clone(), label: c[1].clone() }).collect();
@@ -193,6 +194,7 @@ impl Daemon {
             resident: hs.resident,
             desktop_entry: hs.desktop_entry.clone(),
             kind: hs.kind,
+            file,
             ..Default::default()
         }));
         id
@@ -360,7 +362,9 @@ fn watch_bus(rep: Reporter) {
         next_id += 1;
         let hs = read_hints(&hints);
         let image = ["image-data", "image_data", "icon_data"].iter().find_map(|k| hints.get(*k).and_then(|v| image_from_hint(v))).or_else(|| hs.image_path.as_deref().and_then(art::load));
+        let file = super::screenshots::file_of(&summary, hs.image_path.as_deref(), &icon);
         rep.input(Input::Notification(Incoming {
+            file,
             id: next_id,
             app,
             summary,

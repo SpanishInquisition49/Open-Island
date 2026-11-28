@@ -89,6 +89,7 @@ pub(crate) fn parse(line: &str) -> Option<Input> {
         "dismiss" => Input::NotificationClosed(super::cards::take(payload)?),
         "hits" => Input::DumpHits,
         // `send <path>[<tab><path>...]`: files to send to a device on the network
+        "shelf" if !payload.is_empty() => Input::Shelve(payload.split('\t').map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()),
         "send" if !payload.is_empty() => Input::SendFiles(payload.split('\t').map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()),
         // `key enter|escape|backspace|left|right|up|down|home|end|tab` or `key text <what to type>`: for tests, the
         // same input a keyboard gives when the island holds it
@@ -115,6 +116,13 @@ pub(crate) fn parse(line: &str) -> Option<Input> {
             Input::Click(it.next()?, it.next()?)
         }
         "peek" => Input::Peek,
+        // a key bound to this mutes the microphone
+        "mic" => Input::Mic(match payload {
+            "" | "toggle" => None,
+            "off" | "mute" => Some(true),
+            "on" | "unmute" => Some(false),
+            _ => return None,
+        }),
         "reply" => Input::StartReply,
         "bar" | "command" => Input::OpenBar,
         "open" => Input::OpenKeyboard(match payload {
@@ -124,7 +132,14 @@ pub(crate) fn parse(line: &str) -> Option<Input> {
         "dnd" => match payload {
             "on" => Input::SetDnd(true),
             "off" => Input::SetDnd(false),
-            _ => return None,
+            // "dnd 1h", "dnd until 18:00": the command bar's words
+            span => {
+                let line = format!("dnd {span}");
+                match island_core::bar::parse(&line, 0) {
+                    Some(island_core::bar::Cmd::DndFor { .. }) => Input::RunLine(line),
+                    _ => return None,
+                }
+            }
         },
         "progress" => Input::Progress(payload.into()),
         "progress-done" => Input::ProgressDone(payload.into()),
@@ -364,6 +379,11 @@ mod tests {
         assert!(matches!(parse("unpin"), Some(Input::PinRemove(t)) if t.is_empty()));
         assert!(matches!(parse("dnd on"), Some(Input::SetDnd(true))));
         assert!(parse("dnd maybe").is_none());
+        assert!(matches!(parse("mic toggle"), Some(Input::Mic(None))));
+        assert!(matches!(parse("mic off"), Some(Input::Mic(Some(true)))));
+        assert!(parse("mic maybe").is_none());
+        assert!(matches!(parse("dnd 1h"), Some(Input::RunLine(l)) if l == "dnd 1h"));
+        assert!(matches!(parse("dnd until class ends"), Some(Input::RunLine(_))));
         assert!(matches!(parse("progress 42 Copying"), Some(Input::Progress(p)) if p == "42 Copying"));
         assert!(matches!(parse("cmd-start 99 10 cargo build -j8"), Some(Input::CommandStart { id, label, after_secs: 10 }) if id == "99" && label == "cargo build -j8"));
         assert!(matches!(parse(r#"activity run {"label":"CI","detail":"building","icon":"git-branch","color":"orange","progress":40}"#),
@@ -390,6 +410,7 @@ mod tests {
         assert!(matches!(parse("cmd-end 99 130"), Some(Input::CommandEnd { id, code: 130 }) if id == "99"));
         assert!(parse("cmd-start 99 ten make").is_none() && parse("cmd-start 99 5").is_none() && parse("cmd-end 99").is_none());
         assert!(matches!(parse("timer 25m"), Some(Input::StartTimer(1500))));
+        assert!(matches!(parse("shelf /a b/c.txt\t/d.txt"), Some(Input::Shelve(f)) if f.len() == 2));
         assert!(matches!(parse("send /a b/c.txt\t/d.txt"), Some(Input::SendFiles(f)) if f == vec!["/a b/c.txt".to_string(), "/d.txt".to_string()]));
         assert!(parse("send").is_none());
         assert!(matches!(parse("page cal"), Some(Input::OpenPage(_))));
@@ -408,5 +429,12 @@ mod tests {
         assert_eq!(parse_command("calendar add webcal://x.org/a/b.ics"), Some(Command::AddCalendar("webcal://x.org/a/b.ics".into())));
         assert_eq!(parse_command("calendar add nonsense"), None);
         assert_eq!(parse_command("nothing"), None);
+    }
+
+    #[test]
+    fn a_script_cannot_change_how_passwords_are_asked() {
+        for line in ["set polkit_face auto", "set polkit_agent on", "set polkit_agent true"] {
+            assert!(parse_command(line).is_none(), "{line}");
+        }
     }
 }

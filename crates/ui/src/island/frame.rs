@@ -34,14 +34,22 @@ impl Island {
             Face::Today => h = self.today_height(),
             Face::Plan => h = self.plan_height(),
             Face::Find => h = self.find_height(),
+            Face::Bar if !self.picks().is_empty() => h += crate::faces::PICK_ROW,
             Face::TimerFull => h += self.extra_timers.len().min(3) as f64 * 28.0 + if self.extra_timers.is_empty() { 0.0 } else { 8.0 },
             Face::Send => h = self.send_height(),
             Face::Phone => h = self.phone_height(),
             Face::Grid => h = self.grid_height(),
             Face::Map => h = 14.0 + 34.0 + MAP_H + 8.0 + 34.0 + 10.0,
-            Face::Activity => h = 14.0 + 34.0 + 8.0 + 6.0 * 30.0 + 10.0,
+            Face::Activity => h = self.activity_height(),
+            Face::Shelf => h = self.shelf_height(),
             Face::Sys => h = 14.0 + 34.0 + self.sys_rows() as f64 * 28.0 + 14.0,
-            Face::Idle => w += self.icon_count(false) as f64 * ICON_W,
+            Face::Idle => {
+                w += self.icon_count(false) as f64 * ICON_W;
+                // the countdown beside the clock: about 0.55 em a character at 12 px
+                if let Some((text, _)) = self.countdown() {
+                    w += text.chars().count() as f64 * 6.6 + 18.0;
+                }
+            }
             Face::Catch => {
                 let swell = self.fx.catch.as_ref().map_or(0.0, |c| c.swell(self.now));
                 (w, h) = (w + 40.0 * swell, h + 12.0 * swell);
@@ -86,15 +94,85 @@ impl Island {
     pub(crate) fn settings_content_height(&self) -> f64 {
         let cals = self.data.config.calendars.len().min(4) as f64;
         // section titles (6 x 22), calendar rows, the two add rows, latitude, longitude, home, train, font, sound, map key, the note line
-        6.0 * 22.0 + (cals + 3.0 + 2.0 + 2.0 + 1.0 + 1.0 + 1.0) * 34.0 + 20.0
+        // and, while the island asks for passwords, the face choice with the line that says what it means
+        let face = if self.data.config.face.is_some() { 22.0 + 34.0 + FACE_NOTE_H } else { 0.0 };
+        6.0 * 22.0 + (cals + 3.0 + 2.0 + 2.0 + 1.0 + 1.0 + 1.0) * 34.0 + face + 20.0
     }
 
     pub(crate) fn day_events(&self) -> Vec<&calendar::Event> {
         let c = &self.cal;
-        let off = self.data.utc_offset_secs;
-        let start = crate::clock::midnight_ms(c.year, c.month, c.day, off);
-        let end = crate::clock::midnight_ms(c.year, c.month, c.day + 1, off);
-        calendar::events_between(&self.data.events, start, end)
+        let start = self.local_midnight_ms(c.year, c.month, c.day);
+        let end = self.local_midnight_ms(c.year, c.month, c.day + 1);
+        calendar::events_between(self.calendar_events(), start, end)
+    }
+
+    /// The local offset from UTC at an instant: the calendar page goes where daylight saving is another.
+    pub(crate) fn offset_at(&self, ms: i64) -> i32 {
+        self.data.zone.map_or(self.data.utc_offset_secs, |zone| zone(ms))
+    }
+
+    /// Local midnight of a date (a day past the end of the month counts on into the next).
+    pub(crate) fn local_midnight_ms(&self, y: i32, m: u32, d: u32) -> i64 {
+        let near = crate::clock::midnight_ms(y, m, d, self.data.utc_offset_secs);
+        let first = crate::clock::midnight_ms(y, m, d, self.offset_at(near));
+        crate::clock::midnight_ms(y, m, d, self.offset_at(first))
+    }
+
+    /// Whether the stretch that is always read holds the whole of a month.
+    fn month_covered(&self, y: i32, m: u32) -> bool {
+        let (from, to) = self.data.events_span;
+        from < to && from <= self.local_midnight_ms(y, m, 1) && self.local_midnight_ms(y, m, calendar::days_in_month(y, m) + 1) <= to
+    }
+
+    fn month_read(&self, y: i32, m: u32) -> Option<&MonthEvents> {
+        self.data.months.iter().find(|r| (r.year, r.month) == (y, m))
+    }
+
+    /// The events the calendar page draws its month from, by start: those always read, and for a month that goes past
+    /// them, what was fetched for it outside their stretch.
+    pub(crate) fn calendar_events(&self) -> Vec<&calendar::Event> {
+        let (y, m) = (self.cal.year, self.cal.month);
+        let mut out: Vec<&calendar::Event> = self.data.events.iter().collect();
+        if let Some(read) = self.month_read(y, m).filter(|_| !self.month_covered(y, m)) {
+            let (from, to) = self.data.events_span;
+            let more = read.events.iter().filter(|e| (e.end_ms <= from || e.start_ms >= to) && !self.data.events.iter().any(|k| k.start_ms == e.start_ms && k.title == e.title));
+            out.extend(more);
+            out.sort_by_key(|e| e.start_ms);
+        }
+        out
+    }
+
+    /// What to say under the month when the day shown has no event.
+    pub(crate) fn no_events_text(&self) -> &'static str {
+        let (y, m) = (self.cal.year, self.cal.month);
+        if self.reads_months() && !self.month_covered(y, m) {
+            return match self.month_read(y, m) {
+                None => "Reading this month…",
+                Some(r) if !r.complete => "Could not read the calendars",
+                Some(_) => "No events",
+            };
+        }
+        if self.data.events.is_empty() { "Calendar not synced yet" } else { "No events" }
+    }
+
+    /// There is a calendar to ask: one in the settings, or the stretch was read (the island's own file).
+    fn reads_months(&self) -> bool {
+        !self.data.config.calendars.is_empty() || self.data.events_span != (0, 0)
+    }
+
+    /// The calendar page shows a month that is not at hand, or was read long ago: ask for it, once until it answers.
+    pub(super) fn ask_month(&mut self, now: i64) {
+        let data = &self.data;
+        self.months_asked.retain(|(k, at)| now - at < MONTH_RETRY_MS && !data.months.iter().any(|r| (r.year, r.month) == *k && r.read_at >= *at));
+        let (y, m) = (self.cal.year, self.cal.month);
+        if !self.reads_months() || self.month_covered(y, m) || self.months_asked.iter().any(|(k, _)| *k == (y, m)) {
+            return;
+        }
+        if self.month_read(y, m).is_some_and(|r| r.read_at > 0 && now - r.read_at < if r.complete { MONTH_STALE_MS } else { MONTH_RETRY_MS }) {
+            return;
+        }
+        self.months_asked.push(((y, m), now));
+        self.pending.push(Command::LoadCalendarMonth { year: y, month: m });
     }
 
     pub(crate) fn icon_count(&self, compact_busy: bool) -> usize {
@@ -103,7 +181,8 @@ impl Island {
         }
         let p = self.data.privacy;
         let _ = compact_busy;
-        p.mic as usize + p.camera as usize + p.screen as usize + self.quiet() as usize + (!self.data.net.is_ok()) as usize
+        let mic = p.mic || self.data.mic_muted == Some(true);
+        usize::from(!self.shelf.is_empty()) + mic as usize + p.camera as usize + p.screen as usize + self.quiet() as usize + (!self.data.net.is_ok()) as usize
     }
 
     pub(super) fn sync_lyrics(&mut self) {
@@ -173,10 +252,11 @@ impl Island {
         }
         let media = self.data.media.as_ref().is_some_and(|m| !m.title.is_empty());
         let snap = Snapshot {
+            authing: self.auth.is_some(),
             barring: self.bar.is_some(),
             replying: self.reply.is_some(),
             catching: self.fx.catch.is_some(),
-            osd: self.osd.is_some() && now < self.osd_until,
+            osd: (self.osd.is_some() || self.notice.is_some()) && now < self.osd_until,
             op: self.ops.op.is_some(),
             update: false,
             big,
@@ -241,6 +321,8 @@ impl Island {
             ("microphone", self.cfg.quiet_on_mic && p.mic),
             ("focus", self.data.focus.as_ref().is_some_and(|f| f.active)),
             ("deep work", self.deep_work(now)),
+            // the focus of a study session; last, so that any other reason says what it holds back
+            ("study", self.session().is_some_and(|t| t.phase == Phase::Focus)),
         ]
         .into_iter()
         .filter_map(|(reason, holds)| holds.then_some(reason))
@@ -251,6 +333,8 @@ impl Island {
     /// the island has of its own right now are set aside too, for as long as each lasts. Returns what to tell the daemon.
     pub(super) fn set_dnd(&mut self, on: bool) -> Command {
         self.data.dnd = on;
+        // switched by hand it lasts until it is switched again
+        self.dnd_until = None;
         let holding = self.quiet_reasons(self.now);
         self.quiet_set_aside = if on { Vec::new() } else { holding.clone() };
         self.auto_quiet = holding.into_iter().find(|r| !self.quiet_set_aside.contains(r));
@@ -258,7 +342,64 @@ impl Island {
         Command::SetDnd(self.dnd_sent)
     }
 
+    /// Do not disturb for `secs` seconds, or (None) until what is on in the calendar is over. Returns what to tell the
+    /// daemon, or None when there is nothing on to wait for.
+    pub(super) fn set_dnd_for(&mut self, secs: Option<i64>) {
+        let now = self.now;
+        let until = match secs {
+            Some(secs) => now + secs * 1000,
+            // the last to end of what is on now (not what lasts half a day: that is no lecture)
+            None => match self.data.events.iter().filter(|e| !e.all_day && e.start_ms <= now && now < e.end_ms && e.end_ms - e.start_ms <= 12 * 3_600_000).map(|e| e.end_ms).max() {
+                Some(end) => end,
+                None => {
+                    self.say("Nothing is on now", "Say for how long: dnd 1h");
+                    return;
+                }
+            },
+        };
+        let tell = self.set_dnd(true);
+        self.dnd_until = Some(until);
+        self.pending.push(tell);
+        let at = crate::clock::civil(until, self.data.utc_offset_secs).hhmm();
+        self.say("Do not disturb", &format!("until {at}"));
+    }
+
+    /// What a restart brings back: a do not disturb that has an end.
+    pub fn restore_dnd_until(&mut self, until: i64) {
+        self.data.dnd = true;
+        self.dnd_until = Some(until);
+        self.dnd_seen = (true, Some(until));
+    }
+
+    /// Mutes or unmutes the microphone; the island shows it at once and the platform confirms.
+    pub(super) fn set_mic(&mut self, muted: Option<bool>) -> Command {
+        let muted = muted.or(self.data.mic_muted.map(|m| !m));
+        if muted.is_some() {
+            self.data.mic_muted = muted;
+        }
+        Command::SetMic(muted)
+    }
+
+    /// A word when the microphone is muted or heard again, however that happened.
+    fn mic_card(&mut self) {
+        let now = self.data.mic_muted;
+        if now == self.mic_seen {
+            return;
+        }
+        let first = self.mic_seen.replace(false).is_none();
+        self.mic_seen = now;
+        match now {
+            Some(muted) if !first => self.say(if muted { "Microphone muted" } else { "Microphone on" }, ""),
+            _ => {}
+        }
+    }
+
     pub(super) fn update_quiet(&mut self, now: i64) {
+        // its time is up: the manual choice goes, what the island holds for reasons of its own stays held
+        if self.dnd_until.is_some_and(|until| until <= now) {
+            self.dnd_until = None;
+            self.data.dnd = false;
+        }
         let holding = self.quiet_reasons(now);
         // one that has ended counts again the next time it comes
         self.quiet_set_aside.retain(|r| holding.contains(r));
@@ -297,6 +438,40 @@ impl Island {
 
     pub fn restore_attention(&mut self, day_start: i64, totals: Vec<(String, i64)>) {
         self.ledger.restore(day_start, totals);
+    }
+
+    /// The totals of the days before today, to be kept between runs.
+    pub fn attention_history(&self) -> &[island_core::activity::DayTotals] {
+        self.ledger.history()
+    }
+
+    pub fn restore_attention_history(&mut self, history: Vec<island_core::activity::DayTotals>) {
+        self.ledger.restore_history(history);
+    }
+
+    pub(crate) fn is_distraction(&self, app: &str) -> bool {
+        self.cfg.distraction_apps.iter().any(|a| a.eq_ignore_ascii_case(app))
+    }
+
+    /// During the study hours, a card after too long on the apps marked as distracting (going from one to another, or
+    /// away for less than a minute, goes on counting); again after another such stretch. Held, like the other
+    /// heads-ups, during a call or a shared screen.
+    pub(super) fn distraction_card(&mut self, now: i64) {
+        let limit = i64::from(self.cfg.distraction_minutes) * 60_000;
+        let Some(app) = self.ledger.current().map(|(a, _, _)| a.to_string()) else { return };
+        if limit <= 0 || !self.is_distraction(&app) || self.quiet_blocks_headsup() {
+            return;
+        }
+        let today = self.today_day();
+        let Some((began, ends)) = self.study_windows(today).into_iter().find(|(from, to)| *from <= now && now < *to) else { return };
+        // counted from the start of this stretch of study, and from the last time it was said
+        let on_them = self.ledger.streak(now, 60_000, |a| self.is_distraction(a)).min(now - began).min(self.distraction_told.map_or(i64::MAX, |told| now - told));
+        if on_them < limit {
+            return;
+        }
+        self.distraction_told = Some(now);
+        let until = crate::clock::civil(ends, self.data.utc_offset_secs).hhmm();
+        self.say(&format!("{} min on {app}", on_them / 60_000), &format!("These are study hours, until {until}"));
     }
 
     /// The last half hour in one list, newest first: where the attention was, what came in, what played, what was copied.
@@ -527,9 +702,10 @@ impl Island {
         self.push(now, Input::Notification(n));
     }
 
-    /// A call or a recording is not interrupted by a heads-up.
+    /// A call or a recording is not interrupted by a heads-up. A meeting and a study session are: the next lecture and the
+    /// nudge away from a distracting app are what one wants to hear then.
     pub(super) fn quiet_blocks_headsup(&self) -> bool {
-        self.auto_quiet.is_some_and(|r| r != "meeting")
+        self.auto_quiet.is_some_and(|r| r != "meeting" && r != "study")
     }
 
     /// What played and what was copied, for the rewind page.
@@ -555,11 +731,14 @@ impl Island {
         let now = self.now;
         self.note_changes();
         self.break_card(now);
+        self.distraction_card(now);
+        self.check_places(now);
         self.update_quiet(now);
         self.trips(now);
         self.map_needs(now);
         self.heads_up(now);
         self.late_battery();
+        self.late_eta();
         self.culprit_card(now);
         self.sample_battery(now);
         self.power_card(now);
@@ -709,10 +888,13 @@ impl Island {
         self.check_evening(now);
         self.check_morning(now);
         self.check_departure(now);
+        self.check_event_end(now);
         self.check_train(now);
+        self.auth_tick(now);
         if self.bar.as_ref().is_some_and(|b| now > b.until) {
             self.bar = None;
         }
+        self.mic_card();
         self.slow_checks();
         self.sync_lyrics();
         // notifications: expiry and the next waiting one
@@ -783,6 +965,9 @@ impl Island {
         if want != self.want && matches!(want, Face::Cal | Face::IdleHover) && !self.data.config.calendars.is_empty() && now - self.data.events_synced_at > STALE_EVENTS_MS && now - self.last_refresh_req > 30_000 {
             self.last_refresh_req = now;
             self.pending.push(Command::RefreshCalendars);
+        }
+        if want == Face::Cal {
+            self.ask_month(now);
         }
         if want != self.want {
             // between two pages the content slides the way the page order goes
@@ -857,9 +1042,9 @@ impl Island {
         let waiting_for_hover = (self.hovering && now - self.hover_since < HOVER_INTENT_MS + 60) || now < self.hover_left + HOVER_GRACE_MS + 60;
         // milliseconds until a sliding line moves (0: it is sliding)
         let marquee = self.marquee_wake.take().map(|at| (at - now).clamp(0, u32::MAX as i64) as u32);
-        let moving = !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving || self.card_moving() || self.bubbles_moving() || self.fill_moving() || self.fx.moving();
+        let moving = self.auth_moving() || !self.settled || self.lyrics_scrolling() || waiting_for_hover || levels_moving || self.card_moving() || self.bubbles_moving() || self.fill_moving() || self.fx.moving();
         let equalizer = self.data.media.as_ref().is_some_and(|m| m.playing) && matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric);
-        let expiring = snap.osd || self.notif.is_some() || self.edit.is_some() || self.reply.is_some() || self.kb.is_some() || self.bar.is_some();
+        let expiring = snap.osd || self.auth.is_some() || self.notif.is_some() || self.edit.is_some() || self.reply.is_some() || self.kb.is_some() || self.bar.is_some();
         let next_ms: u32 = if moving {
             0
         } else if equalizer {
@@ -914,6 +1099,11 @@ impl Island {
             // the drop hangs at the left: as much room on the right keeps the pill where it is
             sw = sw.max(group_w + 2.0 * liquid::DROP_ROOM);
         }
+        // the drop of a password request, down to the middle of the screen and back
+        if let Some((wide, bottom)) = self.auth_reach() {
+            sw = sw.max(wide);
+            sh = sh.max(self.spring.h.pos.ceil() + bottom);
+        }
         Frame { surface: (sw + 8.0, sh + TOP_MARGIN + 4.0), animating, next_ms }
     }
 
@@ -935,6 +1125,7 @@ impl Island {
         v.extend(self.cards.rects().map(|(x, y, w, h, _)| (x, y, w, h)));
         v.extend(self.fill.as_ref().and_then(|f| f.rect));
         v.extend(self.catch_rect());
+        v.extend(self.auth_rect());
         v
     }
 
@@ -949,6 +1140,7 @@ impl Island {
         }
         v.extend(self.fill.as_ref().and_then(|f| f.rect).map(|(x, y, w, h)| (x, y, w, h, w / 2.0)));
         v.extend(self.cards.rects());
+        v.extend(self.auth_rect().map(|(x, y, w, h)| (x, y, w, h, 30.0)));
         v
     }
 

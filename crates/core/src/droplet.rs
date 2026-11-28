@@ -61,6 +61,9 @@ impl Curve {
 }
 
 const FALL: Curve = Curve::new(0.62, 0.2);
+/// The long fall of `Animator::plunge`, and how near its end the drop starts to open.
+const PLUNGE: Curve = Curve::new(0.55, 0.08);
+const LANDED: f64 = 22.0;
 const FEED: Curve = Curve::new(0.3, 0.0);
 const MELT_IN: Curve = Curve::new(0.08, 0.0);
 const LET_GO: Curve = Curve::new(0.35, 0.0);
@@ -210,6 +213,28 @@ impl Animator {
         opened.animate(1.0, GROW, loose);
         let cue = first_time(loose, |t| GROW.progress(t - loose) >= TEXT_OPEN);
         Self { size, top, rise: None, x: Value::new(0.0), shake_at: None, centre, w, h, opened, blend, content_w: Value::new(size.w), cue, left_at: None, end: loose + 0.8 }
+    }
+
+    /// A drop born at time 0 inside `from` that falls a long way, round all the way down, and opens to `size` only where it
+    /// lands, with its top at `top`.
+    pub fn plunge(size: Size, from: Anchor, top: f64) -> Self {
+        let start = from.inside(DROP + 2.0);
+        let end_centre = top + size.h / 2.0;
+        let mut centre = Value::new(start);
+        let (mut w, mut h) = (Value::new(SEED), Value::new(SEED));
+        let (mut opened, mut blend) = (Value::new(0.0), Value::new(0.0));
+        w.animate(DROP, FEED, 0.0);
+        h.animate(DROP, FEED, 0.0);
+        centre.animate(end_centre, PLUNGE, 0.0);
+        blend.animate(BLEND, MELT_IN, 0.0);
+        let loose = first_time(0.0, |t| start + (end_centre - start) * PLUNGE.progress(t) - DROP / 2.0 >= from.bottom + BLEND / 3.0);
+        blend.animate(0.0, LET_GO, loose);
+        let landed = first_time(loose, |t| end_centre - centre.at(t) <= LANDED);
+        w.animate(size.w, GROW, landed);
+        h.animate(size.h, GROW, landed);
+        opened.animate(1.0, GROW, landed);
+        let cue = first_time(landed, |t| GROW.progress(t - landed) >= TEXT_OPEN);
+        Self { size, top, rise: None, x: Value::new(0.0), shake_at: None, centre, w, h, opened, blend, content_w: Value::new(size.w), cue, left_at: None, end: landed + 0.8 }
     }
 
     /// A card born at time 0 from a drop that already exists, its middle at (`x`, `y`) from the middle of the pill's
@@ -488,6 +513,34 @@ fn loops(values: &[f64], columns: usize, rows: usize) -> Vec<Vec<(f64, f64)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plunging_drop_stays_a_drop_until_it_lands_and_only_then_opens() {
+        let size = Size { w: 440.0, h: 270.0, corner: 30.0 };
+        let a = Animator::plunge(size, Anchor::pill(28.0), 400.0);
+        let mut opening = None;
+        let mut t = 0.0;
+        while t < a.end() {
+            let s = a.shape(t);
+            if opening.is_none() && s.opened > 0.01 {
+                opening = Some(s);
+            }
+            if opening.is_none() {
+                assert!(s.w <= DROP * 1.2 && s.h <= DROP * 1.2, "round on the way: {s:?} at {t}");
+            }
+            t += 0.01;
+        }
+        let first = opening.expect("it opens");
+        assert!(first.top + first.h / 2.0 >= 400.0 + size.h / 2.0 - 40.0, "near where it lands: {first:?}");
+        let last = a.shape(a.end());
+        assert!((last.top - 400.0).abs() < 2.0 && (last.w - size.w).abs() < 2.0 && last.opened > 0.98, "{last:?}");
+        assert!(a.cue() > 0.2 && a.cue() < 1.2, "{}", a.cue());
+        // and it goes back into the pill
+        let mut back = a.clone();
+        back.exit(2.0, Anchor::pill(28.0));
+        let gone = back.shape(back.end());
+        assert!(gone.top + gone.h <= 4.0 && gone.w <= DROP + 1.0, "{gone:?}");
+    }
 
     #[test]
     fn a_drop_leaving_sideways_melts_into_the_end_it_leaves() {

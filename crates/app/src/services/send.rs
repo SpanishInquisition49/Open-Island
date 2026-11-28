@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The address this machine uses on the network (no packet is sent).
-fn local_ip() -> Option<Ipv4Addr> {
+pub(super) fn local_ip() -> Option<Ipv4Addr> {
     let s = UdpSocket::bind("0.0.0.0:0").ok()?;
     s.connect("192.0.2.1:9").ok()?;
     match s.local_addr().ok()?.ip() {
@@ -112,7 +112,7 @@ fn fingerprint() -> String {
     format!("{:032x}", n ^ ((std::process::id() as u128) << 64))
 }
 
-fn alias() -> String {
+pub(super) fn alias() -> String {
     std::env::var("HOSTNAME").ok().filter(|h| !h.is_empty()).or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|h| h.trim().to_string())).filter(|h| !h.is_empty()).unwrap_or_else(|| "open-island".into())
 }
 

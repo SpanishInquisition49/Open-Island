@@ -269,6 +269,36 @@ pub fn spread(loads: &[Load], done: &[u32], first_day: i64, free: &[u32], today_
     plan
 }
 
+/// The pace is measured over the days since the first study for something, never fewer than the first of these (one long
+/// afternoon is not a habit) nor more than the second (what was done a month ago says little about now).
+pub const PACE_DAYS: (i64, i64) = (7, 14);
+
+/// How the study of the last days compares with the work still to do before the day.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pace {
+    /// Minutes studied for it a study day, and those each study day left would need.
+    pub now_per_day: u32,
+    pub needed_per_day: u32,
+    /// Where the same pace ends up: the percent of the work done by the day, and the minutes missing (0: on track).
+    pub percent: u32,
+    pub short_min: u32,
+}
+
+/// The pace for `est` minutes of work of which `done` are done: `studied` minutes in the last `measured` study days, and
+/// `left` study days still to come before the day (none: what is not done by now will not be).
+pub fn pace(est: u32, done: u32, studied: u32, measured: u32, left: u32) -> Pace {
+    let measured = measured.max(1);
+    let todo = est.saturating_sub(done);
+    let more = (u64::from(studied) * u64::from(left) / u64::from(measured)).min(u64::from(todo)) as u32;
+    let reached = done.min(est) + more;
+    Pace {
+        now_per_day: (studied + measured / 2) / measured,
+        needed_per_day: if left == 0 { todo } else { todo.div_ceil(left).div_ceil(STEP) * STEP },
+        percent: (u64::from(reached) * 100 / u64::from(est.max(1))) as u32,
+        short_min: (est - reached).div_ceil(STEP) * STEP,
+    }
+}
+
 /// An exam whose hours were never said: only how big it is (its credits) and when it is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Weighted {
@@ -661,6 +691,22 @@ mod tests {
         let evs = vec![ev("lunch", 13, 14), ev("long", 12, 15), ev("early", 8, 10)];
         let w = week(&evs, &[day.windows(0)], 0, &[], &[]);
         assert_eq!((w[0].events, w[0].event_min), (2, 180), "9-10, 12-13 and 14-15; the lunch is not one of them");
+    }
+
+    #[test]
+    fn the_pace_says_where_the_last_days_lead() {
+        // 20h, 5h done, an hour a study day lately, 10 study days left: 15h of 20h
+        let p = pace(1200, 300, 7 * 60, 7, 10);
+        assert_eq!(p, Pace { now_per_day: 60, needed_per_day: 90, percent: 75, short_min: 300 });
+        // fast enough: all of it, and never more than all of it
+        let p = pace(600, 300, 14 * 60, 7, 10);
+        assert_eq!((p.percent, p.short_min, p.needed_per_day), (100, 0, 30));
+        // nothing lately: it stays where it is
+        let p = pace(600, 150, 0, 7, 4);
+        assert_eq!((p.now_per_day, p.percent, p.short_min), (0, 25, 450));
+        // no study day left, and no days measured: no division by zero
+        let p = pace(600, 480, 60, 0, 0);
+        assert_eq!((p.percent, p.short_min, p.needed_per_day), (80, 120, 120));
     }
 
     #[test]

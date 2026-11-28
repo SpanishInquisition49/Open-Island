@@ -18,7 +18,7 @@ use smithay_client_toolkit::{
     data_device_manager::{
         data_device::{DataDevice, DataDeviceHandler},
         data_offer::{DataOfferHandler, DragOffer},
-        data_source::DataSourceHandler,
+        data_source::{DataSourceHandler, DragSource},
         WritePipe,
         DataDeviceManagerState,
     },
@@ -53,6 +53,7 @@ use wayland_protocols::wp::{
 };
 
 /// What a file manager offers when a file is dragged.
+const TEXT: &str = "text/plain;charset=utf-8";
 const URI_LIST: &str = "text/uri-list";
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
@@ -65,7 +66,13 @@ struct Wl {
     compositor: CompositorState,
     layer: LayerSurface,
     viewport: Option<WpViewport>,
-    _fractional: Option<WpFractionalScaleV1>,
+    fractional: Option<WpFractionalScaleV1>,
+    /// What a new surface is made with, when the one there was goes with its screen.
+    conn: Connection,
+    shell: Shell,
+    /// The compositor took the surface away: a new one is made once there is a screen, not before `retry_at`.
+    lost: bool,
+    retry_at: Instant,
     pointer: Option<wl_pointer::WlPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     idle_manager: Option<ExtIdleNotifierV1>,
@@ -77,6 +84,9 @@ struct Wl {
     data_device: Option<DataDevice>,
     /// Paths of files dropped on the island (read on another thread).
     drop_tx: channel::Sender<Vec<String>>,
+    /// The last press of a button (a drag starts from one), and the drag of the island's own files under way.
+    press_serial: u32,
+    outgoing: Option<(DragSource, Vec<String>)>,
     loop_handle: calloop::LoopHandle<'static, Wl>,
     keyboard_on: bool,
     ctrl: bool,
@@ -93,13 +103,97 @@ struct Wl {
     last_render: Instant,
     input_rects: Vec<(i32, i32, i32, i32)>,
     on_top_layer: bool,
+    /// The screen the surface is on, for its height.
+    on_output: Option<wl_output::WlOutput>,
     /// OPEN_ISLAND_NO_POINTER=1: the surface takes no pointer input (screenshots and tests)
     no_pointer: bool,
     perf: crate::perf::Perf,
 }
 
+/// The globals a surface is made from.
+struct Shell {
+    layer: LayerShell,
+    viewporter: Option<WpViewporter>,
+    fractional: Option<WpFractionalScaleManagerV1>,
+}
+
+struct Made {
+    layer: LayerSurface,
+    viewport: Option<WpViewport>,
+    fractional: Option<WpFractionalScaleV1>,
+}
+
+/// The island's surface, anchored at the top of the screen asked for (or the one the compositor chooses).
+fn make_surface(conn: &Connection, compositor: &CompositorState, shell: &Shell, qh: &QueueHandle<Wl>) -> Made {
+    let surface = compositor.create_surface(qh);
+    // the `screen` option: a connector name pins the island to that screen, "focused" lets the compositor choose
+    let screen = crate::config::load().screen;
+    let output = if screen == "focused" { None } else { pick_output(conn, &screen) };
+    if output.is_none() && screen != "focused" {
+        log::warn!("screen {screen:?} not found: the island goes where the compositor puts it");
+    }
+    let layer = shell.layer.create_layer_surface(qh, surface.clone(), Layer::Overlay, Some("open-island"), output.as_ref());
+    layer.set_anchor(Anchor::TOP);
+    layer.set_exclusive_zone(-1);
+    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+    layer.set_size(200, 60);
+    // OPEN_ISLAND_TOP_OFFSET (logical px) moves it down: for testing next to another island
+    if let Some(dy) = std::env::var("OPEN_ISLAND_TOP_OFFSET").ok().and_then(|v| v.parse::<i32>().ok()) {
+        layer.set_margin(dy, 0, 0, 0);
+    }
+    // fractional scaling and the viewport that maps the buffer to the logical size
+    let viewport = shell.viewporter.as_ref().map(|v| v.get_viewport(&surface, qh, ()));
+    let fractional = shell.fractional.as_ref().map(|m| m.get_fractional_scale(&surface, qh, ()));
+    layer.commit();
+    Made { layer, viewport, fractional }
+}
+
+/// Draws into the surface of `layer`.
+fn attach(gpu: &mut Gpu, conn: &Connection, layer: &LayerSurface) -> Result<(), String> {
+    let display = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(NonNull::new(conn.backend().display_ptr() as *mut _).ok_or("no display pointer")?));
+    let window = RawWindowHandle::Wayland(WaylandWindowHandle::new(NonNull::new(layer.wl_surface().id().as_ptr() as *mut _).ok_or("no surface pointer")?));
+    // SAFETY: the display connection and the surface outlive what the GPU draws into: both are kept beside it, and the
+    // GPU surface is dropped (`detach`) before its Wayland surface is replaced.
+    unsafe { gpu.attach_raw(display, window, 200, 60) }
+}
+
 impl Wl {
+    /// A new surface in place of one the compositor closed (its screen was switched off or unplugged).
+    fn rebuild(&mut self, qh: &QueueHandle<Self>) {
+        self.retry_at = Instant::now() + Duration::from_secs(1);
+        // the old one goes first: what draws into it, then what hangs from it, then the surface itself
+        self.gpu.detach();
+        if let Some(v) = self.viewport.take() {
+            v.destroy();
+        }
+        if let Some(f) = self.fractional.take() {
+            f.destroy();
+        }
+        let made = make_surface(&self.conn, &self.compositor, &self.shell, qh);
+        (self.layer, self.viewport, self.fractional) = (made.layer, made.viewport, made.fractional);
+        self.configured = false;
+        self.size = (200, 60);
+        self.on_top_layer = false;
+        self.keyboard_on = false;
+        self.outgoing = None;
+        self.on_output = None;
+        self.input_rects.clear();
+        self.app.pointer_left();
+        self.app.island.keyboard_focus(false);
+        match attach(&mut self.gpu, &self.conn, &self.layer) {
+            Ok(()) => {
+                log::info!("a new surface after the screen changed");
+                self.lost = false;
+                self.dirty = true;
+            }
+            Err(e) => log::warn!("{e}: trying again"),
+        }
+    }
+
     fn render(&mut self, qh: &QueueHandle<Self>) {
+        // where the middle of the screen is, for what opens there
+        let height = self.on_output.as_ref().and_then(|o| self.output_state.info(o)).and_then(|i| i.logical_size).map(|(_, h)| f64::from(h));
+        self.app.island.set_screen_height(height);
         let f = self.app.tick();
         if self.app.quit {
             self.exit = true;
@@ -155,7 +249,11 @@ impl CompositorHandler for Wl {
     fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: i32) {}
     fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
-    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
+    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, output: &wl_output::WlOutput) {
+        if surface == self.layer.wl_surface() {
+            self.on_output = Some(output.clone());
+        }
+    }
     fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
 }
 
@@ -169,8 +267,12 @@ impl OutputHandler for Wl {
 }
 
 impl LayerShellHandler for Wl {
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
-        self.exit = true;
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, closed: &LayerSurface) {
+        // word of a surface already replaced is nothing
+        if closed.wl_surface() == self.layer.wl_surface() {
+            log::info!("the surface was closed: its screen is gone");
+            (self.lost, self.configured) = (true, false);
+        }
     }
 
     fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface, _: LayerSurfaceConfigure, _: u32) {
@@ -224,7 +326,7 @@ impl SeatHandler for Wl {
 }
 
 impl PointerHandler for Wl {
-    fn pointer_frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
+    fn pointer_frame(&mut self, _: &Connection, qh: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
         for e in events {
             if &e.surface != self.layer.wl_surface() {
                 continue;
@@ -233,8 +335,14 @@ impl PointerHandler for Wl {
             match e.kind {
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => self.app.pointer_moved(x, y),
                 PointerEventKind::Leave { .. } => self.app.pointer_left(),
-                PointerEventKind::Press { button, .. } => match button {
-                    BTN_LEFT => self.app.pointer_down(x, y),
+                PointerEventKind::Press { button, serial, .. } => match button {
+                    BTN_LEFT => {
+                        self.press_serial = serial;
+                        // a drag under way holds the pointer, so a press means there is none (the compositor may have
+                        // refused the last one without a word)
+                        self.outgoing = None;
+                        self.app.pointer_down(x, y);
+                    }
                     BTN_RIGHT => self.app.right_click(),
                     BTN_MIDDLE => self.app.middle_click(),
                     _ => {}
@@ -247,6 +355,9 @@ impl PointerHandler for Wl {
                 }
                 _ => {}
             }
+        }
+        if let Some(paths) = self.app.take_drag() {
+            self.start_drag(qh, paths);
         }
         self.dirty = true;
     }
@@ -275,7 +386,8 @@ impl Wl {
             Keysym::Down => Some(KeyInput::Down),
             Keysym::Return | Keysym::KP_Enter => Some(KeyInput::Enter),
             Keysym::Escape => Some(KeyInput::Escape),
-            Keysym::v | Keysym::V if self.ctrl && !self.alt => paste().map(KeyInput::Text),
+            // nothing is pasted into a password request: the clipboard is not read for it
+            Keysym::v | Keysym::V if self.ctrl && !self.alt && !self.app.island.auth_open() => paste().map(KeyInput::Text),
             _ if self.ctrl || self.alt => None,
             _ => e.utf8.filter(|t| !t.is_empty()).map(KeyInput::Text),
         };
@@ -287,12 +399,26 @@ impl Wl {
 }
 
 impl KeyboardHandler for Wl {
-    fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: &wl_surface::WlSurface, _: u32, _: &[u32], _: &[Keysym]) {}
-    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: &wl_surface::WlSurface, _: u32) {}
+    fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, surface: &wl_surface::WlSurface, _: u32, _: &[u32], _: &[Keysym]) {
+        if surface == self.layer.wl_surface() {
+            self.app.island.keyboard_focus(true);
+            self.dirty = true;
+        }
+    }
+    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, surface: &wl_surface::WlSurface, _: u32) {
+        if surface == self.layer.wl_surface() {
+            self.app.island.keyboard_focus(false);
+            self.dirty = true;
+        }
+    }
     fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
         self.key_event(event);
     }
     fn repeat_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
+        // a key held down does not fill a password with itself
+        if self.app.island.auth_open() && event.keysym != Keysym::BackSpace {
+            return;
+        }
         self.key_event(event);
     }
     fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {}
@@ -365,8 +491,20 @@ delegate_registry!(Wl);
 delegate_data_device!(Wl);
 
 impl Wl {
+    /// Starts a drag of files from the island, offered as a copy.
+    fn start_drag(&mut self, qh: &QueueHandle<Self>, paths: Vec<String>) {
+        let (Some(manager), Some(device)) = (self.data_manager.as_ref(), self.data_device.as_ref()) else { return };
+        let source = manager.create_drag_and_drop_source(qh, [URI_LIST, TEXT], DndAction::Copy);
+        source.start_drag(device, self.layer.wl_surface(), None, self.press_serial);
+        self.outgoing = Some((source, paths));
+    }
+
     /// The file drag now over the island, when it carries files: accepted as a copy. `at` is the pointer on the surface.
     fn drag_over(&mut self, at: (f64, f64)) {
+        // the island's own files, on their way out, are not caught again
+        if self.outgoing.is_some() {
+            return;
+        }
         let Some(offer) = self.data_device.as_ref().and_then(|d| d.data().drag_offer()) else { return };
         if offer.with_mime_types(|m| m.iter().any(|t| t == URI_LIST)) {
             offer.set_actions(DndAction::Copy, DndAction::Copy);
@@ -391,6 +529,9 @@ impl DataDeviceHandler for Wl {
     }
     fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
     fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+        if self.outgoing.is_some() {
+            return;
+        }
         let Some(offer) = self.data_device.as_ref().and_then(|d| d.data().drag_offer()) else { return };
         let Ok(mut pipe) = offer.receive(URI_LIST.to_string()) else { return };
         self.app.input(island_ui::model::Input::FileDropped);
@@ -457,29 +598,15 @@ pub fn run() -> Result<(), String> {
     let compositor = CompositorState::bind(&globals, &qh).map_err(|e| format!("no wl_compositor: {e}"))?;
     let layer_shell = LayerShell::bind(&globals, &qh).map_err(|_| "the compositor has no wlr-layer-shell".to_string())?;
 
-    let surface = compositor.create_surface(&qh);
-    // the `screen` option: a connector name pins the island to that screen, "focused" lets the compositor choose
-    let screen = crate::config::load().screen;
-    let output = if screen == "focused" { None } else { pick_output(&conn, &screen) };
-    if output.is_none() && screen != "focused" {
-        log::warn!("screen {screen:?} not found: the island goes where the compositor puts it");
-    }
-    let layer = layer_shell.create_layer_surface(&qh, surface.clone(), Layer::Overlay, Some("open-island"), output.as_ref());
-    layer.set_anchor(Anchor::TOP);
-    layer.set_exclusive_zone(-1);
-    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-    layer.set_size(200, 60);
-    // OPEN_ISLAND_TOP_OFFSET (logical px) moves it down: for testing next to another island
-    if let Some(dy) = std::env::var("OPEN_ISLAND_TOP_OFFSET").ok().and_then(|v| v.parse::<i32>().ok()) {
-        layer.set_margin(dy, 0, 0, 0);
-    }
-    // fractional scaling and the viewport that maps the buffer to the logical size
-    let viewport = globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ()).ok().map(|v| v.get_viewport(&surface, &qh, ()));
-    let fractional = globals.bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ()).ok().map(|m| m.get_fractional_scale(&surface, &qh, ()));
-    if viewport.is_none() || fractional.is_none() {
+    let shell = Shell {
+        layer: layer_shell,
+        viewporter: globals.bind::<WpViewporter, _, _>(&qh, 1..=1, ()).ok(),
+        fractional: globals.bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ()).ok(),
+    };
+    if shell.viewporter.is_none() || shell.fractional.is_none() {
         log::warn!("no fractional scaling: the island will look soft on scaled displays");
     }
-    layer.commit();
+    let Made { layer, viewport, fractional } = make_surface(&conn, &compositor, &shell, &qh);
 
     let mut event_loop: EventLoop<Wl> = EventLoop::try_new().map_err(|e| e.to_string())?;
     let (wake_tx, wake_rx) = channel::channel::<()>();
@@ -499,7 +626,7 @@ pub fn run() -> Result<(), String> {
         .insert_source(drop_rx, |ev, _, state: &mut Wl| {
             if let channel::Event::Msg(paths) = ev {
                 if !paths.is_empty() {
-                    state.app.input(island_ui::model::Input::SendFiles(paths));
+                    state.app.input(island_ui::model::Input::Shelve(paths));
                 }
                 state.dirty = true;
             }
@@ -508,10 +635,7 @@ pub fn run() -> Result<(), String> {
     WaylandSource::new(conn.clone(), event_queue).insert(event_loop.handle()).map_err(|e| e.to_string())?;
 
     let mut gpu = Gpu::new();
-    let display = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(NonNull::new(conn.backend().display_ptr() as *mut _).ok_or("no display pointer")?));
-    let window = RawWindowHandle::Wayland(WaylandWindowHandle::new(NonNull::new(surface.id().as_ptr() as *mut _).ok_or("no surface pointer")?));
-    // SAFETY: the display connection and the surface outlive `gpu` (both are owned by `state` below).
-    unsafe { gpu.attach_raw(display, window, 200, 60)? };
+    attach(&mut gpu, &conn, &layer)?;
 
     let mut state = Wl {
         registry_state: RegistryState::new(&globals),
@@ -520,7 +644,11 @@ pub fn run() -> Result<(), String> {
         compositor,
         layer,
         viewport,
-        _fractional: fractional,
+        fractional,
+        conn: conn.clone(),
+        shell,
+        lost: false,
+        retry_at: Instant::now(),
         pointer: None,
         keyboard: None,
         idle_manager: globals.bind::<ExtIdleNotifierV1, _, _>(&qh, 1..=2, ()).ok(),
@@ -530,11 +658,20 @@ pub fn run() -> Result<(), String> {
         data_manager: DataDeviceManagerState::bind(&globals, &qh).ok(),
         data_device: None,
         drop_tx,
+        press_serial: 0,
+        outgoing: None,
         loop_handle: event_loop.handle(),
         keyboard_on: false,
         ctrl: false,
         alt: false,
-        app: App::new(waker),
+        app: {
+            // the layer surface can hold the keyboard for itself: a password may be asked here
+            crate::services::polkit::keyboard_is_exclusive();
+            let mut app = App::new(waker);
+            // files can be dragged out of the island here
+            app.island.data.can_drag_files = true;
+            app
+        },
         gpu,
         scale: 1.0,
         size: (200, 60),
@@ -546,6 +683,7 @@ pub fn run() -> Result<(), String> {
         last_render: Instant::now(),
         input_rects: Vec::new(),
         on_top_layer: false,
+        on_output: None,
         no_pointer: std::env::var_os("OPEN_ISLAND_NO_POINTER").is_some(),
         perf: crate::perf::Perf::from_env(),
     };
@@ -553,10 +691,21 @@ pub fn run() -> Result<(), String> {
     loop {
         // frames only when something needs them: at vsync while the shape moves, otherwise when `next_ms` has passed
         let due = Duration::from_millis(state.next_ms as u64);
-        let timeout = if state.animating || state.dirty { Duration::ZERO } else { due.saturating_sub(state.last_render.elapsed()) };
+        let timeout = if state.lost { Duration::from_millis(500) } else if state.animating || state.dirty { Duration::ZERO } else { due.saturating_sub(state.last_render.elapsed()) };
         event_loop.dispatch(timeout, &mut state).map_err(|e| e.to_string())?;
         if state.exit {
             return Ok(());
+        }
+        if state.lost {
+            // time goes on without a surface: timers ring, services are heard
+            state.app.tick();
+            if state.app.quit {
+                return Ok(());
+            }
+            if Instant::now() >= state.retry_at && state.output_state.outputs().next().is_some() {
+                state.rebuild(&qh);
+            }
+            continue;
         }
         if state.configured && (state.animating || state.dirty || state.last_render.elapsed() >= due) {
             state.render(&qh);
@@ -564,12 +713,27 @@ pub fn run() -> Result<(), String> {
     }
 }
 
-/// The island only receives drags; the trait is needed by the delegate and nothing is ever offered.
+/// The island's side of a drag of its own files: the target asks for them, then says when it is done.
 impl DataSourceHandler for Wl {
     fn accept_mime(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: Option<String>) {}
-    fn send_request(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: String, _: WritePipe) {}
-    fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn send_request(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource, mime: String, mut pipe: WritePipe) {
+        let Some((_, paths)) = self.outgoing.as_ref().filter(|(s, _)| s.inner() == source) else { return };
+        let text = if mime == URI_LIST { island_core::localsend::uri_list(paths) } else { paths.join("\n") };
+        // a handful of paths: far less than a pipe holds, so this does not wait for the reader
+        if let Err(e) = std::io::Write::write_all(&mut pipe, text.as_bytes()) {
+            log::warn!("drag: {e}");
+        }
+    }
+    fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
+        if self.outgoing.as_ref().is_some_and(|(s, _)| s.inner() == source) {
+            self.outgoing = None;
+        }
+    }
     fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
-    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
+        if self.outgoing.as_ref().is_some_and(|(s, _)| s.inner() == source) {
+            self.outgoing = None;
+        }
+    }
     fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
 }

@@ -4,11 +4,12 @@
 //! { "latitude": 43.72, "longitude": 10.40,
 //!   "calendars": [
 //!     {"name": "University", "url": "https://example.org/calendar.ics", "color": "#ff9f0a"},
-//!     {"type": "icloud", "name": "iCloud", "user": "me@icloud.com", "password": "abcd-efgh-ijkl-mnop"} ],
+//!     {"type": "icloud", "name": "iCloud", "user": "me@icloud.com"} ],
 //!   "timer_presets": ["5m", "10m", "25m"], "meeting_lead_minutes": 10, "lyrics": true,
 //!   "font": "Inter" }
 //! ```
 //! Weather needs a location (the island never guesses one); calendars are read from iCal feed URLs.
+//! Passwords and API keys are in the system's keyring (see `services::secrets`), not in this file.
 
 use island_core::color;
 use island_ui::Config as UiConfig;
@@ -19,8 +20,9 @@ pub enum CalendarKind {
     /// An iCalendar feed (a public or secret .ics / webcal:// address).
     Ics { url: String },
     /// A CalDAV account (iCloud, Nextcloud, Fastmail...): every calendar of the account is read. iCloud needs an
-    /// app-specific password (appleid.apple.com), not the Apple ID password. `password_cmd` (a shell command that
-    /// prints it, for a password manager) wins over `password`.
+    /// app-specific password (appleid.apple.com), not the Apple ID password. The password is in the keyring;
+    /// `password` is only set when someone wrote it into the file by hand and it has not been moved there yet.
+    /// `password_cmd` (a shell command that prints it, for a password manager) wins over both.
     CalDav { server: String, user: String, password: String, password_cmd: String },
     /// An .ics file on this machine (an exported timetable), or a folder of them. Read again at every refresh.
     File { path: String },
@@ -150,17 +152,17 @@ pub fn add_source(list: &mut Vec<CalendarSource>, kind: CalendarKind) {
 }
 
 /// Adds a CalDAV account (Nextcloud, Fastmail, Radicale...), replacing one with the same server and user.
-pub fn add_caldav(list: &mut Vec<CalendarSource>, server: &str, user: &str, password: &str) {
+pub fn add_caldav(list: &mut Vec<CalendarSource>, server: &str, user: &str) {
     list.retain(|c| !matches!(&c.kind, CalendarKind::CalDav { server: s, user: u, .. } if s == server && u == user));
-    list.push(CalendarSource { name: String::new(), kind: CalendarKind::CalDav { server: server.to_string(), user: user.to_string(), password: password.to_string(), password_cmd: String::new() }, color: None });
+    list.push(CalendarSource { name: String::new(), kind: CalendarKind::CalDav { server: server.to_string(), user: user.to_string(), password: String::new(), password_cmd: String::new() }, color: None });
 }
 
 /// Adds an iCloud account (replacing one with the same Apple ID). It keeps its calendars' own colours.
-pub fn add_icloud(list: &mut Vec<CalendarSource>, user: &str, password: &str) {
+pub fn add_icloud(list: &mut Vec<CalendarSource>, user: &str) {
     list.retain(|c| !(c.is_icloud() && matches!(&c.kind, CalendarKind::CalDav { user: u, .. } if u == user)));
     list.push(CalendarSource {
         name: String::new(),
-        kind: CalendarKind::CalDav { server: ICLOUD_SERVER.into(), user: user.to_string(), password: password.to_string(), password_cmd: String::new() },
+        kind: CalendarKind::CalDav { server: ICLOUD_SERVER.into(), user: user.to_string(), password: String::new(), password_cmd: String::new() },
         color: None,
     });
 }
@@ -218,6 +220,9 @@ pub struct Settings {
     pub persist_history: bool,
     /// Where the files of the courses are looked for (`~` is the home); empty: Documents and Downloads.
     pub study_folders: Vec<String>,
+    /// Where files received over LocalSend go; None: the download folder.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub receive_dir: Option<std::path::PathBuf>,
     /// Stop another notification daemon (mako, dunst, ...) so notifications show once, in the island.
     pub take_over_notifications: bool,
     /// A font family name or the path of a font file; empty = the built-in list (SF Pro first).
@@ -225,7 +230,14 @@ pub struct Settings {
     /// "focused", or the name of the screen to pin the island to.
     pub screen: String,
     /// The key for map tile providers that want one (`{key}` in the tile URL).
+    /// A key written into the file by hand and not moved to the keyring yet; empty otherwise.
     pub map_api_key: String,
+    pub map_key_in_keyring: bool,
+    /// The island asks for administrator passwords (polkit). Off by default, and read only from the file: neither the
+    /// settings page nor the control socket can switch it on.
+    pub polkit_agent: bool,
+    /// How a face check answers a password request, where the system has one: "ask" (when asked for), "auto" or "off".
+    pub polkit_face: String,
     /// Where `note ...` writes (one Markdown file a day; `~` is the home); empty: a folder in the island's own state folder.
     /// Any folder will do: the island knows nothing else about it.
     pub notes_dir: String,
@@ -255,10 +267,14 @@ impl Default for Settings {
             filters: vec![],
             persist_history: true,
             study_folders: vec![],
+            receive_dir: None,
             take_over_notifications: true,
             font: String::new(),
             screen: "focused".into(),
             map_api_key: String::new(),
+            map_key_in_keyring: false,
+            polkit_agent: false,
+            polkit_face: "ask".into(),
             notes_dir: String::new(),
             tasks_sync: false,
             tasks_account: String::new(),
@@ -354,6 +370,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     }
     let b = |k: &str, d: bool| v.get(k).and_then(|x| x.as_bool()).unwrap_or(d);
     u.meeting_alerts = b("meeting_alerts", u.meeting_alerts);
+    u.end_alerts = b("end_alerts", u.end_alerts);
     u.rain_alerts = b("rain_alerts", u.rain_alerts);
     u.quiet_in_meetings = b("quiet_in_meetings", u.quiet_in_meetings);
     u.quiet_on_mic = b("quiet_on_mic", u.quiet_on_mic);
@@ -362,6 +379,9 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     u.currency_rates = b("currency_rates", u.currency_rates);
     u.watch_downloads = b("watch_downloads", u.watch_downloads);
     u.ocr_screenshots = b("ocr_screenshots", u.ocr_screenshots);
+    u.receive_files = b("receive_files", u.receive_files);
+    u.keyboard_alerts = b("keyboard_alerts", u.keyboard_alerts);
+    s.receive_dir = v.get("receive_dir").and_then(|x| x.as_str()).map(str::trim).filter(|x| !x.is_empty()).map(expand_home).map(Into::into);
     if let Some(m) = v.get("commute_minutes").and_then(|x| x.as_i64()).filter(|m| (0..=240).contains(m)) {
         u.commute_minutes = m;
     }
@@ -371,6 +391,9 @@ pub fn parse(text: &str) -> Result<Settings, String> {
         if let Some(week) = island_core::plan::parse_week(&text) {
             u.study_week = week;
         }
+    }
+    if let Some(d) = v.get("countdown_days").and_then(|x| x.as_u64()).filter(|d| *d <= 365) {
+        u.countdown_days = d as u32;
     }
     if let Some(m) = v.get("evening_recap_time").and_then(clock_minutes) {
         u.evening_recap_min = m;
@@ -397,6 +420,12 @@ pub fn parse(text: &str) -> Result<Settings, String> {
         if !apps.is_empty() {
             u.deep_work_apps = apps;
         }
+    }
+    if let Some(list) = v.get("distraction_apps").and_then(|x| x.as_array()) {
+        u.distraction_apps = list.iter().filter_map(|a| a.as_str()).map(|a| a.trim().to_string()).filter(|a| !a.is_empty()).take(20).collect();
+    }
+    if let Some(m) = v.get("distraction_minutes").and_then(|x| x.as_u64()).filter(|m| *m <= 120) {
+        u.distraction_minutes = m as u32;
     }
     if let Some(m) = v.get("travel_mode").and_then(|x| x.as_str()).and_then(island_core::travel::Mode::parse) {
         u.travel_mode = m;
@@ -440,6 +469,9 @@ pub fn parse(text: &str) -> Result<Settings, String> {
         s.timer_sound = Some(expand_home(f));
     }
     s.map_api_key = v.get("map_api_key").and_then(|x| x.as_str()).map(str::trim).unwrap_or("").to_string();
+    s.map_key_in_keyring = v.get(MAP_KEY_MARK).and_then(|x| x.as_bool()).unwrap_or(false);
+    s.polkit_agent = v.get("polkit_agent").and_then(|x| x.as_bool()).unwrap_or(false);
+    s.polkit_face = v.get("polkit_face").and_then(|x| x.as_str()).filter(|f| ["ask", "auto", "off"].contains(f)).unwrap_or("ask").to_string();
     s.screen = v.get("screen").and_then(|x| x.as_str()).map(str::trim).filter(|x| !x.is_empty()).unwrap_or("focused").to_string();
     if let Some(sec) = v.get("osd_seconds").and_then(|x| x.as_f64()).filter(|s| (0.5..=5.0).contains(s)) {
         u.osd_ms = (sec * 1000.0).round() as i64;
@@ -461,12 +493,12 @@ pub fn parse(text: &str) -> Result<Settings, String> {
 
 /// The options of the options page: the keys that are on or off.
 pub const BOOL_OPTIONS: &[&str] = &[
-    "show_notifications", "show_osd", "media_auto_expand", "timer_sound", "battery_alerts", "weather", "rain_alerts", "meeting_alerts", "lyrics", "lyrics_in_pill", "art_tint", "status_icons",
-    "clipboard_history", "link_cards", "progress_drop", "clock_in_pill", "hide_on_fullscreen", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "away_recap", "culprit_alerts", "travel_times", "map_dark", "follow_position", "wifi_position", "quiet_on_screen_share", "evening_weekends", "currency_rates", "watch_downloads", "ocr_screenshots",
+    "show_notifications", "show_osd", "media_auto_expand", "timer_sound", "battery_alerts", "weather", "rain_alerts", "meeting_alerts", "end_alerts", "lyrics", "lyrics_in_pill", "art_tint", "status_icons",
+    "clipboard_history", "link_cards", "progress_drop", "clock_in_pill", "hide_on_fullscreen", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "away_recap", "culprit_alerts", "travel_times", "map_dark", "follow_position", "wifi_position", "quiet_on_screen_share", "evening_weekends", "currency_rates", "watch_downloads", "ocr_screenshots", "receive_files", "keyboard_alerts",
 ];
 
 /// The numeric options: key, smallest, largest, and whether it is a whole number.
-pub const NUM_OPTIONS: &[(&str, f64, f64, bool)] = &[("notification_seconds", 2.0, 30.0, true), ("osd_seconds", 0.5, 5.0, false), ("low_battery_percent", 5.0, 50.0, true), ("meeting_lead_minutes", 1.0, 60.0, true), ("meeting_pill_minutes", 1.0, 120.0, true), ("travel_margin_minutes", 0.0, 30.0, true), ("mini_pills", 1.0, 4.0, true), ("dock_icons", 4.0, 12.0, true), ("deep_work_minutes", 0.0, 120.0, true), ("break_minutes", 0.0, 240.0, true), ("evening_recap_time", 0.0, 1425.0, true), ("morning_recap_time", 0.0, 1425.0, true), ("commute_minutes", 0.0, 240.0, true)];
+pub const NUM_OPTIONS: &[(&str, f64, f64, bool)] = &[("notification_seconds", 2.0, 30.0, true), ("osd_seconds", 0.5, 5.0, false), ("low_battery_percent", 5.0, 50.0, true), ("meeting_lead_minutes", 1.0, 60.0, true), ("meeting_pill_minutes", 1.0, 120.0, true), ("travel_margin_minutes", 0.0, 30.0, true), ("mini_pills", 1.0, 4.0, true), ("dock_icons", 4.0, 12.0, true), ("deep_work_minutes", 0.0, 120.0, true), ("break_minutes", 0.0, 240.0, true), ("evening_recap_time", 0.0, 1425.0, true), ("morning_recap_time", 0.0, 1425.0, true), ("commute_minutes", 0.0, 240.0, true), ("countdown_days", 0.0, 365.0, true), ("distraction_minutes", 0.0, 120.0, true)];
 
 /// Adds a notification rule (once): `hide` drops the notifications, otherwise they only lose their sound.
 pub fn add_filter(o: &mut serde_json::Map<String, serde_json::Value>, app: &str, content: &str, hide: bool) {
@@ -544,6 +576,14 @@ pub fn set_option(o: &mut serde_json::Map<String, serde_json::Value>, key: &str,
                 o.insert("timer_presets".into(), json!(list));
             }
         }
+        Text(t) if key == "distraction_apps" => {
+            let apps: Vec<&str> = t.split(',').map(str::trim).filter(|a| !a.is_empty()).take(20).collect();
+            if apps.is_empty() {
+                o.remove("distraction_apps");
+            } else {
+                o.insert("distraction_apps".into(), json!(apps));
+            }
+        }
         Text(t) if key == "study_hours" => {
             let week = island_core::plan::parse_week(t).ok_or("study_hours is seven days, Monday first, such as 09:00-17:00, 09:00-13:00+14:00-18:00 or off 09:00-17:00, separated by commas")?;
             o.insert("study_hours".into(), json!(week.iter().map(|d| d.text()).collect::<Vec<_>>()));
@@ -563,15 +603,12 @@ pub fn set_option(o: &mut serde_json::Map<String, serde_json::Value>, key: &str,
                 return Err("map_tile_url is a preset (osm, esri-dark, esri-light, esri-street, opentopomap, cyclosm, carto-dark) or an https URL with {z}, {x} and {y}".into());
             }
         }
-        Text(t) if key == "map_api_key" => {
+        Text(t) if key == "polkit_face" => {
             let t = t.trim();
-            if t.is_empty() {
-                o.remove("map_api_key");
-            } else if t.chars().any(char::is_whitespace) || t.len() > 200 {
-                return Err("an API key has no spaces".into());
-            } else {
-                o.insert("map_api_key".into(), json!(t));
+            if !["off", "ask", "auto"].contains(&t) {
+                return Err("polkit_face is off, ask or auto".into());
             }
+            o.insert("polkit_face".into(), json!(t));
         }
         Text(t) if key == "screen" => {
             let t = t.trim();
@@ -584,6 +621,103 @@ pub fn set_option(o: &mut serde_json::Map<String, serde_json::Value>, key: &str,
         _ => return Err(format!("{key}: not an option, or the wrong kind of value")),
     }
     Ok(())
+}
+
+/// Says in the file that the map key is in the keyring; the key itself is never written.
+const MAP_KEY_MARK: &str = "map_api_key_in_keyring";
+
+/// An API key as typed, trimmed; empty means "remove it".
+pub fn check_api_key(t: &str) -> Result<&str, String> {
+    let t = t.trim();
+    if t.chars().any(char::is_whitespace) || t.len() > 200 {
+        return Err("an API key has no spaces".into());
+    }
+    Ok(t)
+}
+
+pub fn mark_map_key(o: &mut serde_json::Map<String, serde_json::Value>, stored: bool) {
+    o.remove("map_api_key");
+    if stored {
+        o.insert(MAP_KEY_MARK.into(), true.into());
+    } else {
+        o.remove(MAP_KEY_MARK);
+    }
+}
+
+/// A secret found written in the file: where it goes in the keyring, and its value.
+fn plain_secrets(o: &serde_json::Map<String, serde_json::Value>) -> Vec<(String, String)> {
+    use crate::services::secrets;
+    let mut out: Vec<(String, String)> = vec![];
+    for c in o.get("calendars").and_then(|c| c.as_array()).into_iter().flatten() {
+        let Some(CalendarKind::CalDav { server, user, password, .. }) = CalendarSource::from_json(c).map(|s| s.kind) else { continue };
+        let account = secrets::caldav_account(&server, &user);
+        // an account listed twice has one place in the keyring: the first password is moved, another stays where it is
+        if !password.is_empty() && !out.iter().any(|(a, _)| *a == account) {
+            out.push((account, password));
+        }
+    }
+    if let Some(k) = o.get("map_api_key").and_then(|k| k.as_str()).map(str::trim).filter(|k| !k.is_empty()) {
+        out.push((secrets::MAP_KEY.to_string(), k.to_string()));
+    }
+    out
+}
+
+/// How many passwords and keys are written in the file in clear (for `doctor`).
+pub fn plain_secret_count() -> usize {
+    let text = path().and_then(|p| std::fs::read_to_string(p).ok());
+    text.and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()).and_then(|v| v.as_object().map(|o| plain_secrets(o).len())).unwrap_or(0)
+}
+
+/// Moves the passwords and keys written in the file into the keyring (`store` returns Ok only once it holds one). A
+/// secret leaves the file only after that, and only if the file still says the same. Returns how many were moved; the
+/// error is the first the keyring gave.
+pub fn migrate_secrets_at(path: &std::path::Path, mut store: impl FnMut(&str, &str) -> Result<(), String>) -> Result<usize, String> {
+    use crate::services::secrets;
+    let Some(serde_json::Value::Object(now)) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()) else { return Ok(0) };
+    let (mut moved, mut problem) = (vec![], None);
+    for (account, secret) in plain_secrets(&now) {
+        match store(&account, &secret) {
+            Ok(()) => moved.push((account, secret)),
+            Err(e) => {
+                problem.get_or_insert(e);
+            }
+        }
+    }
+    if !moved.is_empty() {
+        update_at(path, |o| {
+            for c in o.get_mut("calendars").and_then(|c| c.as_array_mut()).into_iter().flatten() {
+                let Some(CalendarKind::CalDav { server, user, password, .. }) = CalendarSource::from_json(c).map(|s| s.kind) else { continue };
+                if moved.contains(&(secrets::caldav_account(&server, &user), password)) {
+                    if let Some(entry) = c.as_object_mut() {
+                        entry.remove("password");
+                    }
+                }
+            }
+            let key = o.get("map_api_key").and_then(|k| k.as_str()).map(|k| k.trim().to_string());
+            if key.is_some_and(|k| moved.contains(&(secrets::MAP_KEY.to_string(), k))) {
+                mark_map_key(o, true);
+            }
+        })?;
+    }
+    problem.map_or(Ok(moved.len()), Err)
+}
+
+pub fn migrate_secrets() -> Result<usize, String> {
+    path().map_or(Ok(0), |p| migrate_secrets_at(&p, crate::services::secrets::set))
+}
+
+/// Changes the list of calendars in the file and writes it back (the old `calendar_urls` are migrated into it).
+pub fn update_calendars_at(path: &std::path::Path, change: impl FnOnce(&mut Vec<CalendarSource>)) -> Result<(), String> {
+    let mut problem = None;
+    update_at(path, |o| match parse(&serde_json::Value::Object(o.clone()).to_string()) {
+        Ok(s) => {
+            let mut list = s.calendars;
+            change(&mut list);
+            set_calendars(o, &list);
+        }
+        Err(e) => problem = Some(e),
+    })?;
+    problem.map_or(Ok(()), |e| Err(e.to_string()))
 }
 
 /// Changes `config.json` in place: the keys the island does not know are kept. The file and its directory are
@@ -608,13 +742,15 @@ pub fn update_at(path: &std::path::Path, change: impl FnOnce(&mut serde_json::Ma
     let text = serde_json::to_string_pretty(&serde_json::Value::Object(obj)).map_err(|e| e.to_string())?;
     // write next to it and rename: a crash never leaves half a file
     let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, text + "\n").map_err(|e| e.to_string())?;
-    // the file can hold an account password: owner only
+    // the file holds private addresses (and a password written by hand, until it is moved): owner only, from the start
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
+    options.open(&tmp).and_then(|mut f| std::io::Write::write_all(&mut f, (text + "\n").as_bytes())).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
@@ -726,9 +862,9 @@ mod tests {
         assert_eq!(parse(r#"{"map_tile_url":"esri-street"}"#).unwrap().ui.map_tile_url, island_core::map::PRESETS[3].1);
         assert!(set_option(&mut o, "map_tile_url", &text("http://t/{z}/{x}/{y}")).is_err() && set_option(&mut o, "map_tile_url", &text("https://t/{z}/{x}")).is_err());
         assert!(o["map_tile_url"].as_str().unwrap().contains("World_Dark_Gray_Base"), "a bad one leaves the good one");
-        assert!(set_option(&mut o, "map_api_key", &text("  abc123 ")).is_ok() && o["map_api_key"] == "abc123");
-        assert!(set_option(&mut o, "map_api_key", &text("two words")).is_err());
-        set_option(&mut o, "map_api_key", &text("")).unwrap();
+        assert!(set_option(&mut o, "map_api_key", &text("abc123")).is_err(), "a key is never an option written to the file");
+        assert_eq!(check_api_key("  abc123 "), Ok("abc123"));
+        assert!(check_api_key("two words").is_err());
         set_option(&mut o, "map_tile_url", &text("")).unwrap();
         assert!(o.is_empty(), "empty means back to the default");
         assert_eq!(parse(r#"{"map_api_key":" k "}"#).unwrap().map_api_key, "k");
@@ -790,11 +926,10 @@ mod tests {
         assert_eq!(l.len(), 2);
         assert_eq!(l[0].color, Some(PALETTE[0]));
         assert_eq!(l[1].color, Some(PALETTE[1]));
-        add_icloud(&mut l, "me@icloud.com", "one");
-        add_icloud(&mut l, "me@icloud.com", "two");
-        add_icloud(&mut l, "other@icloud.com", "x");
+        add_icloud(&mut l, "me@icloud.com");
+        add_icloud(&mut l, "me@icloud.com");
+        add_icloud(&mut l, "other@icloud.com");
         assert_eq!(l.iter().filter(|c| c.is_icloud()).count(), 2, "one per Apple ID");
-        assert!(matches!(&l.iter().find(|c| c.detail().contains("me@")).unwrap().kind, CalendarKind::CalDav { password, .. } if password == "two"), "the newer password replaced the old");
         assert_eq!(l.iter().find(|c| c.is_icloud()).unwrap().color, None, "an account keeps its calendars' own colours");
     }
 
@@ -931,12 +1066,60 @@ mod tests {
         assert_eq!(list[1].detail(), "public holidays · IT");
         // a generic CalDAV account replaces the same server and user, and keeps iCloud apart
         let mut l = vec![];
-        add_caldav(&mut l, "https://cloud.example.org/remote.php/dav/", "me", "old");
-        add_caldav(&mut l, "https://cloud.example.org/remote.php/dav/", "me", "new");
-        add_icloud(&mut l, "me@icloud.com", "p");
+        add_caldav(&mut l, "https://cloud.example.org/remote.php/dav/", "me");
+        add_caldav(&mut l, "https://cloud.example.org/remote.php/dav/", "me");
+        add_icloud(&mut l, "me@icloud.com");
         assert_eq!(l.len(), 2);
-        assert!(matches!(&l[0].kind, CalDav { password, .. } if password == "new") && l[1].is_icloud());
+        assert!(matches!(&l[0].kind, CalDav { password, .. } if password.is_empty()) && l[1].is_icloud());
         assert_eq!(l[0].detail(), "cloud.example.org · me");
     }
-}
 
+    #[test]
+    fn secrets_written_by_hand_move_to_the_keyring_and_stay_put_when_it_refuses() {
+        let dir = std::env::temp_dir().join(format!("open-island-migrate-{}", std::process::id()));
+        let p = dir.join("config.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&p, r#"{"mine":1,"map_api_key":"k-1","calendars":[
+            {"type":"icloud","name":"iCloud","user":"me@icloud.com","password":"abcd"},
+            {"type":"caldav","server":"https://s/","user":"me","password":"stuck"},
+            {"url":"https://x/y.ics"}]}"#).unwrap();
+        let mut kept = vec![];
+        let r = migrate_secrets_at(&p, |account, secret| {
+            if secret == "stuck" {
+                return Err("locked".into());
+            }
+            kept.push((account.to_string(), secret.to_string()));
+            Ok(())
+        });
+        assert_eq!(r, Err("locked".to_string()));
+        let icloud = crate::services::secrets::caldav_account(ICLOUD_SERVER, "me@icloud.com");
+        assert_eq!(kept, [(icloud, "abcd".to_string()), ("map-api-key".to_string(), "k-1".to_string())]);
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains("abcd") && !text.contains("k-1"), "{text}");
+        assert!(text.contains("stuck") && text.contains("\"mine\": 1") && text.contains("https://x/y.ics"), "the rest is as it was: {text}");
+        let s = parse(&text).unwrap();
+        assert!(s.map_key_in_keyring && s.calendars.len() == 3 && s.calendars[0].name == "iCloud");
+        // the next time the keyring answers, the last one goes too; after that the file is not touched
+        assert_eq!(migrate_secrets_at(&p, |_, _| Ok(())), Ok(1));
+        assert!(!std::fs::read_to_string(&p).unwrap().contains("stuck"));
+        assert_eq!(migrate_secrets_at(&p, |_, _| panic!("nothing left to move")), Ok(0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_password_agent_is_off_unless_the_file_says_so_and_nothing_else_can_switch_it_on() {
+        assert!(!parse("{}").unwrap().polkit_agent);
+        assert!(!parse(r#"{"polkit_agent":"yes"}"#).unwrap().polkit_agent);
+        assert!(parse(r#"{"polkit_agent":true}"#).unwrap().polkit_agent);
+        let mut o = serde_json::Map::new();
+        assert!(set_option(&mut o, "polkit_agent", &island_ui::model::OptionValue::Bool(true)).is_err() && o.is_empty());
+        assert!(set_option(&mut o, "polkit_face", &island_ui::model::OptionValue::Text("always".into())).is_err() && o.is_empty());
+        for good in ["off", "ask", "auto"] {
+            set_option(&mut o, "polkit_face", &island_ui::model::OptionValue::Text(good.into())).unwrap();
+            assert_eq!(parse(&serde_json::Value::Object(o.clone()).to_string()).unwrap().polkit_face, good);
+        }
+        assert_eq!(parse("{}").unwrap().polkit_face, "ask");
+        assert_eq!(parse(r#"{"polkit_face":"auto"}"#).unwrap().polkit_face, "auto");
+        assert_eq!(parse(r#"{"polkit_face":"always"}"#).unwrap().polkit_face, "ask");
+    }
+}

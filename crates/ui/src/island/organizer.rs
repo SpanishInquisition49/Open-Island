@@ -13,6 +13,8 @@ pub(crate) enum Source {
     Deadline(usize),
 }
 
+/// The most events already over that a search shows.
+const PAST_HITS: usize = 3;
 /// The days kept in the study log.
 const LOG_DAYS: i64 = 120;
 /// How far ahead the calendars are read: past it a day is taken to be like the same weekday of the last week known.
@@ -40,6 +42,8 @@ pub(crate) struct StudyRow {
     pub due: i64,
     /// Only an indication, from the credits: no hours were said for it.
     pub suggested: bool,
+    /// The name a study session started on this row is logged under.
+    pub session: String,
 }
 
 /// What the Plan page shows.
@@ -72,6 +76,8 @@ pub(crate) struct DeadlineRow {
     /// Minutes of it that do not fit in the free time before the day.
     pub short_min: u32,
     pub cfu: u32,
+    /// Where the study of the last days leads (only for one with hours still to do).
+    pub pace: Option<plan::Pace>,
 }
 
 impl Island {
@@ -449,9 +455,10 @@ impl Island {
         // what was studied today counts where `log_study` counted it
         let (mut done, mut done_weighted) = (vec![0; loads.len()], vec![0; weighted.len()]);
         for (_, course, min) in self.study_log.iter().filter(|(d, _, _)| *d == today) {
-            if let Some(i) = plan::load_for_course(&loads, course) {
+            let Some(to) = self.study_target(&sources, course, today) else { continue };
+            if let Some(i) = sources.iter().position(|(s, _)| *s == to) {
                 done[i] += min;
-            } else if let Some(i) = self.deadline_for(course, today).and_then(|n| weighted.iter().position(|w| *w == n)) {
+            } else if let Some(i) = weighted.iter().position(|w| Source::Deadline(*w) == to) {
                 done_weighted[i] += min;
             }
         }
@@ -467,7 +474,7 @@ impl Island {
     }
 
     /// The stretches of a day in which one studies (two around a lunch pause).
-    fn study_windows(&self, day: i64) -> Vec<(i64, i64)> {
+    pub(super) fn study_windows(&self, day: i64) -> Vec<(i64, i64)> {
         self.study_hours(day).windows(self.day_start_ms(day))
     }
 
@@ -488,6 +495,23 @@ impl Island {
         self.free_in(&windows).saturating_sub(done).min(self.free_in(&ahead))
     }
 
+    /// What the clock pill counts down to: the nearest deadline within `countdown_days` ("AE · 19 d"), and whether it
+    /// is close (three days or less).
+    pub(crate) fn countdown(&self) -> Option<(String, bool)> {
+        let (today, within) = (self.today_day(), i64::from(self.cfg.countdown_days));
+        let d = self.deadlines.iter().filter(|d| within > 0 && (0..=within).contains(&(d.day - today))).min_by_key(|d| d.day)?;
+        let mut name: String = d.text.chars().take(16).collect();
+        if d.text.chars().count() > 16 {
+            name = format!("{}…", name.chars().take(15).collect::<String>());
+        }
+        let left = match d.day - today {
+            0 => "today".to_string(),
+            1 => "tomorrow".to_string(),
+            n => format!("{n} d"),
+        };
+        Some((format!("{name} · {left}"), d.day - today <= 3))
+    }
+
     /// The command that keeps the study hours as they are now.
     pub(super) fn save_study_week(&self) -> Command {
         Command::SetOption { key: "study_hours".into(), value: OptionValue::Text(plan::week_text(&self.cfg.study_week)) }
@@ -501,12 +525,13 @@ impl Island {
     fn study_rows(&self, outlook: &Outlook, day: i64) -> Vec<StudyRow> {
         let Ok(offset) = usize::try_from(day - self.today_day()) else { return vec![] };
         let planned = outlook.plan.days.get(offset).into_iter().flatten().map(|(l, min)| {
-            let load = &outlook.sources[*l].1;
-            StudyRow { what: load.label.clone(), min: *min, due: load.due, suggested: false }
+            let (source, load) = &outlook.sources[*l];
+            StudyRow { what: load.label.clone(), min: *min, due: load.due, suggested: false, session: self.session_name(&outlook.sources, *source) }
         });
         let suggested = outlook.suggested.get(offset).into_iter().flatten().map(|(e, min)| {
-            let d = &self.deadlines[outlook.weighted[*e]];
-            StudyRow { what: d.text.clone(), min: *min, due: d.day, suggested: true }
+            let n = outlook.weighted[*e];
+            let d = &self.deadlines[n];
+            StudyRow { what: d.text.clone(), min: *min, due: d.day, suggested: true, session: self.session_name(&outlook.sources, Source::Deadline(n)) }
         });
         let mut rows: Vec<StudyRow> = planned.chain(suggested).collect();
         rows.sort_by_key(|r| r.due);
@@ -542,7 +567,7 @@ impl Island {
             .filter(|(_, d)| d.day >= today)
             .map(|(index, d)| {
                 let planned = outlook.sources.iter().position(|(s, _)| *s == Source::Deadline(index));
-                DeadlineRow { index, name: d.text.clone(), day: d.day, est_min: d.est_min, done_min: d.done_min, left_min: d.est_min.saturating_sub(d.done_min), short_min: planned.map_or(0, |l| outlook.plan.short[l]), cfu: d.cfu }
+                DeadlineRow { index, name: d.text.clone(), day: d.day, est_min: d.est_min, done_min: d.done_min, left_min: d.est_min.saturating_sub(d.done_min), short_min: planned.map_or(0, |l| outlook.plan.short[l]), cfu: d.cfu, pace: self.pace_of(&outlook.sources, index) }
             })
             .collect();
         PlanView {
@@ -621,9 +646,13 @@ impl Island {
         (total > 0).then(|| format!("Study {}: {}", task::fmt_minutes(total), plan.iter().map(|(l, m)| format!("{l} {}", task::fmt_minutes(*m))).collect::<Vec<_>>().join(", ")))
     }
 
-    /// The deadline a study of `course` counts for: the nearest one of it that had not passed on `day`.
-    fn deadline_for(&self, course: &str, day: i64) -> Option<usize> {
-        self.deadlines.iter().enumerate().filter(|(_, d)| d.day >= day && plan::course_matches(course, &d.course, &d.text)).min_by_key(|(_, d)| d.day).map(|(i, _)| i)
+    /// The deadline a study of `course` counts for, among those that had not passed on `day`: the one named exactly so,
+    /// else the nearest of that course.
+    pub(super) fn deadline_for(&self, course: &str, day: i64) -> Option<usize> {
+        let name = course.trim().to_lowercase();
+        let ahead = || self.deadlines.iter().enumerate().filter(move |(_, d)| d.day >= day);
+        let exact = ahead().filter(|(_, d)| !name.is_empty() && d.text.to_lowercase() == name).min_by_key(|(_, d)| d.day);
+        exact.or_else(|| ahead().filter(|(_, d)| plan::course_matches(course, &d.course, &d.text)).min_by_key(|(_, d)| d.day)).map(|(i, _)| i)
     }
 
     /// The minutes in the study log that count for the deadline at this position.
@@ -648,8 +677,7 @@ impl Island {
         self.study_log.push((today, course.trim().to_string(), minutes));
         self.study_log.retain(|(d, _, _)| *d > today - LOG_DAYS);
         let loads = self.load_sources();
-        let all: Vec<Load> = loads.iter().map(|(_, l)| l.clone()).collect();
-        let to = plan::load_for_course(&all, course).map(|i| loads[i].0).or_else(|| self.deadline_for(course, today).map(Source::Deadline));
+        let to = self.study_target(&loads, course, today);
         let name = if course.trim().is_empty() { "Study time".to_string() } else { course.trim().to_string() };
         let body = match to {
             Some(Source::Task(n)) => {
@@ -714,12 +742,13 @@ impl Island {
 
     /// What the island itself knows about some words: events, tasks, deadlines, pins.
     fn local_hits(&self, query: &str) -> Vec<Hit> {
-        let off = self.data.utc_offset_secs;
-        let mut out = vec![];
-        for (_, e) in self.data.events.iter().enumerate().filter(|(_, e)| plan::matches(&format!("{} {} {}", e.title, e.location, e.calendar), query)) {
-            let t = crate::clock::civil(e.start_ms, off);
-            out.push(Hit { kind: HitKind::Event, title: e.title.clone(), detail: format!("{} · {}", island_core::quick::fmt_date((t.year as i64, t.month as i64, t.day as i64)), if e.all_day { "all day".into() } else { t.hhmm() }), target: e.url.clone().unwrap_or_default() });
-        }
+        let hit = |e: &island_core::calendar::Event| {
+            let t = crate::clock::civil(e.start_ms, self.offset_at(e.start_ms));
+            Hit { kind: HitKind::Event, title: e.title.clone(), detail: format!("{} · {}", island_core::quick::fmt_date((t.year as i64, t.month as i64, t.day as i64)), if e.all_day { "all day".into() } else { t.hhmm() }), target: e.url.clone().unwrap_or_default() }
+        };
+        // what is still to come leads; of what is over, only the latest few, after the tasks, deadlines and pins
+        let (coming, over): (Vec<_>, Vec<_>) = self.data.events.iter().filter(|e| plan::matches(&format!("{} {} {}", e.title, e.location, e.calendar), query)).partition(|e| e.end_ms > self.now);
+        let mut out: Vec<Hit> = coming.into_iter().map(hit).collect();
         let today = self.today_day();
         for t in self.todos.iter().filter(|t| plan::matches(&format!("{} {}", t.text, t.course), query)) {
             out.push(Hit { kind: HitKind::Task, title: t.text.clone(), detail: t.due.map_or("to do".into(), |d| task::due_label(d, today)), target: String::new() });
@@ -730,6 +759,7 @@ impl Island {
         for p in self.pins.iter().filter(|p| plan::matches(p, query)) {
             out.push(Hit { kind: HitKind::Pin, title: p.clone(), detail: "pinned".into(), target: p.clone() });
         }
+        out.extend(over.into_iter().rev().take(PAST_HITS).map(hit));
         out
     }
 

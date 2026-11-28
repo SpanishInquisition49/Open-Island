@@ -157,7 +157,7 @@ impl Cards {
 
 /// Whether two notifications would be drawn the same.
 fn same_words(a: &Incoming, b: &Incoming) -> bool {
-    a.id == b.id && a.app == b.app && a.summary == b.summary && a.body == b.body && a.kind == b.kind && a.tint == b.tint && a.icon == b.icon && a.stay == b.stay && a.actions == b.actions && a.ring == b.ring
+    a.id == b.id && a.app == b.app && a.summary == b.summary && a.body == b.body && a.kind == b.kind && a.tint == b.tint && a.icon == b.icon && a.stay == b.stay && a.actions == b.actions && a.ring == b.ring && a.liquid == b.liquid
 }
 
 impl Island {
@@ -219,7 +219,9 @@ impl Island {
         // an inline reply is typed in the pill: its card goes back in meanwhile
         let replying = self.reply.as_ref().map(|r| r.id);
         let front = self.notif.iter().map(|n| (n, self.notif_group));
-        let wanted: Vec<(Incoming, u32)> = front.chain(self.below.iter().map(|b| (&b.n, b.group))).filter(|(n, _)| replying != Some(n.id)).map(|(n, g)| (n.clone(), g)).collect();
+        // no card while a password is asked: nothing beside it that could be taken for part of it, or pressed
+        let asking = self.auth.is_some();
+        let wanted: Vec<(Incoming, u32)> = front.chain(self.below.iter().map(|b| (&b.n, b.group))).filter(|(n, _)| !asking && replying != Some(n.id)).map(|(n, g)| (n.clone(), g)).collect();
         // from the bottom up, so that each goes into what stays above it
         for i in (0..self.cards.stack.len()).rev() {
             let c = &self.cards.stack[i];

@@ -18,6 +18,9 @@ pub enum Cmd {
     Pomodoro,
     Stopwatch,
     Dnd(bool),
+    /// Do not disturb that ends by itself (`dnd 1h`, `dnd until 18:00`, `dnd until class ends`): after `secs` seconds,
+    /// or, with None, when what is on in the calendar ends.
+    DndFor { secs: Option<i64> },
     Focus { minutes: u32 },
     /// Remind after `secs` seconds (a clock time has already been turned into a delay).
     Remind { secs: i64, text: String },
@@ -67,6 +70,16 @@ pub enum Cmd {
     Unbring(String),
     /// Read the text of the image on the clipboard and copy it (`ocr`).
     Ocr,
+    /// What to do with a second screen (`monitor`): its card again.
+    Screens,
+    /// Mute (`mic off`) or unmute (`mic on`) the microphone, or toggle it (`mic`): Some(true) is muted.
+    Mic(Option<bool>),
+    /// A reminder tied to a place (`remind me when i get home buy milk`).
+    RemindAt { place: String, leaving: bool, text: String },
+    /// How many days ahead the pill counts down to a deadline (`countdown 45`, `countdown off`: 0).
+    Countdown(u32),
+    /// Save where the machine is now under a name (`place uni`), or forget it (`unplace uni`).
+    Place { name: String, forget: bool },
     /// Open a page by name (`go phone`, `go meteo`).
     Go(crate::face::Page),
     /// A note that stays on the Today page until it is removed (`pin ssh 10.0.0.5`); a click there copies it.
@@ -77,10 +90,13 @@ pub enum Cmd {
     Gen(crate::quick::Gen),
     /// A sum or a conversion: the text to show and to copy.
     Value(String),
+    /// An emoji (`emoji fire`) or a symbol (`simbolo freccia`) to copy: the bar shows what it finds.
+    Pick { symbols: bool, query: String },
 }
 
 /// Examples shown, one set after the other, while the bar is empty: what it can do.
-pub const HINTS: [&str; 9] = [
+pub const HINTS: [&str; 10] = [
+    "emoji fire · emoji cuore · symbol implies · simbolo freccia",
     "10m tea · remind at 9pm call mom · todo buy milk",
     "pw 24 · roll 2d6 · uuid · coin · random 1-100",
     "days until 3 feb · today + 45 days · week",
@@ -99,7 +115,7 @@ pub fn usage(line: &str) -> Option<&'static str> {
         "remind" | "reminder" | "ricorda" | "ricordami" | "promemoria" | "avvisami" => "remind 20m | at 9pm | tomorrow 8:30 | friday 18 · what to remember",
         "timer" => "timer 25m [name]  (a bare number is minutes)",
         "focus" | "studio" => "focus 45  (minutes, or 2h)",
-        "dnd" | "silenzio" => "dnd on | dnd off",
+        "dnd" | "silenzio" => "dnd on | off | 1h | until 18:00 | until class ends",
         "todo" | "task" | "compito" => "todo <what> [due fri] [#course] [~2h] [every mon]",
         "event" | "evento" | "appuntamento" => "event [fri | 3 feb] 15[-16:30] [for 1h] <title>",
         "move" | "sposta" | "postpone" | "rinvia" => "move <words> to <day> [15[-16:30]]  (a task's day, or an event)",
@@ -110,6 +126,7 @@ pub fn usage(line: &str) -> Option<&'static str> {
         "find" | "cerca" | "search" | "trova" => "find <words>: events, tasks, notes, files",
         "log" | "studied" | "studiato" => "log 90m [course]  (study time done)",
         "bring" | "porta" => "bring <thing> [for <course>]  ·  unbring <thing | all>",
+        "countdown" | "conto" => "countdown <days, 1-365> | countdown off  (beside the clock)",
         "go" | "vai" | "apri" => "go <page>: phone, today, map, weather, calendar, system, sound, options...",
         "pin" | "appunta" => "pin <text to keep on Today>  ·  unpin [text | all]",
         "split" | "dividi" => "split 84.5 by 3",
@@ -126,6 +143,8 @@ pub fn preview(cmd: &Cmd) -> String {
         Cmd::Pomodoro => "Start a Pomodoro".into(),
         Cmd::Stopwatch => "Start the stopwatch".into(),
         Cmd::Dnd(on) => format!("Do not disturb {}", if *on { "on" } else { "off" }),
+        Cmd::DndFor { secs: Some(secs) } => format!("Do not disturb for {}", human_delay(*secs)),
+        Cmd::DndFor { secs: None } => "Do not disturb until what is on ends".into(),
         Cmd::Focus { minutes } => format!("Focus mode · {minutes} min"),
         Cmd::Remind { secs, text } => format!("Remind in {} · {text}", human_delay(*secs)),
         Cmd::UntilNext => "Timer until 5 min before your next event".into(),
@@ -162,12 +181,28 @@ pub fn preview(cmd: &Cmd) -> String {
         Cmd::Bring { text, course } => format!("Bring · {text} · for {course}"),
         Cmd::Unbring(t) => format!("Stop bringing · {}", if t.is_empty() { "the newest" } else { t }),
         Cmd::Ocr => "Read the text of the image on the clipboard and copy it".into(),
+        Cmd::Screens => "What to do with the other screen".into(),
+        Cmd::RemindAt { place, leaving, text } => {
+            let w = crate::places::Waiting { place: place.clone(), leaving: *leaving, text: String::new(), armed: false };
+            format!("Remind {} · {text}", w.when())
+        }
+        Cmd::Countdown(0) => "No countdown beside the clock".into(),
+        Cmd::Countdown(days) => format!("Count down to deadlines within {days} days"),
+        Cmd::Place { name, forget: false } => format!("Save where you are now as \"{name}\""),
+        Cmd::Place { name, forget: true } => format!("Forget the place \"{name}\""),
+        Cmd::Mic(Some(true)) => "Mute the microphone".into(),
+        Cmd::Mic(Some(false)) => "Unmute the microphone".into(),
+        Cmd::Mic(None) => "Mute or unmute the microphone".into(),
         Cmd::Go(p) => format!("Go to {}", p.label()),
         Cmd::Pin(t) => format!("Pin to Today · {t}"),
         Cmd::Unpin(t) if t.is_empty() => "Unpin the newest".into(),
         Cmd::Unpin(t) => format!("Unpin · {t}"),
         Cmd::Gen(g) => crate::quick::preview_gen(g),
         Cmd::Value(v) => format!("{v}   (Enter copies)"),
+        Cmd::Pick { symbols, query } => match crate::emoji::search(*symbols, query).is_empty() {
+            true => format!("No {} by that name", if *symbols { "symbol" } else { "emoji" }),
+            false => "Enter copies · Tab: the next one".into(),
+        },
     }
 }
 
@@ -291,8 +326,28 @@ pub fn parse_ctx(line: &str, ctx: &Ctx) -> Option<Cmd> {
             return Some(Cmd::Bring { text, course });
         }
         "unbring" | "nonportare" => return Some(Cmd::Unbring(line.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
+        "monitor" | "screens" | "schermi" if words.len() == 1 => return Some(Cmd::Screens),
         "ocr" | "leggi" if words.len() == 1 || words.get(1) == Some(&"testo") => return Some(Cmd::Ocr),
+        "countdown" | "conto" if words.len() == 2 => {
+            let word = words[1].to_lowercase();
+            let days = if matches!(word.as_str(), "off" | "no") { Some(0) } else { word.trim_end_matches(['d', 'g']).parse().ok().filter(|d| *d <= 365) };
+            return days.map(Cmd::Countdown);
+        }
+        "place" | "luogo" if words.len() == 2 => return Some(Cmd::Place { name: crate::places::place_name(words[1]), forget: false }),
+        "unplace" if words.len() == 2 => return Some(Cmd::Place { name: crate::places::place_name(words[1]), forget: true }),
+        "mic" | "microfono" if words.len() <= 2 => {
+            return match words.get(1).copied() {
+                None | Some("toggle") => Some(Cmd::Mic(None)),
+                Some("off" | "mute" | "muto" | "spento") => Some(Cmd::Mic(Some(true))),
+                Some("on" | "unmute" | "acceso") => Some(Cmd::Mic(Some(false))),
+                _ => None,
+            }
+        }
         "go" | "vai" | "apri" if words.len() >= 2 => return crate::face::page_by_name(&words[1..].join(" ")).map(Cmd::Go),
+        "emoji" | "symbol" | "simbolo" | "sym" => {
+            let query = line.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
+            return Some(Cmd::Pick { symbols: first != "emoji", query });
+        }
         "pin" | "appunta" if words.len() >= 2 => return Some(Cmd::Pin(line.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
         "unpin" | "stacca" => return Some(Cmd::Unpin(line.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))),
         "pomodoro" | "pomo" if words.len() == 1 => return Some(Cmd::Pomodoro),
@@ -300,9 +355,9 @@ pub fn parse_ctx(line: &str, ctx: &Ctx) -> Option<Cmd> {
         "stopwatch" | "cronometro" | "sw" => return Some(Cmd::Stopwatch),
         "dnd" | "silenzio" => {
             return match words.get(1).copied() {
-                Some("on" | "si" | "sì") | None => Some(Cmd::Dnd(true)),
-                Some("off" | "no") => Some(Cmd::Dnd(false)),
-                _ => None,
+                Some("on" | "si" | "sì") | None if words.len() <= 2 => Some(Cmd::Dnd(true)),
+                Some("off" | "no") if words.len() == 2 => Some(Cmd::Dnd(false)),
+                _ => dnd_span(&words[1..], local_secs),
             }
         }
         "focus" | "studio" => {
@@ -319,6 +374,12 @@ pub fn parse_ctx(line: &str, ctx: &Ctx) -> Option<Cmd> {
                 // remind me to ... in 20m / remind me in 20m ...
                 if matches!(rest.first(), Some(&("me" | "mi"))) {
                     rest = &rest[1..];
+                }
+                // "when i get home buy milk": a place instead of a time
+                if let Some((place, leaving, used)) = crate::places::parse(rest) {
+                    let skip = words.len() - rest.len() + used;
+                    let text = label_after(line, skip);
+                    return (!text.is_empty()).then_some(Cmd::RemindAt { place, leaving, text });
                 }
                 if matches!(rest.first(), Some(&("in" | "tra" | "fra" | "to" | "di"))) && rest.get(1).is_some_and(|_| delay_or_clock(&rest[1..], local_secs, weekday).is_some()) {
                     rest = &rest[1..];
@@ -578,6 +639,31 @@ fn split(words: &[&str]) -> Option<String> {
 /// A duration that needs a unit (`10m`, `1h30m`, `20 minutes`): seconds and how many words it used.
 fn take_duration(words: &[&str]) -> Option<(i64, usize)> {
     take(words, false)
+}
+
+/// How long a do not disturb is to last: `1h`, `for 30m`, `45` (minutes), `until 18:00`, `fino alle 18`, `until class
+/// ends`, `fino a fine lezione`.
+fn dnd_span(words: &[&str], local_secs: i64) -> Option<Cmd> {
+    let mut rest = words;
+    if matches!(rest.first(), Some(&("for" | "per"))) {
+        rest = &rest[1..];
+    }
+    if matches!(rest.first(), Some(&("until" | "till" | "fino"))) {
+        rest = &rest[1..];
+        while matches!(rest.first(), Some(&("a" | "al" | "alla" | "alle" | "the" | "at"))) {
+            rest = &rest[1..];
+        }
+        let event = |w: &&str| matches!(*w, "end" | "ends" | "fine" | "class" | "lesson" | "lecture" | "lezione" | "meeting" | "riunione" | "event" | "evento");
+        if !rest.is_empty() && rest.iter().all(|w| event(w) || matches!(*w, "of" | "della" | "di" | "the" | "of-the")) {
+            return Some(Cmd::DndFor { secs: None });
+        }
+        return match rest {
+            [at] => clock_delay(at, local_secs, true).map(|secs| Cmd::DndFor { secs: Some(secs) }),
+            _ => None,
+        };
+    }
+    let (secs, used) = take_duration_bare(rest)?;
+    (used == rest.len() && (60..=7 * 86_400).contains(&secs)).then_some(Cmd::DndFor { secs: Some(secs) })
 }
 
 /// A duration where a bare number counts as minutes (`timer 25`).
@@ -906,6 +992,26 @@ mod tests {
         assert_eq!(p("dnd on"), Some(Cmd::Dnd(true)));
         assert_eq!(p("dnd off"), Some(Cmd::Dnd(false)));
         assert_eq!(p("dnd maybe"), None);
+        let at = |place: &str, leaving: bool, text: &str| Some(Cmd::RemindAt { place: place.into(), leaving, text: text.into() });
+        assert_eq!(p("remind me when i get home Buy milk"), at("home", false, "Buy milk"));
+        assert_eq!(p("ricordami quando esco da uni chiamare Anna"), at("uni", true, "chiamare Anna"));
+        assert_eq!(p("remind me when i get home"), None, "nothing to remember");
+        assert!(matches!(p("remind at 9pm call mom"), Some(Cmd::Remind { .. })));
+        assert_eq!((p("place uni"), p("luogo Casa"), p("unplace uni")), (Some(Cmd::Place { name: "uni".into(), forget: false }), Some(Cmd::Place { name: "home".into(), forget: false }), Some(Cmd::Place { name: "uni".into(), forget: true })));
+        assert_eq!((p("countdown 45"), p("conto 10g"), p("countdown off"), p("countdown 400"), p("countdown soon")), (Some(Cmd::Countdown(45)), Some(Cmd::Countdown(10)), Some(Cmd::Countdown(0)), None, None));
+        assert_eq!((p("mic"), p("mic off"), p("microfono on"), p("mic check")), (Some(Cmd::Mic(None)), Some(Cmd::Mic(Some(true))), Some(Cmd::Mic(Some(false))), None));
+        let timed = |secs: i64| Some(Cmd::DndFor { secs: Some(secs) });
+        assert_eq!(p("dnd 1h"), timed(3600));
+        assert_eq!(p("dnd for 30m"), timed(1800));
+        assert_eq!(p("silenzio per 45"), timed(45 * 60));
+        assert_eq!(parse("dnd until 18:00", 17 * 3600), timed(3600));
+        assert_eq!(parse("silenzio fino alle 18:30", 17 * 3600), timed(5400));
+        for line in ["dnd until class ends", "dnd until end of the lecture", "silenzio fino a fine lezione", "dnd until the meeting ends"] {
+            assert_eq!(p(line), Some(Cmd::DndFor { secs: None }), "{line}");
+        }
+        for bad in ["dnd 1h tea", "dnd until", "dnd until tea", "dnd 5s", "dnd on please", "dnd off now"] {
+            assert_eq!(p(bad), None, "{bad}");
+        }
         assert_eq!(p("focus 45"), Some(Cmd::Focus { minutes: 45 }));
         assert_eq!(p("focus 2h"), Some(Cmd::Focus { minutes: 120 }));
         assert_eq!(p("focus"), Some(Cmd::Focus { minutes: 25 }));

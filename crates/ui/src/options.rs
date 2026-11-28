@@ -31,10 +31,11 @@ pub fn toggles(tab: usize) -> &'static [(&'static str, &'static str)] {
             ("rain_alerts", "Rain alerts"),
             ("culprit_alerts", "Heavy program alerts"),
             ("ocr_screenshots", "Text from screenshots"),
+            ("keyboard_alerts", "Keyboard changes"),
         ],
         2 => &[("quiet_in_meetings", "Quiet in meetings"), ("quiet_on_mic", "Quiet on a call"), ("quiet_on_screen_share", "Quiet when sharing"), ("away_recap", "Recap when back")],
-        3 => &[("travel_times", "Travel times"), ("evening_weekends", "Cards on weekends"), ("link_cards", "Copied link cards")],
-        4 => &[("weather", "Weather"), ("follow_position", "Follow my position"), ("wifi_position", "Precise position from Wi-Fi"), ("currency_rates", "Currency rates")],
+        3 => &[("travel_times", "Travel times"), ("evening_weekends", "Cards on weekends"), ("link_cards", "Copied link cards"), ("end_alerts", "Event ending")],
+        4 => &[("weather", "Weather"), ("follow_position", "Follow my position"), ("wifi_position", "Precise position from Wi-Fi"), ("currency_rates", "Currency rates"), ("receive_files", "Receive files")],
         5 => &[("media_auto_expand", "Open on a new track"), ("lyrics", "Synced lyrics"), ("lyrics_in_pill", "Lyrics in the pill"), ("art_tint", "Tint from the cover")],
         _ => &[],
     }
@@ -49,6 +50,8 @@ pub fn describe(key: &str) -> &'static str {
         "hide_on_fullscreen" => "Slide the island away while a window is fullscreen",
         "ocr_screenshots" => "A screenshot card offers to copy the text in the picture",
         "watch_downloads" => "Show browser downloads as they come (reads the download folder)",
+        "receive_files" => "LocalSend: nearby devices can send files, you accept each one (Linux)",
+        "keyboard_alerts" => "Say when the keyboard layout or Caps Lock changes (Linux)",
         "progress_drop" => "A drop beside the pill: it fills with a job, drains with a countdown",
         "link_cards" => "Offer to open a copied link, address or e-mail (needs clipboard history)",
         "currency_rates" => "Fetch the ECB daily rates (20 usd in eur in the command bar)",
@@ -61,6 +64,7 @@ pub fn describe(key: &str) -> &'static str {
         "show_osd" => "Show a bar when the volume or the brightness changes",
         "battery_alerts" => "Cards for plugging in, unplugging and a low battery",
         "meeting_alerts" => "Remind of calendar events before they start (card and pill)",
+        "end_alerts" => "Five minutes before an event ends: what comes next, and where",
         "rain_alerts" => "Warn when rain is expected soon",
         "quiet_in_meetings" => "Hold notifications during a calendar event",
         "quiet_on_mic" => "Hold notifications while the microphone is in use",
@@ -82,6 +86,8 @@ pub fn describe(key: &str) -> &'static str {
         "dock_icons" => "How many page icons the bottom bar shows (the rest: All pages)",
         "mini_pills" => "How many small pills may sit beside the main one (timer, focus, activities)",
         "travel_margin_minutes" => "How much earlier than needed to be told to leave for an event",
+        "distraction_minutes" => "Told after this long on apps marked on the Activity page, in study hours",
+        "countdown_days" => "The clock pill counts down to a deadline this many days away (0: off)",
         "commute_minutes" => "Door to door to your lectures: cards say when to leave (0: off)",
         "deep_work_minutes" => "Hold notifications after this long on work apps in a row (0: off)",
         "break_minutes" => "A card after this long on one app without a break (0: off)",
@@ -109,12 +115,13 @@ pub fn steppers(tab: usize) -> &'static [Stepper] {
             ("meeting_pill_minutes", "Event pill", "min", 1.0, 1.0, 120.0),
         ],
         0 => &[("mini_pills", "Side pills", "", 1.0, 1.0, 4.0), ("dock_icons", "Dock icons", "", 1.0, 4.0, 12.0)],
-        2 => &[("deep_work_minutes", "Auto focus", "min", 5.0, 0.0, 120.0), ("break_minutes", "Break nudge", "min", 15.0, 0.0, 240.0)],
+        2 => &[("deep_work_minutes", "Auto focus", "min", 5.0, 0.0, 120.0), ("break_minutes", "Break nudge", "min", 15.0, 0.0, 240.0), ("distraction_minutes", "Distraction", "min", 5.0, 0.0, 120.0)],
         3 => &[
             ("morning_recap_time", "Morning", "time", 15.0, 0.0, 1425.0),
             ("evening_recap_time", "Evening", "time", 15.0, 0.0, 1425.0),
             ("commute_minutes", "Commute", "min", 5.0, 0.0, 240.0),
             ("travel_margin_minutes", "Leave early", "min", 1.0, 0.0, 30.0),
+            ("countdown_days", "Countdown", "d", 1.0, 0.0, 365.0),
         ],
         _ => &[],
     }
@@ -160,10 +167,13 @@ pub fn get_bool(c: &Config, key: &str) -> bool {
         "currency_rates" => c.currency_rates,
         "watch_downloads" => c.watch_downloads,
         "ocr_screenshots" => c.ocr_screenshots,
+        "receive_files" => c.receive_files,
+        "keyboard_alerts" => c.keyboard_alerts,
         "battery_alerts" => c.battery_alerts,
         "weather" => c.weather,
         "rain_alerts" => c.rain_alerts,
         "meeting_alerts" => c.meeting_alerts,
+        "end_alerts" => c.end_alerts,
         "lyrics" => c.lyrics,
         "lyrics_in_pill" => c.lyrics_in_pill,
         "art_tint" => c.art_tint,
@@ -196,10 +206,13 @@ pub fn set_bool(c: &mut Config, key: &str, on: bool) {
         "currency_rates" => c.currency_rates = on,
         "watch_downloads" => c.watch_downloads = on,
         "ocr_screenshots" => c.ocr_screenshots = on,
+        "receive_files" => c.receive_files = on,
+        "keyboard_alerts" => c.keyboard_alerts = on,
         "battery_alerts" => c.battery_alerts = on,
         "weather" => c.weather = on,
         "rain_alerts" => c.rain_alerts = on,
         "meeting_alerts" => c.meeting_alerts = on,
+        "end_alerts" => c.end_alerts = on,
         "lyrics" => c.lyrics = on,
         "lyrics_in_pill" => c.lyrics_in_pill = on,
         "art_tint" => c.art_tint = on,
@@ -232,6 +245,8 @@ pub fn get_num(c: &Config, key: &str) -> f64 {
         "dock_icons" => c.dock_icons as f64,
         "deep_work_minutes" => c.deep_work_minutes as f64,
         "commute_minutes" => c.commute_minutes as f64,
+        "countdown_days" => c.countdown_days as f64,
+        "distraction_minutes" => c.distraction_minutes as f64,
         "break_minutes" => c.break_minutes as f64,
         "evening_recap_time" => c.evening_recap_min as f64,
         "morning_recap_time" => c.morning_recap_min as f64,
@@ -251,6 +266,8 @@ pub fn set_num(c: &mut Config, key: &str, v: f64) {
         "dock_icons" => c.dock_icons = (v.round() as u32).clamp(4, 12),
         "deep_work_minutes" => c.deep_work_minutes = v.round() as i64,
         "commute_minutes" => c.commute_minutes = v.round() as i64,
+        "countdown_days" => c.countdown_days = (v.round() as u32).min(365),
+        "distraction_minutes" => c.distraction_minutes = (v.round() as u32).min(120),
         "break_minutes" => c.break_minutes = v.round() as i64,
         "evening_recap_time" => c.evening_recap_min = (v.round() as i64).clamp(0, 1439),
         "morning_recap_time" => c.morning_recap_min = (v.round() as i64).clamp(0, 1439),
@@ -309,10 +326,10 @@ mod tests {
     fn every_option_here_is_one_the_platform_layer_can_write() {
         // the keys of the page and the keys the configuration accepts are the same list
         let page: std::collections::BTreeSet<&str> = (0..TABS.len()).flat_map(|t| toggles(t).iter().map(|(k, _)| *k)).collect();
-        assert_eq!(page.len(), 30, "no option on two tabs");
+        assert_eq!(page.len(), 33, "no option on two tabs");
         assert_eq!(TABS[RULES_TAB], "Rules");
         let nums: Vec<&str> = (0..TABS.len()).flat_map(|t| steppers(t).iter().map(|s| s.0)).collect();
-        assert_eq!(nums, ["mini_pills", "dock_icons", "notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes", "deep_work_minutes", "break_minutes", "morning_recap_time", "evening_recap_time", "commute_minutes", "travel_margin_minutes"]);
+        assert_eq!(nums, ["mini_pills", "dock_icons", "notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes", "deep_work_minutes", "break_minutes", "distraction_minutes", "morning_recap_time", "evening_recap_time", "commute_minutes", "travel_margin_minutes", "countdown_days"]);
     }
 
     #[test]

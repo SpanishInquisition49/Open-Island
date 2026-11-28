@@ -28,12 +28,14 @@ fn usage() {
   open-island watch <pid|program> [label]  a card when that process ends
   open-island autostart on|off|status     start with the session
   open-island doctor                      what works on this machine, what is missing
-  open-island --version\n\nEVENTS (for msg):\n  peek | open [page] | reply | dnd <on|off> | page <home|cal|qs|sys|notifs|media|timer|clip> | timer <25m> | pomodoro | stopwatch | timer-cancel\n  key enter|escape|backspace|left|right|up|down|home|end|tab|text <t> (type into the island, for tests)
+  open-island --version\n\nEVENTS (for msg):\n  peek | open [page] | reply | dnd <on|off|1h|until 18:00> | page <home|cal|qs|sys|notifs|media|timer|clip> | timer <25m> | pomodoro | stopwatch | timer-cancel\n  key enter|escape|backspace|left|right|up|down|home|end|tab|text <t> (type into the island, for tests)
   set <option> <value> (any option of the options page: lyrics off, notification_seconds 8, timer_presets 5m,20m) | refresh (read the calendars now) | font <family|file> | calendar add <url> | calendar remove <n> | sound <file>   (settings, same as the menu)
   bar                                     open the command bar (bind it to a key): 10m tea, remind 20m ..., 12*7, 5 km in mi
   progress run [-l label] -- command...   (shows a command's progress)
   send <file>...   pick a device on the network (LocalSend) and send it the files
   activity run|done|fail|clear [label] [--detail t] [--icon i] [--color c] [--progress n]   a status for a script (CI, build)
+  mic [toggle|off|on]                    mute or unmute the microphone (bind it to a key)
+  shelf <file>...                        set files on the island's shelf, to drag them out again
   timer <25m> [name]                     start a countdown (several can run at once; `msg timer-cancel [name]` ends them)
   todo <text>                            add something to the list on the Today page (tick it off there): todo report due fri #algoritmi ~2h, todo gym every mon
   note <text>                            add a line to the notes folder (`notes_dir` in the settings; works without the island running)
@@ -91,6 +93,7 @@ fn main() {
         Some("-V") | Some("--version") | Some("version") => println!("open-island {}", env!("CARGO_PKG_VERSION")),
         Some("progress") => std::process::exit(cli::progress(&args[1..])),
         Some("send") => std::process::exit(cli::send_files(&args[1..])),
+        Some("shelf") => std::process::exit(cli::shelf(&args[1..])),
         Some("activity") => std::process::exit(cli::activity(&args[1..])),
         Some("hook") => std::process::exit(hook::run(&args[1..])),
         Some("todo") if args.len() >= 2 => std::process::exit(if services::ipc::send(&format!("todo {}", args[1..].join(" "))) { 0 } else { eprintln!("open-island is not running"); 1 }),

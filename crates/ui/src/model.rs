@@ -13,6 +13,20 @@ pub struct Image {
     pub rgba: Arc<Vec<u8>>,
 }
 
+/// Its pixels stay out of what is printed.
+impl std::fmt::Debug for Image {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Image {}x{} #{}", self.width, self.height, self.id)
+    }
+}
+
+/// The same image: the same id (which the renderer goes by).
+impl PartialEq for Image {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
 impl Image {
     /// Average colour of the opaque pixels, for the album-art tint.
     pub fn average(&self) -> Option<(u8, u8, u8)> {
@@ -45,6 +59,111 @@ pub struct Media {
     pub players: u32,
     /// The player's name for display ("Spotify", "Firefox").
     pub player: String,
+    /// Whether it plays in random order; None when the player does not offer the choice.
+    pub shuffle: Option<bool>,
+    /// What it repeats; None when the player does not offer the choice.
+    pub repeat: Option<LoopMode>,
+}
+
+/// What a player starts over when it reaches the end.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LoopMode {
+    #[default]
+    Off,
+    /// The whole list.
+    All,
+    /// The current track.
+    One,
+}
+
+impl LoopMode {
+    /// The next choice of the button.
+    pub fn next(self) -> Self {
+        match self {
+            LoopMode::Off => LoopMode::All,
+            LoopMode::All => LoopMode::One,
+            LoopMode::One => LoopMode::Off,
+        }
+    }
+}
+
+/// A request for an administrator's password.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuthRequest {
+    /// The platform's own number for it.
+    pub id: u64,
+    /// The action, as the system names it (`org.freedesktop.policykit.exec`), and what it says about it.
+    pub action: String,
+    pub message: String,
+    /// The program that wants it, when known.
+    pub requester: String,
+    /// Who may answer, and which of them to start with.
+    pub users: Vec<String>,
+    pub chosen: usize,
+    /// Their pictures, in the same order, for those that have one.
+    pub pictures: Vec<Option<Image>>,
+    /// Whether the system can check a face instead (see `AuthFaceUse`).
+    pub face: AuthFaceUse,
+}
+
+/// The face check as a way to answer a request.
+///
+/// In the settings file (`polkit_face`) the three are `off`, `ask` and `auto`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AuthFaceUse {
+    /// There is none.
+    #[default]
+    No,
+    /// When the person asks for it: Enter on the empty field, or its button.
+    Ask,
+    /// It starts as the request opens. Only where the system asks for a confirmation after recognising the face.
+    Auto,
+}
+
+impl AuthFaceUse {
+    pub fn setting(self) -> &'static str {
+        match self {
+            Self::No => "off",
+            Self::Ask => "ask",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+/// Where a face check is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FaceCheck {
+    Looking,
+    /// Recognised: nothing happens until the person confirms.
+    Confirm,
+    Recognised,
+    /// Why it did not work: the password is left.
+    Failed(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AuthUpdate {
+    /// The system asks for something else than expected: it is to be typed.
+    Prompt(String),
+    /// The system waits for the password: it can be typed and sent (what was typed so far stays).
+    Ready,
+    Face(FaceCheck),
+    Info(String),
+    Error(String),
+    /// The password was refused; so many tries are left.
+    Wrong(u32),
+    /// Over: accepted, withdrawn or given up.
+    Gone,
+}
+
+/// How long a choice that switches a screen off waits to be confirmed.
+pub const SCREEN_CONFIRM_MS: i64 = 15_000;
+
+/// Which way the liquid of a battery card goes as it appears: up from empty on power, down from full off it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flow {
+    Rising,
+    Falling,
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -238,6 +357,17 @@ pub struct ConfigView {
     pub home: String,
     /// Its coordinates, for the pin on the map.
     pub home_pos: Option<(f64, f64)>,
+    /// The choice of how a face answers a password request, while the island asks for passwords.
+    pub face: Option<FaceChoice>,
+}
+
+/// The face check as set in the settings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FaceChoice {
+    /// What was chosen (`No`: not offered).
+    pub chosen: AuthFaceUse,
+    /// What that means on this system now.
+    pub note: String,
 }
 
 /// The study mode (`~/.local/bin/focus`): sites blocked and notifications silenced until `end_epoch`.
@@ -248,16 +378,41 @@ pub struct Focus {
     pub end_epoch: Option<i64>,
 }
 
+/// The events of a month outside the span that is always read, fetched because the calendar page went there.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MonthEvents {
+    pub year: i32,
+    pub month: u32,
+    pub events: Vec<Event>,
+    /// When they were fetched (epoch ms; 0: to be read again).
+    pub read_at: i64,
+    /// Every calendar answered.
+    pub complete: bool,
+}
+
 /// Everything sampled from the system, replaced as a whole whenever something changes.
 #[derive(Clone, Default)]
 pub struct Data {
     pub media: Option<Media>,
     pub battery: Option<Battery>,
+    /// Minutes until the battery is full (`true`: it is charging) or empty, once the reading has settled.
+    pub battery_eta: Option<(u64, bool)>,
     pub weather: Option<Weather>,
     pub events: Vec<Event>,
     /// When the calendars were last read successfully (epoch ms; 0 = not yet).
     pub events_synced_at: i64,
+    /// The stretch [from, to) that `events` covers: the one around today that is always read ((0, 0): none yet).
+    pub events_span: (i64, i64),
+    /// Months outside that stretch, read when the calendar page showed them.
+    pub months: Vec<MonthEvents>,
+    /// The local offset from UTC, in seconds, at an instant (epoch ms): past a change of daylight saving it is not
+    /// `utc_offset_secs`. None: that one serves for every instant.
+    pub zone: Option<fn(i64) -> i32>,
     pub privacy: Privacy,
+    /// Whether the default microphone is muted (None: not known, or there is none).
+    pub mic_muted: Option<bool>,
+    /// The platform can start a drag of a file out of the island.
+    pub can_drag_files: bool,
     /// Connected Bluetooth devices.
     pub devices: Vec<Device>,
     pub volume: Option<f32>,
@@ -359,6 +514,10 @@ pub struct Incoming {
     pub full: bool,
     /// A device's battery (0..=100): the card shows a ring that fills up to it round the icon.
     pub ring: Option<u8>,
+    /// The `ring` is the machine's own battery, drawn as liquid in a drop instead of a ring round the icon.
+    pub liquid: Option<Flow>,
+    /// The file a screenshot's notification is about, when the platform found it.
+    pub file: Option<String>,
 }
 
 impl Incoming {
@@ -366,6 +525,18 @@ impl Incoming {
     pub fn reply_action(&self) -> Option<&NotifAction> {
         self.actions.iter().find(|a| a.key == "inline-reply")
     }
+}
+
+/// The id of the island's card that asks about files another device offers, and back.
+const OFFER_CARDS: u32 = 3_950_000;
+const OFFERS: u32 = 10_000;
+
+pub fn offer_card(offer: u32) -> u32 {
+    OFFER_CARDS + offer % OFFERS
+}
+
+pub fn card_offer(card: u32) -> Option<u32> {
+    (OFFER_CARDS..OFFER_CARDS + OFFERS).contains(&card).then(|| card - OFFER_CARDS)
 }
 
 /// Why a notification left the screen (the values of the freedesktop `NotificationClosed` signal).
@@ -410,11 +581,20 @@ pub enum PowerEvent {
 
 /// One-off events from the platform layer.
 pub enum Input {
+    /// Mute or unmute the microphone, asked from outside (None: toggle).
+    Mic(Option<bool>),
     Notification(Incoming),
     NotificationClosed(u32),
     /// The user takes the first card away from a script or a shortcut: the sender is told.
     DismissCard,
     Osd { kind: OsdKind, level: f32, muted: bool },
+    /// The keyboard now writes in this layout.
+    KeyboardLayout(String),
+    CapsLock(bool),
+    /// Another device wants to send files, or a message: a card asks.
+    FileOffer { id: u32, summary: String, body: String, message: bool },
+    /// Files that arrived: they go on the shelf without opening it.
+    ShelveQuietly(Vec<String>),
     Power(PowerEvent),
     /// "<percent|?> [label]" (see island_core::progress)
     Progress(String),
@@ -441,9 +621,11 @@ pub enum Input {
     Focused { app: String, title: String },
     /// Files to send: opens the page that lists the devices (from `open-island send`, or a file dropped on the island).
     SendFiles(Vec<String>),
+    /// Files to keep on the shelf (dropped on the island, or `open-island shelf`).
+    Shelve(Vec<String>),
     /// A file drag is over the island (the pointer in surface coordinates), or has left it (None).
     FileDrag(Option<(f64, f64)>),
-    /// The dragged file was let go over the island (its path follows as `SendFiles`).
+    /// The dragged file was let go over the island (its path follows as `Shelve`).
     FileDropped,
     /// A shell started a command: it becomes a progress pill when it runs longer than `after_secs`.
     CommandStart { id: String, label: String, after_secs: u32 },
@@ -462,6 +644,14 @@ pub enum Input {
     FoundMore { query: String, hits: Vec<island_core::plan::Hit> },
     /// A line to show: a result or a problem from a service ("Could not save the note").
     Toast { summary: String, body: String },
+    /// The screens connected now; `asked` when the person asked to see the choices.
+    Screens { all: Vec<island_core::screens::Screen>, asked: bool },
+    /// A screen has just been switched off at the person's request: to be confirmed.
+    ScreensChanged,
+    /// An administrator's password is wanted (polkit).
+    AuthAsk(AuthRequest),
+    /// What became of the request `id`.
+    AuthState { id: u64, update: AuthUpdate },
     /// Keep a note on the Today page, or take pins off (`unpin ssh`, `unpin all`).
     PinAdd(String),
     PinRemove(String),
@@ -534,8 +724,16 @@ pub enum PhoneCall {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    /// Yes or no to files another device offers.
+    AnswerOffer { id: u32, accept: bool },
     /// Read the text of the image on the clipboard and put the text there.
     Ocr,
+    /// Move a file (a screenshot, from its card) to the bin.
+    TrashFile(String),
+    /// Start dragging these files from the island to wherever they are dropped.
+    DragFiles(Vec<String>),
+    /// Mute or unmute the default microphone (None: the other way round from now).
+    SetMic(Option<bool>),
     /// Make an event on the calendar that takes new ones (an account's, or the island's own file).
     /// `whole_day` is the civil day of an event without hours.
     CreateEvent { title: String, start_ms: i64, end_ms: i64, whole_day: Option<i64> },
@@ -573,6 +771,10 @@ pub enum Command {
     MediaSeek { position_ms: f64 },
     /// Show the next open player.
     MediaCyclePlayer,
+    /// Play the player's list in random order, or in its own.
+    MediaShuffle(bool),
+    /// What the player starts over at the end.
+    MediaLoop(LoopMode),
     SetVolume(f32),
     SetBrightness(f32),
     ToggleMute,
@@ -620,6 +822,23 @@ pub enum Command {
     RefreshQuick,
     /// Read the calendars again now.
     RefreshCalendars,
+    /// Read the events of a month that is outside the stretch always read (the calendar page is showing it).
+    LoadCalendarMonth { year: i32, month: u32 },
+    /// Use the screens this way.
+    SetScreens(island_core::screens::Mode),
+    /// Keep the screens as they have just been set, or put them back.
+    KeepScreens,
+    UndoScreens,
+    /// Tell the screens, for the card with the choices.
+    ShowScreens,
+    /// The password typed for the request `id`, as the user at position `user` of those it named.
+    AuthSubmit { id: u64, user: usize, secret: std::sync::Arc<island_core::secret::Secret> },
+    /// The person dismissed the request.
+    AuthCancel(u64),
+    /// Check the face of the user at this position of the request.
+    AuthFace { id: u64, user: usize },
+    /// The person confirms after their face was recognised.
+    AuthConfirm(u64),
     /// A calendar feed address (https://, http:// or webcal://).
     AddCalendar(String),
     /// Add an iCloud account: the Apple ID and an app-specific password.

@@ -119,8 +119,8 @@ pub fn event_from_json(v: &serde_json::Value) -> Option<Event> {
 }
 
 /// Events overlapping [start, end), all-day ones first, then by start time.
-pub fn events_between(events: &[Event], start_ms: i64, end_ms: i64) -> Vec<&Event> {
-    let mut out: Vec<&Event> = events.iter().filter(|e| e.start_ms < end_ms && e.end_ms > start_ms).collect();
+pub fn events_between<'a>(events: impl IntoIterator<Item = &'a Event>, start_ms: i64, end_ms: i64) -> Vec<&'a Event> {
+    let mut out: Vec<&Event> = events.into_iter().filter(|e| e.start_ms < end_ms && e.end_ms > start_ms).collect();
     out.sort_by(|a, b| b.all_day.cmp(&a.all_day).then(a.start_ms.cmp(&b.start_ms)));
     out
 }
@@ -130,11 +130,11 @@ pub fn next_event(events: &[Event], now_ms: i64) -> Option<&Event> {
     events.iter().filter(|e| !e.all_day && e.end_ms > now_ms).min_by_key(|e| e.start_ms)
 }
 
-/// Event starting within the heads-up lead time (or started less than a minute ago).
+/// Event starting within the heads-up lead time (or started less than a minute ago). One still going on does not hide
+/// the one that follows it.
 pub fn soon(events: &[Event], now_ms: i64, lead_ms: i64) -> Option<&Event> {
-    let e = next_event(events, now_ms)?;
-    let d = e.start_ms - now_ms;
-    (d <= lead_ms && d > -60_000).then_some(e)
+    let starting = events.iter().filter(|e| !e.all_day && e.end_ms > now_ms && e.start_ms - now_ms > -60_000);
+    starting.min_by_key(|e| e.start_ms).filter(|e| e.start_ms - now_ms <= lead_ms)
 }
 
 /// Remembers which meetings were announced. A meeting is announced once, when it enters the
@@ -212,6 +212,14 @@ mod tests {
         assert_eq!(soon(&evs, 150, 1000), None);
         assert_eq!(soon(&evs, 1200, 1000).unwrap().id, "a");
         assert_eq!(soon(&evs, 2000 + 61_000, 1000).map(|e| e.id.as_str()), None, "a started >1 min ago is no longer soon");
+    }
+
+    #[test]
+    fn an_ongoing_event_does_not_hide_the_one_that_follows() {
+        let evs = [ev("first", 0, 500_000), ev("second", 500_000, 900_000)];
+        assert_eq!(soon(&evs, 400_000, 200_000).map(|e| e.id.as_str()), Some("second"));
+        let mut a = Announcer::default();
+        assert_eq!(a.new_heads_up(&evs, 400_000, 200_000).map(|e| e.id.as_str()), Some("second"));
     }
 
     #[test]

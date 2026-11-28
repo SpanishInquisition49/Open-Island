@@ -101,7 +101,7 @@ fn run(rep: Reporter, rx: Receiver<Command>) {
                     }
                 }
                 let now = chrono::Utc::now().timestamp_millis();
-                let m = Media { track_id: id, title: np.title, artist: np.artist, playing: np.playing, position_ms: np.position_ms, sampled_at_ms: now, length_ms: np.length_ms, art: art_cache.clone(), can_seek: true, players: 1, player: app.to_string() };
+                let m = Media { track_id: id, title: np.title, artist: np.artist, playing: np.playing, position_ms: np.position_ms, sampled_at_ms: now, length_ms: np.length_ms, art: art_cache.clone(), can_seek: true, players: 1, player: app.to_string(), shuffle: None, repeat: None };
                 let worth = last_sent.as_ref().is_none_or(|l| {
                     let expected = if l.playing { l.position_ms + (now - l.sampled_at_ms) as f64 } else { l.position_ms };
                     l.track_id != m.track_id || l.playing != m.playing || l.length_ms != m.length_ms || (m.position_ms - expected).abs() > 1500.0 || l.art.as_ref().map(|a| a.id) != m.art.as_ref().map(|a| a.id)

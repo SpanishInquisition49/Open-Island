@@ -1,9 +1,9 @@
 //! The short animations of single events (`effects.rs`).
 
-use super::effects::{BURST_MS, GULP_MS};
-use super::liquid::Source;
-use super::tests::fonts;
-use super::*;
+use super::fonts;
+use crate::island::effects::{BURST_MS, GULP_MS};
+use crate::island::liquid::Source;
+use crate::island::*;
 use vello::Scene;
 
 const T0: i64 = 1_800_000_000_000;

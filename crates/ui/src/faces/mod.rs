@@ -40,6 +40,9 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> Rect {
     Rect::new(x, y, x + w, y + h)
 }
 
+/// The room the results of an emoji or symbol search take in the bar.
+pub(crate) const PICK_ROW: f64 = 42.0;
+
 impl Island {
     /// Draws the island into `scene`, in surface coordinates scaled by `scale`.
     pub fn draw(&mut self, scene: &mut Scene, fonts: &Fonts, surface: (f64, f64), scale: f64) {
@@ -59,6 +62,7 @@ impl Island {
         self.draw_bubble_shapes(scene, fonts, base, w, h, radius);
         self.draw_fill_shape(scene, base, w, h, radius);
         self.draw_effect_shapes(scene, base, w, h, radius);
+        self.draw_auth_shape(scene, base, w, h, radius);
 
         // the pill
         scene.fill(Fill::NonZero, base, theme::BG, None, &RoundedRect::new(0.0, 0.0, w, h, radius));
@@ -105,6 +109,7 @@ impl Island {
         self.draw_bubble_contents(scene, fonts, &mut hits, base, w, h);
         self.draw_fill(scene, &mut hits, base, w);
         self.draw_effect_contents(scene, fonts, base, w, h, radius);
+        self.draw_auth_contents(scene, fonts, &mut hits, base, w, h);
         self.hits = hits;
     }
 
@@ -158,6 +163,7 @@ impl Island {
             Face::Activity => self.face_activity(p, w, h),
             Face::Map => self.face_map(p, w, h),
             Face::Bar => self.face_bar(p, w, h),
+            Face::Auth => self.face_auth(p, w, h),
             Face::Catch => self.face_catch(p, w, h),
             Face::Osd => self.face_osd(p, w, h),
             Face::Progress => self.face_progress(p, w, h),
@@ -168,6 +174,7 @@ impl Island {
             Face::Sys => self.face_sys(p, w, h),
             Face::Notifs => self.face_notifs(p, w, h),
             Face::Clip => self.face_clip(p, w, h),
+            Face::Shelf => self.face_shelf(p, w, h),
             Face::Settings => self.face_settings(p, w, h),
             Face::FocusMini => self.face_focus_mini(p, w, h),
             Face::FocusFull => self.face_focus_full(p, w, h),
@@ -187,8 +194,27 @@ impl Island {
             return x_right;
         }
         let mut x = x_right;
-        for (on, icon, color) in [(self.quiet(), "bell-off", theme::DIM), (pr.screen, "screen-share", theme::ORANGE), (pr.camera, "video", theme::GREEN), (pr.mic, "microphone", theme::ORANGE), (!self.data.net.is_ok(), "wifi-off", theme::RED)] {
+        // the microphone shows while a program records, and for as long as it is muted; a click on it mutes or unmutes
+        let muted = self.data.mic_muted == Some(true);
+        let (mic, mic_color) = if muted { ("microphone-off", theme::RED) } else { ("microphone", theme::ORANGE) };
+        // files kept on the shelf: a click shows them
+        let shelf = !self.shelf.is_empty();
+        for (on, icon, color) in [(shelf, "inbox", theme::DIM), (self.quiet(), "bell-off", theme::DIM), (pr.screen, "screen-share", theme::ORANGE), (pr.camera, "video", theme::GREEN), (pr.mic || muted, mic, mic_color), (!self.data.net.is_ok(), "wifi-off", theme::RED)] {
             if on {
+                if icon == "inbox" {
+                    let r = rect(x - size as f64 - 4.0, cy - 11.0, size as f64 + 8.0, 22.0);
+                    if p.hovered(r) {
+                        p.rrect(r, 11.0, theme::HOT_CHIP);
+                    }
+                    p.hit(r, Action::Open(Page::Shelf));
+                }
+                if icon == mic {
+                    let r = rect(x - size as f64 - 4.0, cy - 11.0, size as f64 + 8.0, 22.0);
+                    if p.hovered(r) {
+                        p.rrect(r, 11.0, theme::HOT_CHIP);
+                    }
+                    p.hit(r, Action::MicToggle);
+                }
                 p.icon(icon, x - size as f64 / 2.0, cy, size, color);
                 x -= ICON_W;
             }
@@ -200,9 +226,14 @@ impl Island {
         let n = self.icon_count(false) as f64;
         let t = self.clock_text();
         let tw = p.fonts.measure(&t, 14.0, SEMI) as f64;
-        let group = tw + n * ICON_W;
+        let countdown = self.countdown();
+        let cw = countdown.as_ref().map_or(0.0, |(text, _)| (p.fonts.measure(text, 12.0, REG) as f64).min(w - tw - n * ICON_W - 24.0).max(0.0) + 10.0);
+        let group = tw + cw + n * ICON_W;
         let x0 = (w - group) / 2.0;
         p.text(&t, x0, h / 2.0, 14.0, SEMI, theme::FG, Align::Left, 100.0);
+        if let Some((text, close)) = countdown {
+            p.text(&text, x0 + tw + 10.0, h / 2.0, 12.0, REG, if close { theme::ORANGE } else { theme::DIM }, Align::Left, (cw - 10.0) as f32);
+        }
         self.status_icons(p, x0 + group, h / 2.0, 13.0);
         p.hit(rect(0.0, 0.0, w, h), Action::Open(Page::Home));
     }
@@ -259,8 +290,9 @@ impl Island {
         x_right - w - 8.0
     }
 
-    /// One line of text; when it is wider than `max_w` it slides back and forth inside its place (a pause at each end) so
-    /// that all of it can be read, instead of being cut. `line` numbers the sliding lines of a face, each with its own clock.
+    /// One line of text; when it is wider than `max_w` it goes round inside its place, always to the left and followed by
+    /// itself (a pause each time its start is back), so that all of it can be read instead of being cut. `line` numbers the
+    /// sliding lines of a face, each with its own clock.
     #[allow(clippy::too_many_arguments)]
     fn marquee(&self, p: P, line: usize, text: &str, x: f64, cy: f64, size: f32, weight: Weight, color: Color, max_w: f32) {
         let width = p.fonts.measure(text, size, weight);
@@ -269,14 +301,20 @@ impl Island {
             return;
         }
         let elapsed = marquee_elapsed(&mut self.marquee_since.borrow_mut()[line], text, self.now, self.settled);
-        let travel = (width - max_w) as f64 + 8.0;
+        // one turn: the line and the room before it comes again
+        let travel = width as f64 + MARQUEE_GAP;
         let offset = marquee_offset(elapsed, travel);
         // the next frame is wanted when the line moves again: at once while it slides, at the end of a pause
         let moves_at = self.now + marquee_rest(elapsed, travel);
         self.marquee_wake.set(Some(self.marquee_wake.get().map_or(moves_at, |t| t.min(moves_at))));
         let t = p.transform;
         p.scene.push_clip_layer(Fill::NonZero, t, &Rect::new(x, cy - size as f64, x + max_w as f64, cy + size as f64));
-        p.text(text, x - offset, cy, size, weight, color, Align::Left, width + 16.0);
+        // the copy behind takes the first one's place exactly when the turn ends
+        for start in [x - offset, x - offset + travel] {
+            if start < x + max_w as f64 {
+                p.text(text, start, cy, size, weight, color, Align::Left, width + 16.0);
+            }
+        }
         p.scene.pop_layer();
     }
 
@@ -338,17 +376,39 @@ impl Island {
         p.opacity = base;
         p.hit(disc, Action::Cmd(Command::MediaPlayPause));
         p.icon_button_nudged((cx + 64.0, cy), 36.0, "player-skip-forward", 20.0, 5.0 * self.skip_press.max(0.0), Action::Cmd(Command::MediaNext));
+        // each side of the skips, when the player offers the choice
+        if let Some(on) = m.shuffle {
+            self.media_toggle(p, (cx - 112.0, cy), "arrows-shuffle", on, Command::MediaShuffle(!on));
+        }
+        if let Some(mode) = m.repeat {
+            let icon = if mode == LoopMode::One { "repeat-once" } else { "repeat" };
+            self.media_toggle(p, (cx + 112.0, cy), icon, mode != LoopMode::Off, Command::MediaLoop(mode.next()));
+        }
         if m.players > 1 {
-            p.icon_button(cx - 128.0, cy, 34.0, "arrows-exchange", 17.0, Action::CyclePlayer);
+            p.icon_button(cx - 162.0, cy, 34.0, "arrows-exchange", 17.0, Action::CyclePlayer);
         }
         if self.cfg.clipboard_history {
-            p.icon_button(cx + 128.0, cy, 34.0, "clipboard-text", 17.0, Action::Open(Page::Clip));
+            p.icon_button(cx + 162.0, cy, 34.0, "clipboard-text", 17.0, Action::Open(Page::Clip));
         }
         if lyric {
             if let Some(strip) = self.lyric_strip() {
                 self.draw_lyrics(p, w, &strip);
             }
         }
+    }
+
+    /// A button of the player that stays on or off: dim when off; white, with a dot under it, when on.
+    fn media_toggle(&self, p: P, (cx, cy): (f64, f64), icon: &str, on: bool, command: Command) {
+        let r = rect(cx - 17.0, cy - 17.0, 34.0, 34.0);
+        if p.hovered(r) {
+            p.circle(cx, cy, 17.0, theme::HOT_CHIP);
+        }
+        let color = if on { theme::FG } else { theme::DIM };
+        p.icon(icon, cx, cy, 17.0, color);
+        if on {
+            p.circle(cx, cy + 13.0, 1.8, color);
+        }
+        p.hit(r, Action::Cmd(command));
     }
 
     /// The lyrics strip: lines scroll up together as the song moves on; the old current line dims into the
@@ -494,6 +554,17 @@ impl Island {
             let cx = tx + p.fonts.measure(&before, 14.0, REG).min(inner) as f64;
             p.rrect(rect(cx, field.center().y - 8.0, 1.5, 16.0), 0.75, theme::FG);
         }
+        // what an emoji or symbol search found, side by side: the lit one is what Enter copies
+        let found = self.picks();
+        let each = (w - 32.0) / island_core::emoji::MOST as f64;
+        for (n, f) in found.iter().enumerate() {
+            let cell = rect(16.0 + n as f64 * each, field.y1 + 8.0, each - 4.0, PICK_ROW - 10.0);
+            if n == b.pick || p.hovered(cell) {
+                p.rrect(cell, 8.0, if n == b.pick { theme::HOT_CHIP } else { theme::CHIP });
+            }
+            p.text(f.text, cell.center().x, cell.center().y, 18.0, REG, theme::FG, Align::Center, each as f32);
+            p.hit(cell, Action::BarPick(n));
+        }
         let (line, color) = match (self.bar_cmd(), b.text.trim().is_empty()) {
             (Some(c), _) => (island_core::bar::preview(&c), theme::FG),
             (None, true) => ("Enter runs it · Up recalls · Esc closes".to_string(), theme::DIM),
@@ -503,6 +574,11 @@ impl Island {
     }
 
     fn face_osd(&self, p: P, w: f64, h: f64) {
+        if let Some((icon, text)) = &self.notice {
+            p.icon(icon, 30.0, h / 2.0, 20.0, theme::FG);
+            p.text(text, w / 2.0 + 14.0, h / 2.0, 13.0, SEMI, theme::FG, Align::Center, (w - 80.0) as f32);
+            return;
+        }
         let Some(o) = self.osd else { return };
         let icon = match (o.kind, o.muted || o.level <= 0.001) {
             (OsdKind::Volume, true) => "volume-3",
@@ -666,7 +742,7 @@ impl Island {
     }
 
     fn face_meet_mini(&self, p: P, w: f64, h: f64) {
-        let Some(e) = self.next_event() else { return };
+        let Some(e) = self.meeting_event() else { return };
         let cy = h / 2.0;
         p.icon("calendar-event", 24.0, cy, 15.0, theme::ACCENT);
         let mut right = self.pill_clock(p, w - 14.0, cy);
@@ -678,8 +754,7 @@ impl Island {
     }
 
     fn face_meeting(&self, p: P, w: f64, h: f64) {
-        let e = self.next_event();
-        let Some(e) = e else { return };
+        let Some(e) = self.meeting_event() else { return };
         let join = e.url.as_deref().filter(|u| !u.is_empty());
         let right = if join.is_some() { 78.0 } else { 18.0 };
         p.icon("calendar-event", 36.0, h / 2.0, 24.0, theme::ACCENT);
@@ -756,14 +831,19 @@ impl Island {
     }
 }
 
+mod auth;
 mod card;
+pub(crate) use card::{faded_image, wrap};
 mod effects;
 mod liquid;
 mod organizer;
+#[cfg(test)]
+pub(crate) use organizer::pace_line;
 mod pages_a;
 mod pages_b;
 mod grid;
 mod phone;
+mod shelf;
 
 
 fn page_icon(p: Page) -> &'static str {
@@ -779,6 +859,7 @@ fn page_icon(p: Page) -> &'static str {
         Page::Sys => "cpu",
         Page::Notifs => "bell",
         Page::Clip => "clipboard-text",
+        Page::Shelf => "inbox",
         Page::Settings => "settings",
         Page::Weather => "cloud-sun",
         Page::Options => "toggle-right",
@@ -888,37 +969,24 @@ fn marquee_elapsed(clock: &mut (String, i64), text: &str, now: i64, at_rest: boo
     (now - clock.1).max(0)
 }
 
-/// A sliding line's pause at each end, and its speed in pixels a second.
+/// A sliding line's pause at its start, its speed in pixels a second, and the room between its end and its start.
 const PAUSE: f64 = 1500.0;
 const SPEED: f64 = 40.0;
+const MARQUEE_GAP: f64 = 40.0;
 
-/// The milliseconds for which such a line stays where it is: 0 while it slides, what is left of the pause at an end.
-fn marquee_rest(ms: i64, travel: f64) -> i64 {
-    let slide = travel / SPEED * 1000.0;
-    let t = ms as f64 % (2.0 * PAUSE + 2.0 * slide);
-    if t < PAUSE {
-        (PAUSE - t).ceil() as i64
-    } else if t >= PAUSE + slide && t < 2.0 * PAUSE + slide {
-        (2.0 * PAUSE + slide - t).ceil() as i64
-    } else {
-        0
-    }
+/// Where in a turn that moves `travel` pixels a line is `ms` after it appeared: a pause, then the way round.
+fn marquee_turn(ms: i64, travel: f64) -> f64 {
+    ms as f64 % (PAUSE + travel / SPEED * 1000.0)
 }
 
-/// How far a line that overflows by `travel` pixels has slid `ms` after it appeared: a pause, a slide to the end, a
-/// pause, a slide back, and again.
+/// The milliseconds for which such a line stays where it is: 0 while it slides, what is left of the pause at its start.
+fn marquee_rest(ms: i64, travel: f64) -> i64 {
+    (PAUSE - marquee_turn(ms, travel)).max(0.0).ceil() as i64
+}
+
+/// How far to the left a line has gone `ms` after it appeared, from 0 up to `travel`, where it is back at its start.
 pub(crate) fn marquee_offset(ms: i64, travel: f64) -> f64 {
-    let slide = travel / SPEED * 1000.0;
-    let t = ms as f64 % (2.0 * PAUSE + 2.0 * slide);
-    if t < PAUSE {
-        0.0
-    } else if t < PAUSE + slide {
-        (t - PAUSE) / 1000.0 * SPEED
-    } else if t < 2.0 * PAUSE + slide {
-        travel
-    } else {
-        travel - (t - 2.0 * PAUSE - slide) / 1000.0 * SPEED
-    }
+    (marquee_turn(ms, travel) - PAUSE).max(0.0) / 1000.0 * SPEED
 }
 
 #[cfg(test)]
@@ -927,11 +995,10 @@ mod marquee_tests {
 
     #[test]
     fn a_resting_line_says_how_long_until_it_moves() {
-        // 80 px: rest 1.5 s, slide 2 s, rest 1.5 s, slide back 2 s
+        // 80 px a turn: rest 1.5 s, slide 2 s
         assert_eq!([marquee_rest(0, 80.0), marquee_rest(1000, 80.0)], [1500, 500]);
         assert_eq!([marquee_rest(1500, 80.0), marquee_rest(3000, 80.0)], [0, 0], "sliding");
-        assert_eq!([marquee_rest(3500, 80.0), marquee_rest(4500, 80.0)], [1500, 500], "at the end");
-        assert_eq!([marquee_rest(5000, 80.0), marquee_rest(7000, 80.0)], [0, 1500], "back, and the cycle begins again");
+        assert_eq!([marquee_rest(3500, 80.0), marquee_rest(4500, 80.0)], [1500, 500], "the next turn rests again");
         for ms in 0..14_000 {
             let rest = marquee_rest(ms, 80.0);
             if rest > 0 {
@@ -963,12 +1030,15 @@ mod marquee_tests {
     }
 
     #[test]
-    fn a_long_line_rests_slides_to_its_end_rests_and_comes_back() {
+    fn a_long_line_rests_and_goes_round_always_the_same_way() {
         assert_eq!(marquee_offset(0, 80.0), 0.0);
         assert_eq!(marquee_offset(1400, 80.0), 0.0, "it rests first");
         assert!((marquee_offset(1500 + 1000, 80.0) - 40.0).abs() < 0.01, "half way after a second at 40 px/s");
-        assert_eq!(marquee_offset(1500 + 2000 + 500, 80.0), 80.0, "it rests at the end");
-        assert!(marquee_offset(1500 + 2000 + 1500 + 1000, 80.0) < 80.0, "then comes back");
-        assert_eq!(marquee_offset(2 * 1500 + 2 * 2000, 80.0), 0.0, "and the cycle begins again");
+        assert!(marquee_offset(3499, 80.0) > 79.9, "the copy behind has all but arrived");
+        assert_eq!(marquee_offset(3500, 80.0), 0.0, "where it is the line itself, at its start again");
+        // within a turn it only ever goes forward
+        for ms in 0..3499 {
+            assert!(marquee_offset(ms + 1, 80.0) >= marquee_offset(ms, 80.0), "back at {ms}");
+        }
     }
 }

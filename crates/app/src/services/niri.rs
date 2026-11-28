@@ -15,6 +15,11 @@ pub struct State {
     workspaces: HashMap<u64, String>,
     outputs: HashMap<String, (f64, f64)>,
     overview: bool,
+    /// The keyboard layouts, and the one in use.
+    layouts: Vec<String>,
+    layout: Option<usize>,
+    /// A layout just switched to, not yet told.
+    switched: Option<String>,
 }
 
 impl State {
@@ -34,6 +39,11 @@ impl State {
     pub fn focused_window(&self) -> Option<(String, String)> {
         let w = self.focused.and_then(|id| self.windows.get(&id))?;
         Some((w.get("app_id").and_then(Value::as_str).unwrap_or("").to_string(), w.get("title").and_then(Value::as_str).unwrap_or("").to_string()))
+    }
+
+    /// The name of the layout the keyboard has just been switched to, once.
+    pub fn take_switch(&mut self) -> Option<String> {
+        self.switched.take()
     }
 
     pub fn apply(&mut self, event: &Value) {
@@ -86,6 +96,19 @@ impl State {
                     .filter_map(|w| Some((w["id"].as_u64()?, w["output"].as_str()?.to_string())))
                     .collect();
             }
+            // the list of layouts (at the start, and when the configuration changes) is no switch
+            "KeyboardLayoutsChanged" => {
+                let list = &body["keyboard_layouts"];
+                self.layouts = list["names"].as_array().into_iter().flatten().filter_map(|n| n.as_str().map(str::to_string)).collect();
+                self.layout = list["current_idx"].as_u64().map(|i| i as usize);
+            }
+            "KeyboardLayoutSwitched" => {
+                let now = body["idx"].as_u64().map(|i| i as usize);
+                if now != self.layout {
+                    self.layout = now;
+                    self.switched = now.and_then(|i| self.layouts.get(i).cloned());
+                }
+            }
             "OverviewOpenedOrClosed" => self.overview = body["is_open"].as_bool().unwrap_or(false),
             "ConfigLoaded" | "OutputsChanged" => self.refresh_outputs(),
             _ => {}
@@ -118,6 +141,9 @@ pub fn start(rep: Reporter) {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             let Ok(ev) = serde_json::from_str::<Value>(&line) else { continue };
             state.apply(&ev);
+            if let Some(layout) = state.take_switch() {
+                rep.input(island_ui::model::Input::KeyboardLayout(layout));
+            }
             // where the attention is (for the activity page)
             let focus = state.focused_window();
             if focus != last_focus {
@@ -176,6 +202,19 @@ mod tests {
         assert!(s.fullscreen());
         s.apply(&json!({"WindowClosed": {"id": 1}}));
         assert!(!s.fullscreen());
+    }
+
+    #[test]
+    fn a_switch_of_the_layout_is_told_once() {
+        let mut s = State::default();
+        s.apply(&json!({"KeyboardLayoutsChanged": {"keyboard_layouts": {"names": ["Italian", "English (US)"], "current_idx": 0}}}));
+        assert_eq!(s.take_switch(), None);
+        s.apply(&json!({"KeyboardLayoutSwitched": {"idx": 1}}));
+        assert_eq!(s.take_switch().as_deref(), Some("English (US)"));
+        assert_eq!(s.take_switch(), None);
+        s.apply(&json!({"KeyboardLayoutSwitched": {"idx": 1}}));
+        s.apply(&json!({"KeyboardLayoutSwitched": {"idx": 7}}));
+        assert_eq!(s.take_switch(), None, "the same one, or one that is not there");
     }
 
     #[test]

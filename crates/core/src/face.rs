@@ -24,6 +24,7 @@ pub enum Face {
     Weather,
     Update,
     Clip,
+    Shelf,
     MeetMini,
     Meeting,
     Progress,
@@ -35,6 +36,8 @@ pub enum Face {
     TimerFull,
     Reply,
     Bar,
+    /// An administrator's password is being asked.
+    Auth,
     /// A file is being dragged over the island.
     Catch,
 }
@@ -66,6 +69,7 @@ impl Face {
             Weather => (420.0, 318.0),
             Update => (400.0, 64.0),
             Clip => (400.0, 236.0),
+            Shelf => (400.0, 236.0),
             MeetMini => (270.0, 28.0),
             Meeting => (410.0, 66.0),
             Progress => (360.0, 64.0),
@@ -77,6 +81,7 @@ impl Face {
             TimerFull => (320.0, 112.0),
             Reply => (430.0, 168.0),
             Bar => (430.0, 92.0),
+            Auth => (210.0, 28.0),
             Catch => (250.0, 40.0),
         }
     }
@@ -104,6 +109,7 @@ pub enum Side {
 pub enum Page {
     Home,
     Clip,
+    Shelf,
     Timer,
     Meeting,
     Media,
@@ -133,6 +139,8 @@ pub enum Page {
 /// Snapshot of the state the choice depends on.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Snapshot {
+    /// A password is asked: before anything else.
+    pub authing: bool,
     pub barring: bool,
     pub replying: bool,
     /// A file is over the island, or going down.
@@ -154,6 +162,9 @@ pub struct Snapshot {
 /// activity for the side bubble. Hovering the side bubble opens that activity: the caller sets `page`.
 pub fn choose(s: &Snapshot) -> (Face, Option<Side>) {
     use Face::*;
+    if s.authing {
+        return (Auth, None);
+    }
     if s.barring {
         return (Bar, None);
     }
@@ -175,6 +186,7 @@ pub fn choose(s: &Snapshot) -> (Face, Option<Side>) {
         let p = s.page;
         let face = match p {
             Some(Page::Clip) if s.clipboard => Some(Clip),
+            Some(Page::Shelf) => Some(Shelf),
             Some(Page::Home) => Some(IdleHover),
             Some(Page::Qs) => Some(Qs),
             Some(Page::Cal) => Some(Cal),
@@ -277,6 +289,7 @@ impl Page {
         match self {
             Page::Home => "home",
             Page::Clip => "clip",
+            Page::Shelf => "shelf",
             Page::Timer => "timer",
             Page::Meeting => "event",
             Page::Media => "music",
@@ -318,6 +331,7 @@ impl Page {
             Page::Plan => "Plan",
             Page::Find => "Find",
             Page::Send => "Send",
+            Page::Shelf => "Shelf",
             Page::Activity => "Activity",
             Page::Map => "Map",
             Page::Phone => "iPhone",
@@ -334,7 +348,7 @@ impl Page {
     pub fn group(self) -> &'static str {
         match self {
             Page::Today | Page::Plan | Page::Find | Page::Cal | Page::Weather | Page::Map => "Day",
-            Page::Qs | Page::Sys | Page::Activity | Page::Audio | Page::Send => "Device",
+            Page::Qs | Page::Sys | Page::Activity | Page::Audio | Page::Send | Page::Shelf => "Device",
             Page::Notifs | Page::Phone | Page::Clip => "Messages",
             Page::Media | Page::Timer | Page::Focus | Page::Meeting | Page::Op => "Now",
             Page::Home | Page::Options | Page::Settings | Page::Grid => "Island",
@@ -346,8 +360,8 @@ impl Page {
 pub const GROUPS: [&str; 5] = ["Day", "Now", "Messages", "Device", "Island"];
 
 /// Every page, in one list.
-pub const ALL_PAGES: [Page; 23] = [
-    Page::Home, Page::Today, Page::Plan, Page::Find, Page::Cal, Page::Weather, Page::Map, Page::Media, Page::Timer, Page::Focus, Page::Meeting, Page::Op, Page::Notifs, Page::Phone, Page::Clip, Page::Qs, Page::Sys,
+pub const ALL_PAGES: [Page; 24] = [
+    Page::Home, Page::Today, Page::Plan, Page::Find, Page::Cal, Page::Weather, Page::Map, Page::Media, Page::Timer, Page::Focus, Page::Meeting, Page::Op, Page::Notifs, Page::Phone, Page::Clip, Page::Shelf, Page::Qs, Page::Sys,
     Page::Activity, Page::Audio, Page::Send, Page::Options, Page::Settings, Page::Grid,
 ];
 
@@ -369,6 +383,7 @@ pub fn page_by_name(name: &str) -> Option<Page> {
         "notifiche" | "notifications" | "alerts" => Some(Page::Notifs),
         "tel" | "telefono" | "iphone" => Some(Page::Phone),
         "appunti" | "clipboard" => Some(Page::Clip),
+        "mensola" => Some(Page::Shelf),
         "rapide" | "qs" => Some(Page::Qs),
         "sistema" | "sys" => Some(Page::Sys),
         "attivita" | "attività" | "rewind" | "attention" => Some(Page::Activity),
@@ -445,6 +460,12 @@ mod tests {
     }
     fn snap() -> Snapshot {
         Snapshot::default()
+    }
+
+    #[test]
+    fn a_password_request_comes_before_everything() {
+        let all = Snapshot { authing: true, barring: true, replying: true, catching: true, osd: true, update: true, big: true, ..snap() };
+        assert_eq!(choose(&all), (Face::Auth, None));
     }
 
     #[test]

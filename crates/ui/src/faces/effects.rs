@@ -197,7 +197,7 @@ impl Island {
     /// The pill while a file is dragged over it.
     pub(super) fn face_catch(&self, p: P, w: f64, h: f64) {
         let dropped = self.fx.catch.as_ref().is_some_and(|c| c.dropped.is_some());
-        let (icon, label) = if dropped { ("check", "Got it") } else { ("send", "Drop to send") };
+        let (icon, label) = if dropped { ("check", "On the shelf") } else { ("inbox", "Drop on the shelf") };
         let text = p.fonts.measure(label, 13.0, SEMI) as f64;
         let x = (w - text - 22.0) / 2.0;
         p.icon(icon, x + 7.0, h / 2.0, 15.0, if dropped { theme::GREEN } else { theme::FG });

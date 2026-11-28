@@ -97,6 +97,8 @@ fn media(d: &mut Data, playing: bool) {
         can_seek: true,
         players: 2,
         player: "Spotify".into(),
+        shuffle: Some(true),
+        repeat: Some(island_ui::model::LoopMode::One),
     });
     d.lyrics_lrc = Some("[00:01.00] Touch\n[01:30.00] Hold on, if love is the answer, you're home\n[01:50.00] Hold on\n[02:10.00] If love is the answer".into());
 }
@@ -292,6 +294,30 @@ fn main() {
     let cases: Vec<(&str, Setup)> = vec![
         ("idle", Box::new(|_, _| {})),
         ("idle-mic", Box::new(|_, d| d.privacy.mic = true)),
+        ("idle-mic-muted", Box::new(|i, d| { d.mic_muted = Some(true); i.restore_shelf(vec!["/home/u/Documents/notes.pdf".into()]); })),
+        ("idle-countdown", Box::new(|i, _| i.push(NOW, Input::RunLine("exam 22 dec Computer Architecture".into())))),
+        ("page-shelf", Box::new(|i, d| {
+            d.can_drag_files = true;
+            i.restore_shelf(vec!["/home/u/Downloads/Compilation Techniques slides 04.pdf".into(), "/home/u/Pictures/Screenshots/Screenshot from 2026-12-10 11-02-14.png".into(), "/home/u/Documents/report-draft.odt".into()]);
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Shelf));
+        })),
+        ("card-screenshot", Box::new(|i, _| i.push(NOW, Input::Notification(island_ui::model::Incoming { id: 1, app: "niri".into(), summary: "Screenshot captured".into(), body: "You can paste the image from the clipboard.".into(), file: Some("/home/u/Pictures/Screenshots/s.png".into()), ..Default::default() })))),
+        ("page-today-places", Box::new(|i, _| {
+            i.restore_places(vec![], vec![
+                island_core::places::Waiting { place: "home".into(), leaving: false, text: "water the plants".into(), armed: true },
+                island_core::places::Waiting { place: "uni".into(), leaving: true, text: "give back the library book".into(), armed: false },
+            ]);
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Today));
+        })),
+        ("page-week", Box::new(|i, _| {
+            // local midnight, an hour east of Greenwich as the preview is
+            let today = (NOW + 3_600_000).div_euclid(86_400_000) * 86_400_000 - 3_600_000;
+            let day = |n: i64, h: [i64; 3]| (today - n * 86_400_000, vec![("code".to_string(), h[0] * 60_000), ("zen".to_string(), h[1] * 60_000), ("telegram".to_string(), h[2] * 60_000)]);
+            i.restore_attention_history(vec![day(1, [210, 80, 25]), day(2, [95, 140, 40]), day(3, [260, 60, 15]), day(5, [30, 55, 70]), day(6, [180, 90, 20])]);
+            i.push(NOW - 50 * 60_000, Input::Focused { app: "code".into(), title: "island.rs".into() });
+            i.push(NOW - 10 * 60_000, Input::Focused { app: "zen".into(), title: "docs".into() });
+            i.push(NOW, Input::OpenPage(island_core::face::Page::Activity));
+        })),
         ("media-mini", Box::new(|_, d| media(d, true))),
         ("media-mini-lyric", Box::new(|i, d| { media(d, true); i.cfg.lyrics_in_pill = true; })),
         ("media-long-title", Box::new(|_, d| { media(d, true); d.media.as_mut().unwrap().title = "Sinfonia n. 9 in re minore, op. 125: IV. Finale (Presto - Allegro assai)".into(); })),
@@ -441,6 +467,10 @@ fn main() {
         ("notif-screenshot", Box::new(|i, _| {
             i.push(NOW, Input::Notification(Incoming { id: 7, app: "niri".into(), summary: "Screenshot captured".into(), body: "You can paste the image from the clipboard.".into(), ..Default::default() }));
         })),
+        ("card-offer", Box::new(|i, _| i.push(NOW, Input::FileOffer { id: 1, summary: "iPhone wants to send".into(), body: "4 files · 8.2 MB\nIMG_2041.jpg, IMG_2042.jpg, IMG_2043.jpg, +1 more".into(), message: false }))),
+        ("card-offer-message", Box::new(|i, _| i.push(NOW, Input::FileOffer { id: 2, summary: "Message from iPhone".into(), body: "The room changed: we are in B3, second floor, from 14:00.".into(), message: true }))),
+        ("osd-layout", Box::new(|i, _| { i.cfg.osd_ms = 60_000; i.push(NOW, Input::KeyboardLayout("English (US)".into())) })),
+        ("osd-capslock", Box::new(|i, _| { i.cfg.osd_ms = 60_000; i.push(NOW, Input::CapsLock(true)) })),
         ("page-grid", Box::new(|i, d| {
             media(d, true);
             d.phone = Some(Phone { link: island_core::phone::Link { present: true, messages: true, battery: Some(80), ..Default::default() }, ..Default::default() });
@@ -552,12 +582,12 @@ fn main() {
             i.show_activity_tab(1);
         })),
         ("media-teams", Box::new(|i, d| {
-            d.media = Some(Media { track_id: "z|/org/mpris/MediaPlayer2/firefox|Teams|".into(), title: "Teams and Channels | 26 - decorators and OOP in Python | Microsoft Teams".into(), artist: String::new(), playing: false, position_ms: 0.0, sampled_at_ms: NOW, length_ms: 7000.0, art: None, can_seek: true, players: 3, player: "Zen".into() });
+            d.media = Some(Media { track_id: "z|/org/mpris/MediaPlayer2/firefox|Teams|".into(), title: "Teams and Channels | 26 - decorators and OOP in Python | Microsoft Teams".into(), artist: String::new(), playing: false, position_ms: 0.0, sampled_at_ms: NOW, length_ms: 7000.0, art: None, can_seek: true, players: 3, player: "Zen".into(), shuffle: None, repeat: None });
             d.lyrics_lrc = None;
             i.push(NOW, Input::OpenPage(island_core::face::Page::Media));
         })),
         ("media-teams-mini", Box::new(|_, d| {
-            d.media = Some(Media { track_id: "z".into(), title: "Teams and Channels | 26 - decorators and OOP in Python | Microsoft Teams".into(), artist: String::new(), playing: true, position_ms: 9000.0, sampled_at_ms: NOW, length_ms: 7000.0, art: None, can_seek: true, players: 3, player: "Zen".into() });
+            d.media = Some(Media { track_id: "z".into(), title: "Teams and Channels | 26 - decorators and OOP in Python | Microsoft Teams".into(), artist: String::new(), playing: true, position_ms: 9000.0, sampled_at_ms: NOW, length_ms: 7000.0, art: None, can_seek: true, players: 3, player: "Zen".into(), shuffle: None, repeat: None });
         })),
         ("page-map", Box::new(|i, d| {
             let day = NOW / 86_400_000 * 86_400_000;
@@ -621,7 +651,7 @@ fn main() {
         ("focus-mini", Box::new(|_, d| d.focus = Some(Focus { active: true, end_epoch: Some(NOW / 1000 + 23 * 60) }))),
         ("focus-full", Box::new(|i, d| { d.focus = Some(Focus { active: true, end_epoch: Some(NOW / 1000 + 23 * 60) }); i.push(NOW, Input::OpenPage(island_core::face::Page::Focus)); })),
         ("page-sys-opening", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Sys)))),
-        ("page-settings", Box::new(|i, d| { d.config = ConfigView { font: "Inter".into(), font_missing: false, calendars: vec![CalendarView { name: "Università".into(), detail: "calendar.google.com".into(), color: (0xff, 0x9f, 0x0a) }, CalendarView { name: String::new(), detail: "p01-caldav.icloud.com".into(), color: (0x30, 0xd1, 0x58) }, CalendarView { name: "iCloud".into(), detail: "iCloud · me@icloud.com".into(), color: (0x0a, 0x84, 0xff) }], latitude: Some(43.7228), longitude: Some(10.4017), notification_sound: "/home/me/Music/UWU.ogg".into(), filters: vec![], timer_presets: "5 min, 10 min, 25 min".into(), screen: "focused".into(), map_tile_url: String::new(), map_key_set: false, home: "Via Roma 1, Pisa".into(), home_pos: Some((43.7255, 10.3908)) }; i.push(NOW, Input::OpenPage(island_core::face::Page::Settings)); })),
+        ("page-settings", Box::new(|i, d| { d.config = ConfigView { font: "Inter".into(), font_missing: false, calendars: vec![CalendarView { name: "Università".into(), detail: "calendar.google.com".into(), color: (0xff, 0x9f, 0x0a) }, CalendarView { name: String::new(), detail: "p01-caldav.icloud.com".into(), color: (0x30, 0xd1, 0x58) }, CalendarView { name: "iCloud".into(), detail: "iCloud · me@icloud.com".into(), color: (0x0a, 0x84, 0xff) }], latitude: Some(43.7228), longitude: Some(10.4017), notification_sound: "/home/me/Music/UWU.ogg".into(), filters: vec![], timer_presets: "5 min, 10 min, 25 min".into(), screen: "focused".into(), map_tile_url: String::new(), map_key_set: false, home: "Via Roma 1, Pisa".into(), home_pos: Some((43.7255, 10.3908)), face: Some(island_ui::model::FaceChoice { chosen: island_ui::model::AuthFaceUse::Auto, note: "The camera starts with the request; a recognised face still waits for Enter".into() }) }; i.push(NOW, Input::OpenPage(island_core::face::Page::Settings)); })),
         ("page-weather", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Weather)))),
         ("home-rain", Box::new(|i, _| i.push(NOW, Input::OpenPage(island_core::face::Page::Home)))),
         ("page-options", Box::new(|i, d| { d.config.timer_presets = "5 min, 10 min, 25 min".into(); d.config.screen = "focused".into(); i.push(NOW, Input::OpenPage(island_core::face::Page::Options)) })),
@@ -709,6 +739,24 @@ fn main() {
         scene.fill(vello::peniko::Fill::NonZero, Affine::IDENTITY, Color::from_rgba8(0xf6, 0xed, 0xd0, 255), None, &vello::kurbo::Rect::new(0.0, 0.0, 4000.0, 4000.0));
         i.draw(&mut scene, &fonts, (sw as f64, sh as f64), scale);
         render(&mut g, &scene, (sw as f64 * scale) as u32, (sh as f64 * scale) as u32, &dir.join(format!("{name}.png")));
+        // the week of the Activity page, by its tab
+        if name == "page-week" {
+            let (x, y, w, _) = i.input_rects()[0];
+            let mut t = i.now;
+            i.pointer_down(t, x + w - 118.0, y + 31.0);
+            i.pointer_up(t);
+            let mut f = i.tick(t, 8.0);
+            for _ in 0..300 {
+                t += 8;
+                f = i.tick(t, 8.0);
+                i.draw(&mut Scene::new(), &fonts, (f.surface.0.ceil().max(520.0), f.surface.1.ceil()), scale);
+            }
+            let (sw, sh) = (f.surface.0.ceil().max(520.0) as u32, f.surface.1.ceil().max(90.0) as u32);
+            let mut scene = Scene::new();
+            scene.fill(vello::peniko::Fill::NonZero, Affine::IDENTITY, Color::from_rgba8(0xf6, 0xed, 0xd0, 255), None, &vello::kurbo::Rect::new(0.0, 0.0, 4000.0, 4000.0));
+            i.draw(&mut scene, &fonts, (sw as f64, sh as f64), scale);
+            render(&mut g, &scene, (sw as f64 * scale) as u32, (sh as f64 * scale) as u32, &dir.join("page-week.png"));
+        }
         // the editor of the study hours, opened as it is opened: by its button on the Plan page
         if name == "page-plan" {
             let (x, y, w, _) = i.input_rects()[0];

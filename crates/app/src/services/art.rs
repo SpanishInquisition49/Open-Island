@@ -32,7 +32,7 @@ pub fn decode(bytes: &[u8]) -> Option<Image> {
     Some(Image { id: NEXT_ID.fetch_add(1, Ordering::Relaxed), width: rgba.width(), height: rgba.height(), rgba: Arc::new(rgba.into_raw()) })
 }
 
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;

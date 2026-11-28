@@ -41,7 +41,7 @@ fn cpu_ghz() -> Option<f32> {
 }
 
 /// (watts, minutes to empty/full) from the first battery.
-fn battery() -> (Option<f32>, Option<u64>) {
+pub(super) fn battery() -> (Option<f32>, Option<u64>) {
     let Ok(rd) = std::fs::read_dir("/sys/class/power_supply") else { return (None, None) };
     for e in rd.flatten() {
         let p = e.path();
@@ -50,7 +50,14 @@ fn battery() -> (Option<f32>, Option<u64>) {
         }
         let status = read(p.join("status").to_str().unwrap_or("")).unwrap_or_default();
         let charging = status.trim() == "Charging";
-        let (now, full, power) = (num(p.join("energy_now")), num(p.join("energy_full")), num(p.join("power_now")));
+        let (mut now, mut full, mut power) = (num(p.join("energy_now")), num(p.join("energy_full")), num(p.join("power_now")));
+        // some batteries count charge (µAh, µA) instead of energy: times the voltage it is the same
+        if now.is_none() {
+            if let Some(volt) = num(p.join("voltage_now")).map(|v| v / 1e6) {
+                let energy = |name: &str| num(p.join(name)).map(|c| c * volt);
+                (now, full, power) = (energy("charge_now"), energy("charge_full"), energy("current_now").map(f64::abs));
+            }
+        }
         return (power.map(|w| (w / 1e6) as f32), island_core::system::battery_eta(now, full, power, charging));
     }
     (None, None)

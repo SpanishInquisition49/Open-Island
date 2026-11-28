@@ -6,9 +6,28 @@ use crate::config::{CalendarKind, Settings};
 use island_core::calendar::Event;
 use island_core::lyrics::{self, Version};
 use island_core::weather::Slot;
-use island_ui::model::Weather;
-use std::collections::HashMap;
+use island_ui::model::{MonthEvents, Weather};
+use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::OnceLock;
 use std::time::Duration;
+
+/// How far before and after now the calendars are always read; other months are read when the calendar page shows them.
+const PAST_MS: i64 = 62 * 86_400_000;
+const AHEAD_MS: i64 = 62 * 86_400_000;
+/// The most months of the latter kind that are held.
+const MONTHS_HELD: usize = 36;
+
+/// Where the months the calendar page asks for are sent.
+static MONTHS: OnceLock<Sender<(i32, u32)>> = OnceLock::new();
+
+/// Reads the events of a month (and of the ones beside it), off this thread.
+pub fn load_month(year: i32, month: u32) {
+    if let Some(tx) = MONTHS.get() {
+        let _ = tx.send((year, month));
+    }
+}
 
 /// rustls needs a default crypto provider and two are linked (ring through ureq, aws-lc through attohttpc): ring is
 /// installed once, before any TLS connection.
@@ -48,10 +67,15 @@ pub fn start(rep: Reporter) {
         }
         super::wait_for(600, &[&super::CONFIG_GEN, &super::LOCATION_GEN]);
     });
+    let (month_tx, month_rx) = std::sync::mpsc::channel();
+    if MONTHS.set(month_tx).is_ok() {
+        let rep = rep.clone();
+        std::thread::spawn(move || read_months(rep, month_rx));
+    }
     std::thread::spawn(move || {
         let mut cache: HashMap<String, Vec<Event>> = HashMap::new();
         // the last schedule that was fetched: without a network (a train, a lecture hall) the island still knows the day
-        let (saved, saved_at) = load_calendar_cache(&crate::config::load().calendars);
+        let (saved, saved_at, saved_span) = load_calendar_cache(&crate::config::load().calendars);
         if !saved.is_empty() {
             let mut all: Vec<Event> = saved.values().flatten().cloned().collect();
             all.sort_by_key(|e| e.start_ms);
@@ -59,29 +83,56 @@ pub fn start(rep: Reporter) {
             rep.patch(move |d| {
                 d.events = all;
                 d.events_synced_at = saved_at;
+                d.events_span = saved_span;
             });
         }
+        let mut keyring_problem = String::new();
+        let gens = || (super::CONFIG_GEN.load(Relaxed), super::CALENDAR_REFRESH.load(Relaxed));
+        let mut seen = gens();
         loop {
-            let mut s = crate::config::load();
-            // events made with `event` and kept here (no account to hold them) are a calendar like any other
-            s.calendars.extend(super::organizer::local_calendar());
+            // other settings: the months read before may be of calendars that are gone. A refresh: read them again
+            let now_gens = gens();
+            if now_gens.0 != seen.0 {
+                rep.patch(|d| d.months.clear());
+            } else if now_gens.1 != seen.1 {
+                rep.patch(|d| d.months.iter_mut().for_each(|m| m.read_at = 0));
+            }
+            seen = now_gens;
+            // passwords written into the file by hand go to the keyring; until that works they are used where they are
+            match crate::config::migrate_secrets() {
+                Ok(0) => {}
+                Ok(n) => log::info!("moved {n} passwords or keys from the settings file to the keyring"),
+                Err(e) => {
+                    if e != keyring_problem {
+                        log::warn!("passwords are still in the settings file: {e}");
+                        rep.input(island_ui::model::Input::SettingsNote(format!("Passwords are still in config.json: {e}")));
+                        keyring_problem = e;
+                    }
+                }
+            }
+            let s = settings_with_local_calendar();
             let mut retry = false;
             if s.calendars.is_empty() {
                 cache.clear();
                 rep.patch(|d| {
                     d.events = vec![];
                     d.events_synced_at = 0;
+                    d.events_span = (0, 0);
+                    d.months.clear();
                 });
             } else {
-                let (events, problems, any_ok) = fetch_calendars(&s, &mut cache);
+                let now = chrono::Utc::now().timestamp_millis();
+                let span = (now - PAST_MS, now + AHEAD_MS);
+                let (events, problems, any_ok) = fetch_calendars(&s, &mut cache, span);
                 let now = chrono::Utc::now().timestamp_millis();
                 if any_ok {
-                    save_calendar_cache(&cache, now);
+                    save_calendar_cache(&cache, now, span);
                 }
                 rep.patch(move |d| {
                     d.events = events;
                     if any_ok {
                         d.events_synced_at = now;
+                        d.events_span = span;
                     }
                 });
                 if let Some(p) = problems.first() {
@@ -155,24 +206,93 @@ fn parse_hours(v: &serde_json::Value) -> Vec<island_core::weather::Hour> {
         .collect()
 }
 
+fn settings_with_local_calendar() -> Settings {
+    let mut s = crate::config::load();
+    // events made with `event` and kept here (no account to hold them) are a calendar like any other
+    s.calendars.extend(super::organizer::local_calendar());
+    s
+}
+
+/// The months to read for those asked: each with the one before and after, so that the next step is already there.
+fn months_around(asked: &[(i32, u32)]) -> BTreeSet<(i32, u32)> {
+    asked.iter().flat_map(|&(y, m)| [-1, 0, 1].map(|d| island_core::calendar::add_months(y, m, d))).collect()
+}
+
+/// Local midnight of the first day of a month, in epoch ms.
+fn month_start(y: i32, m: u32) -> i64 {
+    let secs = island_core::calendar::days_from_civil(y as i64, m as i64, 1) * 86_400;
+    let first = super::tz::offset(None, secs) as i64;
+    (secs - super::tz::offset(None, secs - first) as i64) * 1000
+}
+
+/// Waits for months to be asked, and reads all those waiting with one round over the calendars.
+fn read_months(rep: Reporter, asked: Receiver<(i32, u32)>) {
+    while let Ok(first) = asked.recv() {
+        let wanted: Vec<(i32, u32)> = std::iter::once(first).chain(asked.try_iter()).collect();
+        let months = months_around(&wanted);
+        let (Some(&(y0, m0)), Some(&(y1, m1))) = (months.first(), months.last()) else { continue };
+        let after = island_core::calendar::add_months(y1, m1, 1);
+        let (from, to) = (month_start(y0, m0), month_start(after.0, after.1));
+        let s = settings_with_local_calendar();
+        let (mut events, mut problems) = (vec![], vec![]);
+        for (i, src) in s.calendars.iter().enumerate() {
+            match fetch_source(src, i, from, to) {
+                Ok(evs) => events.extend(evs),
+                Err(e) => problems.push(format!("{}: {e}", src.detail())),
+            }
+        }
+        events.sort_by_key(|e| e.start_ms);
+        let read_at = chrono::Utc::now().timestamp_millis();
+        let read: Vec<MonthEvents> = months
+            .iter()
+            .map(|&(year, month)| {
+                let next = island_core::calendar::add_months(year, month, 1);
+                let (a, b) = (month_start(year, month), month_start(next.0, next.1));
+                MonthEvents { year, month, events: events.iter().filter(|e| e.start_ms < b && e.end_ms.max(e.start_ms + 1) > a).cloned().collect(), read_at, complete: problems.is_empty() }
+            })
+            .collect();
+        rep.patch(move |d| hold_months(&mut d.months, read));
+        if let Some(p) = problems.first() {
+            log::warn!("calendar month: {p}");
+            rep.input(island_ui::model::Input::SettingsNote(p.clone()));
+        }
+    }
+}
+
+/// Puts the months just read with those held. One that a calendar did not answer for keeps the events it had (a dropped
+/// connection must not empty a month). Beyond `MONTHS_HELD` the ones read longest ago go.
+fn hold_months(held: &mut Vec<MonthEvents>, read: Vec<MonthEvents>) {
+    for mut new in read {
+        if let Some(i) = held.iter().position(|m| (m.year, m.month) == (new.year, new.month)) {
+            let old = held.remove(i);
+            if !new.complete {
+                let missing: Vec<Event> = old.events.into_iter().filter(|e| !new.events.iter().any(|n| n.id == e.id)).collect();
+                new.events.extend(missing);
+                new.events.sort_by_key(|e| e.start_ms);
+            }
+        }
+        held.push(new);
+    }
+    held.sort_by_key(|m| std::cmp::Reverse(m.read_at));
+    held.truncate(MONTHS_HELD);
+}
+
 /// Reads every calendar source; a source that fails keeps its last events (a dropped connection must not empty
 /// the agenda). Returns the events (sorted), the problems, and whether at least one source was read.
-fn fetch_calendars(s: &Settings, cache: &mut HashMap<String, Vec<Event>>) -> (Vec<Event>, Vec<String>, bool) {
-    let now = chrono::Utc::now().timestamp_millis();
-    let (from, to) = (now - 86_400_000, now + 62 * 86_400_000);
+fn fetch_calendars(s: &Settings, cache: &mut HashMap<String, Vec<Event>>, (from, to): (i64, i64)) -> (Vec<Event>, Vec<String>, bool) {
     let results = s.calendars.iter().enumerate().map(|(i, src)| (source_key(src), src.detail(), fetch_source(src, i, from, to))).collect();
     merge_results(results, cache)
 }
 
-/// The sources are named on disk by a hash of their settings (which can hold a password), not by the settings.
+/// The sources are named on disk by a hash of their settings (which can hold a secret address), not by the settings.
 fn key_hash(key: &str) -> String {
     let h = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3));
     format!("{h:016x}")
 }
 
-/// What was fetched last time for the sources that are still configured, and when.
-fn load_calendar_cache(sources: &[crate::config::CalendarSource]) -> (HashMap<String, Vec<Event>>, i64) {
-    let Some(v) = super::state_file("calendar-cache.json").and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return (HashMap::new(), 0) };
+/// What was fetched last time for the sources that are still configured, when, and the stretch it covers.
+fn load_calendar_cache(sources: &[crate::config::CalendarSource]) -> (HashMap<String, Vec<Event>>, i64, (i64, i64)) {
+    let Some(v) = super::state_file("calendar-cache.json").and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { return (HashMap::new(), 0, (0, 0)) };
     let at = v.get("saved_at").and_then(|x| x.as_i64()).unwrap_or(0);
     let mut out = HashMap::new();
     for src in sources {
@@ -181,13 +301,15 @@ fn load_calendar_cache(sources: &[crate::config::CalendarSource]) -> (HashMap<St
             out.insert(key, list.iter().filter_map(island_core::calendar::event_from_json).collect());
         }
     }
-    (out, at)
+    // a file written before the stretch was recorded says nothing about it
+    let time = |k: &str| v.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
+    (out, at, (time("from"), time("to")))
 }
 
-fn save_calendar_cache(cache: &HashMap<String, Vec<Event>>, at: i64) {
+fn save_calendar_cache(cache: &HashMap<String, Vec<Event>>, at: i64, (from, to): (i64, i64)) {
     let Some(p) = super::state_file("calendar-cache.json") else { return };
     let sources: serde_json::Map<String, serde_json::Value> = cache.iter().map(|(k, evs)| (key_hash(k), serde_json::Value::Array(evs.iter().map(island_core::calendar::event_to_json).collect()))).collect();
-    let text = serde_json::json!({"saved_at": at, "sources": sources}).to_string();
+    let text = serde_json::json!({"saved_at": at, "from": from, "to": to, "sources": sources}).to_string();
     // event titles are private: owner-only
     #[cfg(unix)]
     {
@@ -201,8 +323,14 @@ fn save_calendar_cache(cache: &HashMap<String, Vec<Event>>, at: i64) {
     let _ = std::fs::write(&p, text);
 }
 
+/// What tells one source from another. The password is not part of it: it must not end up, even hashed, in the cache
+/// file, and moving it to the keyring must not make the source a new one.
 fn source_key(src: &crate::config::CalendarSource) -> String {
-    src.to_json().to_string()
+    let mut v = src.to_json();
+    if let Some(o) = v.as_object_mut() {
+        o.remove("password");
+    }
+    v.to_string()
 }
 
 /// Combines the per-source results with the cache: a success refreshes it, a failure falls back on it, a source
@@ -307,9 +435,13 @@ fn dav(method: &str, url: &str, auth: &str, depth: &str, body: &str) -> Result<S
     }
 }
 
-pub(super) fn caldav_password(password: &str, cmd: &str) -> Result<String, String> {
+/// The password of an account: what `password_cmd` prints, else the one still written in the file, else the keyring's.
+pub(super) fn caldav_password(server: &str, user: &str, password: &str, cmd: &str) -> Result<String, String> {
     if cmd.trim().is_empty() {
-        return if password.is_empty() { Err("no password set".into()) } else { Ok(password.to_string()) };
+        if !password.is_empty() {
+            return Ok(password.to_string());
+        }
+        return super::secrets::get(&super::secrets::caldav_account(server, user))?.ok_or_else(|| "no password stored: add the account again in Settings".into());
     }
     let out = std::process::Command::new("sh").arg("-c").arg(cmd).stderr(std::process::Stdio::null()).output().map_err(|e| e.to_string())?;
     let pw = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -326,7 +458,7 @@ pub(super) struct DavAccount {
 pub(super) fn discover(src: &crate::config::CalendarSource) -> Result<DavAccount, String> {
     use super::caldav as cd;
     let CalendarKind::CalDav { server, user, password, password_cmd } = &src.kind else { return Err("not a CalDAV account".into()) };
-    let auth = cd::basic_auth(user, &caldav_password(password, password_cmd)?);
+    let auth = cd::basic_auth(user, &caldav_password(server, user, password, password_cmd)?);
     let principal = cd::parse_principal(&dav("PROPFIND", server, &auth, "0", cd::PRINCIPAL_BODY)?).ok_or("no account found on the server")?;
     let principal_url = cd::resolve(server, &principal);
     let home = cd::parse_home(&dav("PROPFIND", &principal_url, &auth, "0", cd::HOME_BODY)?).ok_or("no calendars found on the server")?;
@@ -383,7 +515,7 @@ pub(super) fn dav_delete(url: &str, auth: &str) -> Result<(), String> {
 fn fetch_caldav(src: &crate::config::CalendarSource, from: i64, to: i64, default_color: (u8, u8, u8)) -> Result<Vec<Event>, String> {
     use super::caldav as cd;
     let CalendarKind::CalDav { server, user, password, password_cmd } = &src.kind else { return Ok(vec![]) };
-    let auth = cd::basic_auth(user, &caldav_password(password, password_cmd)?);
+    let auth = cd::basic_auth(user, &caldav_password(server, user, password, password_cmd)?);
     let principal = cd::parse_principal(&dav("PROPFIND", server, &auth, "0", cd::PRINCIPAL_BODY)?).ok_or("no account found on the server")?;
     let principal_url = cd::resolve(server, &principal);
     let home = cd::parse_home(&dav("PROPFIND", &principal_url, &auth, "0", cd::HOME_BODY)?).ok_or("no calendars found on the server")?;
@@ -474,15 +606,39 @@ mod tests {
         let mut cache = HashMap::new();
         cache.insert(source_key(&feed), vec![ev("a"), ev("b")]);
         cache.insert(source_key(&dav), vec![ev("c")]);
-        save_calendar_cache(&cache, 777);
+        save_calendar_cache(&cache, 777, (5, 900));
         let text = std::fs::read_to_string(dir.join("open-island").join("calendar-cache.json")).unwrap();
         assert!(!text.contains("hunter2-secret") && !text.contains("https://x/y.ics"), "the sources are only named by a hash");
-        let (back, at) = load_calendar_cache(std::slice::from_ref(&feed));
-        assert_eq!(at, 777);
+        let (back, at, span) = load_calendar_cache(std::slice::from_ref(&feed));
+        assert_eq!((at, span), (777, (5, 900)));
         assert_eq!(back.len(), 1, "a source that is gone from the settings is not brought back");
         assert_eq!(back[&source_key(&feed)].iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
         assert!(load_calendar_cache(&[]).0.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_month_asked_brings_its_neighbours_across_the_year() {
+        let m: Vec<_> = months_around(&[(2027, 1), (2026, 12)]).into_iter().collect();
+        assert_eq!(m, [(2026, 11), (2026, 12), (2027, 1), (2027, 2)]);
+        assert!(month_start(2026, 12) - month_start(2026, 11) == 30 * 86_400_000, "November has 30 days, with no change of clocks in it");
+    }
+
+    #[test]
+    fn a_month_read_again_replaces_the_old_one_unless_a_calendar_failed() {
+        let ev = |id: &str, start: i64| Event { id: id.into(), start_ms: start, end_ms: start + 1, ..Default::default() };
+        let month = |month: u32, read_at: i64, complete: bool, events: Vec<Event>| MonthEvents { year: 2026, month, events, read_at, complete };
+        let ids = |m: &MonthEvents| m.events.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+        let mut held = vec![month(3, 1, true, vec![ev("a", 10), ev("b", 20)])];
+        hold_months(&mut held, vec![month(3, 2, false, vec![ev("c", 15)])]);
+        assert_eq!((held.len(), ids(&held[0])), (1, vec!["a".to_string(), "c".into(), "b".into()]), "nothing is lost to a dropped connection");
+        hold_months(&mut held, vec![month(3, 3, true, vec![ev("c", 15)])]);
+        assert_eq!(ids(&held[0]), ["c"], "a complete read is the truth");
+        for k in 0..MONTHS_HELD as i64 + 5 {
+            hold_months(&mut held, vec![MonthEvents { year: 2000 + k as i32, month: 1, events: vec![], read_at: 10 + k, complete: true }]);
+        }
+        assert_eq!(held.len(), MONTHS_HELD);
+        assert!(!held.iter().any(|m| (m.year, m.month) == (2026, 3)), "the one read longest ago goes first");
     }
 
     #[test]
@@ -631,9 +787,13 @@ mod caldav_tests {
 
     #[test]
     fn the_password_can_come_from_a_command() {
-        assert_eq!(caldav_password("", "echo secret-from-cmd").unwrap(), "secret-from-cmd");
-        assert_eq!(caldav_password("plain", "").unwrap(), "plain");
-        assert!(caldav_password("plain", "true").is_err(), "a command that prints nothing is an error");
+        let ask = |password: &str, cmd: &str| caldav_password("https://pw/", "me", password, cmd);
+        assert_eq!(ask("", "echo secret-from-cmd").unwrap(), "secret-from-cmd");
+        assert!(ask("", "").unwrap_err().contains("no password stored"));
+        super::super::secrets::set(&super::super::secrets::caldav_account("https://pw/", "me"), "kept").unwrap();
+        assert_eq!(ask("", "").unwrap(), "kept");
+        assert_eq!(ask("plain", "").unwrap(), "plain", "one just written into the file is newer");
+        assert!(ask("plain", "true").is_err(), "a command that prints nothing is an error");
     }
 }
 

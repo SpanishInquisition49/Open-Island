@@ -25,6 +25,7 @@ portable-pty = "0.9"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 log = "0.4"
 env_logger = "0.11"
+zeroize = { version = "1.9", default-features = false, features = ["alloc"] }
 
 # TLS: rustls on Linux; the system's own stack (schannel / Secure Transport) elsewhere, which needs no C toolchain
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -34,6 +35,9 @@ attohttpc = { version = "0.32", default-features = false, features = ["tls-rustl
 # ureq uses ring and attohttpc aws-lc: with both present rustls cannot pick a default, so one is installed at start
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+# receiving files over LocalSend: the certificate of this machine, hashes and random tokens
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+ring = "0.17"
 # helper processes die with the island (PR_SET_PDEATHSIG)
 libc = "0.2"
 smithay-client-toolkit = "0.20"
@@ -50,6 +54,10 @@ sysinfo = { version = "0.40", default-features = false, features = ["system", "d
 starship-battery = "0.12"
 arboard = { version = "3", default-features = false }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# the Keychain, where passwords and API keys are kept
+security-framework = "3"
+
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
 # the `interface` macro expands to paths in this crate
@@ -57,8 +65,8 @@ windows-core = "0.62"
 # reads the database where Windows keeps the notifications
 rusqlite = { version = "0.37", features = ["bundled"] }
 windows = { version = "0.62", features = [
-  "Foundation", "Foundation_Collections", "Media_Control", "Storage_Streams", "Devices_Radios", "Devices_Geolocation",
-  "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_Devices_FunctionDiscovery", "Win32_UI_Shell_PropertiesSystem",
+  "Foundation", "Foundation_Collections", "Media", "Media_Control", "Storage_Streams", "Devices_Radios", "Devices_Geolocation",
+  "Win32_Foundation", "Win32_Security_Credentials", "Win32_Graphics_Gdi", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_Devices_FunctionDiscovery", "Win32_UI_Shell_PropertiesSystem",
   "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_Power", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi", "Win32_System_Threading",
 ] }
 

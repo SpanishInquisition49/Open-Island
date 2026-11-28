@@ -5,6 +5,7 @@ use chrono::Offset;
 
 pub fn start(rep: Reporter) {
     std::thread::spawn(move || {
+        rep.patch(|d| d.zone = Some(|ms| super::tz::offset(None, ms.div_euclid(1000))));
         let mut last = None;
         loop {
             let off = chrono::Local::now().offset().fix().local_minus_utc();

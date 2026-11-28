@@ -74,7 +74,12 @@ fn worker(rep: Reporter, rx: Arc<Mutex<Receiver<Job>>>) {
     loop {
         let job = rx.lock().ok().and_then(|r| r.recv().ok());
         let Some((z, x, y, template, dark)) = job else { return };
-        let key = crate::config::load().map_api_key;
+        let s = crate::config::load();
+        let key = if s.map_api_key.is_empty() && s.map_key_in_keyring && island_core::map::needs_key(&template) {
+            crate::services::secrets::cached(crate::services::secrets::MAP_KEY).unwrap_or_default()
+        } else {
+            s.map_api_key
+        };
         match fetch(&template, &key, z, x, y).and_then(|b| decode(&b, dark)) {
             Some(image) => rep.input(Input::Tile { z, x, y, image }),
             None => log::debug!("tile {z}/{x}/{y} not loaded"),

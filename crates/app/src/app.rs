@@ -16,6 +16,7 @@ pub type Waker = Arc<dyn Fn() + Send + Sync>;
 /// The configuration as the settings menu shows it.
 pub fn config_view_of(fonts: &Fonts) -> island_ui::model::ConfigView {
     let s = crate::config::load();
+    let face = face_choice(&s);
     island_ui::model::ConfigView {
         font_missing: !s.font.is_empty() && !fonts.preferred_found(),
         font: s.font,
@@ -36,9 +37,32 @@ pub fn config_view_of(fonts: &Fonts) -> island_ui::model::ConfigView {
         timer_presets: s.ui.timer_presets.iter().map(|p| island_core::duration::preset_label(*p)).collect::<Vec<_>>().join(", "),
         screen: s.screen,
         map_tile_url: if s.ui.map_tile_url == island_core::map::DEFAULT_TILES { String::new() } else { s.ui.map_tile_url.clone() },
-        map_key_set: !s.map_api_key.is_empty(),
+        map_key_set: s.map_key_in_keyring || !s.map_api_key.is_empty(),
         home: crate::config::home_label(&s.home),
         home_pos: s.home.as_ref().map(|h| (h.0, h.1)),
+        face,
+    }
+}
+
+/// How a face answers a password request, as the settings page offers it: only while the island asks for passwords.
+fn face_choice(s: &crate::config::Settings) -> Option<island_ui::model::FaceChoice> {
+    #[cfg(target_os = "linux")]
+    {
+        use crate::services::polkit_face;
+        s.polkit_agent.then(|| polkit_face::describe(&s.polkit_face, polkit_face::in_stack(), polkit_face::confirms()))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = s;
+        None
+    }
+}
+
+/// The keyring account a calendar signs in with, if it signs in.
+fn account_of(c: &CalendarSource) -> Option<String> {
+    match &c.kind {
+        crate::config::CalendarKind::CalDav { server, user, .. } => Some(services::secrets::caldav_account(server, user)),
+        _ => None,
     }
 }
 
@@ -50,6 +74,7 @@ fn new_island(settings: &crate::config::Settings) -> Island {
 
 pub struct App {
     attention_saved_at: i64,
+    drag_out: Option<Vec<String>>,
     pub island: Island,
     pub fonts: Fonts,
     rx: Receiver<Msg>,
@@ -92,7 +117,8 @@ pub fn frame_dt(gap_ms: f64, was_animating: bool) -> f64 {
 impl App {
     /// Fullscreen windows hide the island, unless the option says not to.
     pub fn fullscreen_hides(&self) -> bool {
-        self.fullscreen && self.island.cfg.hide_on_fullscreen
+        // a password that is being asked must be seen, over a fullscreen window too
+        self.fullscreen && self.island.cfg.hide_on_fullscreen && !self.island.auth_open()
     }
 
     pub fn new(waker: Waker) -> Self {
@@ -110,6 +136,9 @@ impl App {
         let epoch_at_start = chrono::Utc::now().timestamp_millis();
         let now = Instant::now();
         let mut island = new_island(&settings);
+        if let Some(until) = services::load_dnd(services::now_ms()).1 {
+            island.restore_dnd_until(until);
+        }
         island.restore_announced(services::load_announced());
         island.restore_reminders(services::load_reminders());
         island.restore_todos(services::load_todos());
@@ -126,6 +155,10 @@ impl App {
         if let Some(d) = services::load_recap_day("morning-recap") {
             island.restore_morning_day(d);
         }
+        let (places, waiting) = services::load_places();
+        island.restore_places(places, waiting);
+        island.restore_shelf(services::load_shelf());
+        island.restore_attention_history(services::load_attention_history());
         if let Some((day, apps)) = services::load_attention() {
             island.restore_attention(day, apps);
         }
@@ -133,7 +166,7 @@ impl App {
             island.restore_history(services::load_history());
         }
         island.data.config = config_view_of(&fonts);
-        Self { attention_saved_at: 0, island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, was_animating: false, quit: false, persist_history: settings.persist_history, fullscreen: false, maximized: false, pointer_near: false, last_pointer: (0.0, 0.0) }
+        Self { drag_out: None, attention_saved_at: 0, island, fonts, rx, cmd_tx, start: now, epoch_at_start, last_tick: now, was_animating: false, quit: false, persist_history: settings.persist_history, fullscreen: false, maximized: false, pointer_near: false, last_pointer: (0.0, 0.0) }
     }
 
     /// Epoch milliseconds: the monotonic clock since the start, so a clock that is adjusted a little does not make
@@ -169,6 +202,7 @@ impl App {
                     self.island.push(now, i)
                 }
                 Msg::Exec(c) => self.exec(vec![c]),
+                Msg::ConfigSaved(result) => self.config_saved(result),
                 Msg::Quit => self.quit = true,
                 Msg::Fullscreen(f) => self.fullscreen = f,
                 Msg::Cover { maximized, pointer_near } => {
@@ -207,6 +241,9 @@ impl App {
         services::save_reminders_if_changed(self.island.reminders());
         services::save_todos_if_changed(self.island.todos());
         services::save_pins_if_changed(self.island.pins());
+        let (places, waiting) = self.island.places_saved();
+        services::save_places_if_changed(places, waiting);
+        services::save_shelf_if_changed(self.island.shelf());
         services::save_bring_if_changed(self.island.bring_list());
         services::save_drain_if_changed(self.island.drain_saved());
         services::save_page_usage_if_changed(&self.island.page_usage());
@@ -221,7 +258,7 @@ impl App {
             self.attention_saved_at = now_s;
             let (day, apps) = self.island.attention_export();
             if !apps.is_empty() {
-                services::save_attention(day, &apps);
+                services::save_attention(day, &apps, self.island.attention_history());
             }
         }
         let keys = self.island.announced_keys();
@@ -235,8 +272,18 @@ impl App {
         frame
     }
 
+    /// The files the island asked to have dragged out, for the window backend that can do it.
+    pub fn take_drag(&mut self) -> Option<Vec<String>> {
+        self.drag_out.take()
+    }
+
     pub fn exec(&mut self, cmds: Vec<Command>) {
         for c in cmds {
+            // a drag is the window's business
+            if let Command::DragFiles(paths) = c {
+                self.drag_out = Some(paths);
+                continue;
+            }
             if self.settings_command(&c) || crate::services::cards::on_command(&c) {
                 continue;
             }
@@ -254,16 +301,55 @@ impl App {
 
     /// Changes the list of calendars and writes it back (the old `calendar_urls` are migrated into it).
     fn edit_calendars(&self, change: impl FnOnce(&mut Vec<CalendarSource>)) -> Result<(), String> {
-        let mut list = crate::config::load().calendars;
-        change(&mut list);
-        crate::config::update(|o| crate::config::set_calendars(o, &list))
+        crate::config::update_calendars_at(&crate::config::path().ok_or("no configuration directory")?, change)
+    }
+
+    /// Removes a calendar, and from the keyring the password no other calendar signs in with.
+    fn remove_calendar(&self, index: usize) -> Result<(), String> {
+        let mut unused = None;
+        self.edit_calendars(|list| {
+            if index < list.len() {
+                let gone = list.remove(index);
+                unused = account_of(&gone).filter(|a| !list.iter().any(|c| account_of(c).as_ref() == Some(a)));
+            }
+        })?;
+        if let Some(account) = unused {
+            std::thread::spawn(move || {
+                if let Err(e) = services::secrets::delete(&account) {
+                    log::warn!("the password of a removed calendar stays in the keyring: {e}");
+                }
+            });
+        }
+        Ok(())
+    }
+
+    /// What follows a change of the settings file, or the reason it was not made.
+    fn config_saved(&mut self, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                self.island.data.config = config_view_of(&self.fonts);
+                services::CONFIG_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Err(e) => {
+                log::error!("settings: {e}");
+                self.note(&e);
+            }
+        }
     }
 
     /// Handles the commands of the settings menu: writes config.json, applies the change, tells the services.
     fn settings_command(&mut self, c: &Command) -> bool {
+        if let Command::LoadCalendarMonth { year, month } = c {
+            services::net::load_month(*year, *month);
+            return true;
+        }
         if matches!(c, Command::RefreshCalendars) {
             services::CALENDAR_REFRESH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return true;
+        }
+        // a password or a key goes to the keyring first, off this thread; the answer comes back as `Msg::ConfigSaved`
+        if services::secrets::handles(c) {
+            return false;
         }
         use serde_json::json;
         let result = match c {
@@ -272,13 +358,7 @@ impl App {
                 Some(kind) => self.edit_calendars(|list| crate::config::add_source(list, kind)),
                 None => Err("Not a calendar: a feed address, an .ics file, or \"holidays\"".to_string()),
             },
-            Command::AddCalDav { server, user, password } => self.edit_calendars(|list| crate::config::add_caldav(list, server, user, password)),
-            Command::AddICloud { user, password } => self.edit_calendars(|list| crate::config::add_icloud(list, user, password)),
-            Command::RemoveCalendar(i) => self.edit_calendars(|list| {
-                if *i < list.len() {
-                    list.remove(*i);
-                }
-            }),
+            Command::RemoveCalendar(i) => self.remove_calendar(*i),
             Command::RenameCalendar { index, name } => self.edit_calendars(|list| {
                 if let Some(c) = list.get_mut(*index) {
                     c.name = name.trim().to_string();
@@ -318,29 +398,22 @@ impl App {
             }),
             _ => return false,
         };
-        match result {
-            Ok(()) => {
-                if let Command::SetFont(f) = c {
-                    self.fonts = Fonts::load_system(Some(f));
-                    if f.is_empty() {
-                        self.note("Font: default");
-                    } else if let Some(fam) = self.fonts.family().map(str::to_string) {
-                        self.note(&format!("Font: {fam}"));
-                    } else {
-                        self.note("Font not found: using the default");
-                    }
+        if result.is_ok() {
+            if let Command::SetFont(f) = c {
+                self.fonts = Fonts::load_system(Some(f));
+                if f.is_empty() {
+                    self.note("Font: default");
+                } else if let Some(fam) = self.fonts.family().map(str::to_string) {
+                    self.note(&format!("Font: {fam}"));
+                } else {
+                    self.note("Font not found: using the default");
                 }
-                self.island.data.config = config_view_of(&self.fonts);
-                if matches!(c, Command::SetOption { .. }) {
-                    self.island.cfg = crate::config::load().ui;
-                }
-                services::CONFIG_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
-            Err(e) => {
-                log::error!("settings: {e}");
-                self.note(&e);
+            if matches!(c, Command::SetOption { .. }) {
+                self.island.cfg = crate::config::load().ui;
             }
         }
+        self.config_saved(result);
         true
     }
 
@@ -376,9 +449,15 @@ impl App {
         self.exec(cmds);
     }
 
-    /// Feeds a key to the inline reply field.
+    /// A key of the real keyboard. While a password is asked it goes there and nowhere else (keys that arrive from the
+    /// control socket come as inputs, which the island then drops).
     pub fn key(&mut self, k: island_ui::model::KeyInput) {
         let now = self.now();
+        if self.island.auth_open() {
+            let cmds = self.island.auth_key(now, k);
+            self.exec(cmds);
+            return;
+        }
         self.island.push(now, island_ui::model::Input::Key(k));
         let cmds = self.island.take_commands();
         self.exec(cmds);

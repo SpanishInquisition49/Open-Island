@@ -9,6 +9,8 @@ binds {
     Mod+N { spawn "open-island" "msg" "open" "notifs"; }
     Mod+Shift+N { spawn "open-island" "msg" "dnd" "on"; }
     Mod+C { spawn "open-island" "msg" "page" "clip"; }
+    // mute or unmute the microphone
+    Mod+M { spawn "open-island" "msg" "mic" "toggle"; }
     // reply to the notification on screen
     Mod+R { spawn "open-island" "msg" "reply"; }
 }
