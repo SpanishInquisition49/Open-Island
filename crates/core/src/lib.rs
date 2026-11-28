@@ -41,6 +41,7 @@ pub mod residue;
 pub mod progress;
 pub mod spectrum;
 pub mod spring;
+pub mod surface;
 pub mod system;
 pub mod taildrop;
 pub mod sysmon;

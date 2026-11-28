@@ -6,6 +6,10 @@ use super::*;
 const HELD_BACK: &str = "held back";
 use super::card;
 
+/// The longest between two frames while the edges of the pill move: a little more than the time between two new
+/// spectra, which bring a frame by themselves.
+const RIPPLE_STEP_MS: u32 = 40;
+
 impl Island {
     // ---- the frame ----------------------------------------------------------------------------
 
@@ -1040,6 +1044,7 @@ impl Island {
         let at_rest = self.spring.step(tw, th, dt);
         self.tuck_tick(now, dt);
         self.sky_tick(now);
+        self.surface_tick(now);
         if self.shown_side.is_some() && self.want == self.shown && self.want_side.is_none() {
             self.shown_side = None;
             self.shown_more.clear();
@@ -1075,6 +1080,8 @@ impl Island {
         let next_ms = if moving { 0 } else { marquee.map_or(next_ms, |wait| next_ms.min(wait.max(MARQUEE_STEP_MS))) };
         let next_ms = if self.fill_sloshing() { next_ms.min(liquid::BUSY_STEP_MS) } else { next_ms };
         let next_ms = self.sky_step().map_or(next_ms, |step| next_ms.min(step));
+        // the edges come to rest also when no more of the music is heard
+        let next_ms = if self.rippling().is_some() { next_ms.min(RIPPLE_STEP_MS) } else { next_ms };
         // out of sight there is nothing that has to move; about to leave, the slide starts on time
         let next_ms = if self.out_of_sight() && !moving { next_ms.max(if self.timer.is_some() { 500 } else { 1000 }) } else { self.tuck_due_ms().map_or(next_ms, |due| next_ms.min(due.max(1))) };
         let next_ms = if moving { 0 } else { next_ms };
@@ -1111,6 +1118,10 @@ impl Island {
             sw = sw.max(group_w + 2.0 * (effects::REACH + 24.0));
             sh += effects::REACH + 30.0;
         }
+        if self.may_ripple() && (self.data.media.as_ref().is_some_and(|m| m.playing) || self.rippling().is_some()) {
+            // room below for the edge, kept for as long as it may move: the surface must not change at every beat
+            sh = sh.max(self.spring.h.pos.ceil() + island_core::surface::SWELL);
+        }
         if self.fill.is_some() {
             // the drop hangs at the left: as much room on the right keeps the pill where it is
             sw = sw.max(group_w + 2.0 * liquid::DROP_ROOM);
@@ -1121,6 +1132,26 @@ impl Island {
             sh = sh.max(self.spring.h.pos.ceil() + bottom);
         }
         Frame { surface: (sw + 8.0, sh + TOP_MARGIN + 4.0), animating, next_ms }
+    }
+
+    /// The edges of the pill may move: in one of the small faces of the player, on screen.
+    pub(crate) fn may_ripple(&self) -> bool {
+        self.cfg.pill_pulse && matches!(self.shown, Face::MediaMini | Face::MediaLyric) && !self.out_of_sight()
+    }
+
+    /// The edges while they are not at rest.
+    pub(crate) fn rippling(&self) -> Option<&island_core::surface::Surface> {
+        (self.may_ripple() && !self.surface.still()).then_some(&self.surface)
+    }
+
+    /// Once a frame: the edges move on, or are laid flat where they may not move.
+    fn surface_tick(&mut self, now: i64) {
+        if self.may_ripple() {
+            self.surface.step((now - self.surface_at) as f64);
+        } else {
+            self.surface = Default::default();
+        }
+        self.surface_at = now;
     }
 
     /// Content opacity for the crossfade (eased).

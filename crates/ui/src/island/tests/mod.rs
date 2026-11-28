@@ -3,6 +3,7 @@
 mod activities;
 mod auth;
 mod bar;
+mod beat;
 mod calendar;
 mod cards;
 mod drawing;

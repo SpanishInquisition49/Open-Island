@@ -94,6 +94,9 @@ impl Island {
                 self.pending.push(tell);
             }
             Input::Spectrum(v) => {
+                if self.may_ripple() && self.data.media.as_ref().is_some_and(|m| m.playing) {
+                    self.surface.hear(&v);
+                }
                 self.spectrum = v;
                 self.spectrum_at = now;
             }

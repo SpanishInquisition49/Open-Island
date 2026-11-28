@@ -148,6 +148,8 @@ pub struct Config {
     pub hide_when_covered: bool,
     /// The weather outside shows inside the small pill.
     pub weather_in_pill: bool,
+    /// The edges of the pill move with the music, like the surface of a liquid.
+    pub pill_pulse: bool,
     /// Fetch and show the weather.
     pub weather: bool,
     /// Play a sound when a timer ends.
@@ -213,6 +215,7 @@ impl Default for Config {
             hide_on_fullscreen: true,
             hide_when_covered: true,
             weather_in_pill: true,
+            pill_pulse: true,
             weather: true,
             timer_sound: true,
             auto_audio_output: true,
@@ -878,6 +881,9 @@ pub struct Island {
     pub(crate) enter_at: i64,
     pub(crate) spectrum: Vec<f32>,
     pub(crate) spectrum_at: i64,
+    /// The edges of the pill, moved by the music, and when they were last moved on.
+    pub(crate) surface: island_core::surface::Surface,
+    surface_at: i64,
     /// When the calendars were last asked to refresh (so opening pages does not ask over and over).
     last_refresh_req: i64,
     /// The months asked for and not answered yet: ((year, month), when).
@@ -1061,6 +1067,8 @@ impl Island {
             enter_at: -100_000,
             spectrum: vec![],
             spectrum_at: -100_000,
+            surface: Default::default(),
+            surface_at: 0,
             last_refresh_req: -100_000,
             months_asked: vec![],
             copied: None,

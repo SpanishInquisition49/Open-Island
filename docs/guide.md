@@ -158,6 +158,14 @@ Shuffle and repeat sit beside the skip buttons, for the players that offer them 
 Windows what the system's media controls allow). A dot marks what is on; repeat goes from off to the whole list to the
 current track (the icon with a 1) and back. Not on macOS yet.
 
+In the small pill the edges move with the music like the surface of a liquid (`pill_pulse`, "Move with the beat", on).
+They are not drawn up beforehand: each note that strikes gives the surface a push, low ones towards the middle and high
+ones towards the ends, and the waves run, meet, turn back at the ends and die down by themselves, also for a moment
+after the music stops. The bottom edge goes up to 7 pixels out, the top one up to half of that, for it is close to the
+top of the screen. It follows the same sound analysis as the equalizer bars, so it is there when they are: music
+playing, on mains power, the island on screen. While sound is heard it asks for no frames of its own, and added at most
+some 0.03 ms to each (headless on a Ryzen 6600HS, about 0.1 % of one core at 30 frames a second).
+
 ## Out of the way of windows
 
 While a window is over the island's place (the middle of the top edge of its screen) the island slides up out of sight.
@@ -883,7 +891,7 @@ a script with `open-island msg set <option> <value>`:
 | Places | `receive_files` (Linux: take files other devices send with LocalSend; `receive_dir` in `config.json` says where they go) | **off** |
 | Places | `wifi_position` (Linux: a position within metres from the Wi-Fi networks around you, looked up at beacondb.net; a card says so when you turn it on) | **off** |
 | Places | `map_tile_url` (a preset name or a URL; see the map), `map_dark`, `map_api_key` (Settings page; kept in the keyring), `travel_mode` (`car`, `walk`, `transit`, `train`: on the Today page and the map) | OpenStreetMap, on, none, car |
-| Music (a title or artist too long for its place goes round to the left, followed by itself and pausing each time its start is back, instead of being cut) | `media_auto_expand`, `lyrics`, `lyrics_in_pill` (off; the compact pill widens, up to 640 px, to show the line whole), `art_tint` | on |
+| Music (a title or artist too long for its place goes round to the left, followed by itself and pausing each time its start is back, instead of being cut) | `media_auto_expand`, `lyrics`, `lyrics_in_pill` (off; the compact pill widens, up to 640 px, to show the line whole), `art_tint`, `pill_pulse` (see "The player") | on |
 
 Not carried over, because they are about running inside Noctalia: `style` (the island is always black), `update_check`.
 

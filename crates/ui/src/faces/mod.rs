@@ -84,14 +84,15 @@ impl Island {
         self.draw_effect_shapes(scene, base, w, h, radius);
         self.draw_auth_shape(scene, base, w, h, radius);
 
-        // the pill
-        scene.fill(Fill::NonZero, base, theme::BG, None, &RoundedRect::new(0.0, 0.0, w, h, radius));
+        // the pill, its edges moving with the music
+        let body = self.body(w, h, radius);
+        scene.fill(Fill::NonZero, base, theme::BG, None, &body);
 
         // the weather behind it all, and what it has left
         if let Some(sky) = self.pill_sky() {
-            self.draw_sky(scene, base, sky, w, h, radius);
+            self.draw_sky(scene, base, sky, w, h, &body);
         }
-        self.draw_residue(scene, base, w, h, radius);
+        self.draw_residue(scene, base, w, h, radius, &body);
 
         // its content, clipped to the pill and crossfaded: the old face leaves, the new one scales in
         let op = self.content_opacity();
@@ -102,7 +103,7 @@ impl Island {
             * Affine::translate((w / 2.0 + dx, h / 2.0 + dy))
             * Affine::scale(k)
             * Affine::translate((-w / 2.0, -h / 2.0));
-        scene.push_clip_layer(Fill::NonZero, base, &RoundedRect::new(0.0, 0.0, w, h, radius));
+        scene.push_clip_layer(Fill::NonZero, base, &body);
         {
             let mut p = Painter { scene, fonts, hits: &mut hits, opacity: op, pointer, transform: content_t, base: (op, content_t), since_enter: self.now - self.enter_at };
             let dock = if has_dock(self.shown) { DOCK_H } else { 0.0 };
@@ -124,7 +125,7 @@ impl Island {
         // the cover art is one image that travels between the small pill's spot and the open player's,
         // following the shape's height, so it never cross-fades with the rest of the content
         if matches!(self.shown, Face::MediaMini | Face::MediaFull | Face::MediaLyric) {
-            scene.push_clip_layer(Fill::NonZero, base, &RoundedRect::new(0.0, 0.0, w, h, radius));
+            scene.push_clip_layer(Fill::NonZero, base, &body);
             let (x, y, size, r) = cover_at(h);
             let mut p = Painter { scene, fonts, hits: &mut hits, opacity: 1.0, pointer: None, transform: base, base: (1.0, base), since_enter: 10_000 };
             let art = self.data.media.as_ref().and_then(|m| m.art.as_ref());
@@ -139,13 +140,29 @@ impl Island {
         self.hits = hits;
     }
 
+    /// The shape of the pill now: a rounded rectangle, or what the music makes of its edges.
+    fn body(&self, w: f64, h: f64, radius: f64) -> vello::kurbo::BezPath {
+        use vello::kurbo::{BezPath, Shape};
+        let Some(surface) = self.rippling() else { return RoundedRect::new(0.0, 0.0, w, h, radius).to_path(0.05) };
+        let mut path = BezPath::new();
+        for (n, point) in surface.outline(w, h, radius).into_iter().enumerate() {
+            if n == 0 {
+                path.move_to(point);
+            } else {
+                path.line_to(point);
+            }
+        }
+        path.close_path();
+        path
+    }
+
     /// The snow at the bottom of the pill and the drops on its glass.
-    fn draw_residue(&self, scene: &mut Scene, base: Affine, w: f64, h: f64, radius: f64) {
+    fn draw_residue(&self, scene: &mut Scene, base: Affine, w: f64, h: f64, radius: f64, body: &vello::kurbo::BezPath) {
         use island_core::residue;
         use vello::kurbo::{BezPath, Circle, Line, Stroke};
         let Some((snow, wet, glass_ms)) = self.residue() else { return };
         let water = |alpha: f64| Color::from_rgba8(170, 208, 255, (alpha.clamp(0.0, 1.0) * 255.0).round() as u8);
-        scene.push_clip_layer(Fill::NonZero, base, &RoundedRect::new(0.0, 0.0, w, h, radius));
+        scene.push_clip_layer(Fill::NonZero, base, body);
         for bead in residue::beads(wet, glass_ms, w, h) {
             if let Some(from) = bead.trail {
                 scene.stroke(&Stroke::new(bead.radius * 0.9), base, water(0.16 * bead.alpha), None, &Line::new((bead.x, from), (bead.x, bead.y)));
@@ -155,18 +172,32 @@ impl Island {
             let glint = (bead.x - bead.radius * 0.35, bead.y - bead.radius * 0.35);
             scene.fill(Fill::NonZero, base, water(0.85 * bead.alpha), None, &Circle::new(glint, bead.radius * 0.35));
         }
-        let top = residue::bank(snow, w, h);
-        if !top.is_empty() {
+        scene.pop_layer();
+        // the snow lies on the bottom edge and rides it when it moves, so it is shaped by it and not clipped
+        let still = Default::default();
+        let edge: &island_core::surface::Surface = self.rippling().unwrap_or(&still);
+        let lying: Vec<(f64, f64, f64)> = residue::bank(snow, w, h)
+            .into_iter()
+            .map(|(x, y)| {
+                let (rest, there) = edge.edge_at(island_core::surface::Edge::Bottom, x, w, h, radius);
+                (x, y.min(rest) + there - rest, there)
+            })
+            .collect();
+        if !lying.is_empty() {
             let mut shape = BezPath::new();
-            shape.move_to((0.0, h + 1.0));
-            for &point in &top {
-                shape.line_to(point);
+            for (n, &(x, top, _)) in lying.iter().enumerate() {
+                if n == 0 {
+                    shape.move_to((x, top));
+                } else {
+                    shape.line_to((x, top));
+                }
             }
-            shape.line_to((w, h + 1.0));
+            for &(x, _, bottom) in lying.iter().rev() {
+                shape.line_to((x, bottom));
+            }
             shape.close_path();
             scene.fill(Fill::NonZero, base, Color::from_rgba8(232, 240, 255, 230), None, &shape);
         }
-        scene.pop_layer();
     }
 
     /// Where the sun or the moon stand, and whether their disc has room there: a clock alone leaves the left free. With
@@ -284,14 +315,14 @@ impl Island {
     }
 
     /// The weather inside the pill, soft enough for what is written over it.
-    fn draw_sky(&self, scene: &mut Scene, base: Affine, sky: island_core::sky::Sky, w: f64, h: f64, radius: f64) {
+    fn draw_sky(&self, scene: &mut Scene, base: Affine, sky: island_core::sky::Sky, w: f64, h: f64, body: &vello::kurbo::BezPath) {
         use island_core::sky::{self, Kind, Piece};
         use vello::kurbo::{Circle, Line, Stroke};
         let colour = |alpha: f64| {
             let (r, g, b) = if sky.kind == Kind::Snow { (232, 240, 255) } else { (110, 174, 255) };
             Color::from_rgba8(r, g, b, (alpha * 255.0).round() as u8)
         };
-        scene.push_clip_layer(Fill::NonZero, base, &RoundedRect::new(0.0, 0.0, w, h, radius));
+        scene.push_clip_layer(Fill::NonZero, base, body);
         match sky.kind {
             Kind::Sun => self.draw_sun(scene, base, sky.strength, w, h),
             Kind::Night => self.draw_night(scene, base, sky, w, h),
@@ -309,7 +340,7 @@ impl Island {
         }
         let lit = sky::flash(sky, self.now);
         if lit > 0.0 {
-            scene.fill(Fill::NonZero, base, Color::from_rgba8(200, 214, 255, (lit * 255.0) as u8), None, &RoundedRect::new(0.0, 0.0, w, h, radius));
+            scene.fill(Fill::NonZero, base, Color::from_rgba8(200, 214, 255, (lit * 255.0) as u8), None, body);
         }
         for piece in sky::falling(sky, self.now, w, h) {
             match piece {
