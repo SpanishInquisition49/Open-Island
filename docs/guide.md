@@ -796,6 +796,33 @@ hour, and one line saying when it rains next ("Rain in 40 min", "Rain around 18:
 min", or that none is expected in the next 24 hours). When rain is due within six hours, or it is raining, the home page
 shows that line in place of today's high and low. It is for where you are (see "Following your position"), or for the coordinates of the settings page. Data: Open-Meteo.
 
+### The weather in the pill
+
+The small pill shows the weather where you are behind what it says:
+
+- **clear:** by day a sun at the left of the clock, whose rays turn as a gleam crosses the pill; by night the moon in
+  tonight's phase (worked out from the date, mirrored south of the equator) among stars that twinkle, when one falls;
+- **partly cloudy:** the sun or the moon with a cloud before it;
+- **overcast:** clouds across the pill;
+- **fog:** soft banks, each drifting the other way from the next;
+- **falling:** drizzle, rain with the droplets it throws up as it lands, snowflakes that sway as they fall, and in a
+  thunderstorm a soft flash now and then; how heavy follows the forecast's code.
+
+What falls leaves its mark. While it snows, a layer of snow piles up at the bottom of the pill, in some 24 seconds, and
+melts in 20 once it stops; while it rains, drops stay on the glass, run down now and then, and slide off in a few seconds
+after the rain. On battery, between two falls, snow and drops stay where they are, still. They are shown in the small
+pill only, and `weather_in_pill` switches them off with the rest.
+
+When the pill has more in it (a song, a timer, an icon, a countdown) the disc of the sun or the moon gives way, and only
+its light stays. Day and night are as the forecast says, read every ten minutes. All but what falls stands still and
+moves for five seconds every half a minute (every two minutes on battery); a still sky costs nothing. What falls moves
+all the time on power, at 30 frames a second, and on battery for six seconds as it begins and then every two minutes.
+Rain costs some 4 to 5 % of one processor core while it moves (measured in a nested niri on a Ryzen 6600HS), against
+well under 1 % at rest. It all stops when a page is open and when the island is out of sight. `weather_in_pill` (Options
+> Places > "Weather in the pill", on) switches it off. To see how one looks, whatever the weather is, `open-island msg
+sky <name>` shows it for half a minute (`sun`, `night`, `partly`, `cloudy`, `fog`, `drizzle`, `rain`, `heavy`, `snow`,
+`storm`); `msg sky off` ends it.
+
 ## Building with `just`
 
 `just build` asks for the target (Linux, Windows MSVC, Windows GNU, macOS check) and leaves the result in `dist/<target>/`;
@@ -851,7 +878,7 @@ a script with `open-island msg set <option> <value>`:
 | Day | `countdown_days` (0-365, 21: the clock pill counts down to the next exam or deadline within that many days, orange in the last three; 0: off. Also `countdown 45` / `countdown off` in the bar) | 21 |
 | Day | `evening_weekends` (both cards on Saturday and Sunday) | off |
 | Day | `morning_recap_time`, `evening_recap_time` (`"08:00"`, `"18:30"`, or minutes; `off`), `commute_minutes` (0 = off), `travel_margin_minutes` (0-30, 5), `study_hours` (seven days, Monday first: `"09:00-17:00"`, `"09:00-13:00+14:00-18:00"`, `"off 09:00-17:00"`) | off, off, 0, 5, 9-17 |
-| Places | `weather`, `follow_position` | on |
+| Places | `weather`, `weather_in_pill`, `follow_position` | on |
 | Places | `currency_rates` (the ECB's daily rates for the bar) | on |
 | Places | `receive_files` (Linux: take files other devices send with LocalSend; `receive_dir` in `config.json` says where they go) | **off** |
 | Places | `wifi_position` (Linux: a position within metres from the Wi-Fi networks around you, looked up at beacondb.net; a card says so when you turn it on) | **off** |

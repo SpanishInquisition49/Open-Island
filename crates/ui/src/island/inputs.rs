@@ -84,6 +84,7 @@ impl Island {
                     self.recap(now - away_ms, "while you were away");
                 }
             }
+            Input::PreviewSky(sky) => self.preview_sky(sky),
             Input::Mic(muted) => {
                 let tell = self.set_mic(muted);
                 self.pending.push(tell);

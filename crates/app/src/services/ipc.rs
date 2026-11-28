@@ -116,6 +116,9 @@ pub(crate) fn parse(line: &str) -> Option<Input> {
             Input::Click(it.next()?, it.next()?)
         }
         "peek" => Input::Peek,
+        // `sky sun|night|partly|cloudy|fog|drizzle|rain|heavy|snow|storm|off`: how the weather looks in the pill, whatever it is outside
+        "sky" if payload == "off" => Input::PreviewSky(None),
+        "sky" => Input::PreviewSky(Some(island_core::sky::named(payload)?)),
         // a key bound to this mutes the microphone
         "mic" => Input::Mic(match payload {
             "" | "toggle" => None,
@@ -423,6 +426,10 @@ mod tests {
         assert!(matches!(parse("dnd on"), Some(Input::SetDnd(true))));
         assert!(parse("dnd maybe").is_none());
         assert!(matches!(parse("mic toggle"), Some(Input::Mic(None))));
+        assert!(matches!(parse("sky snow"), Some(Input::PreviewSky(Some(s))) if s.kind == island_core::sky::Kind::Snow));
+        assert!(matches!(parse("sky off"), Some(Input::PreviewSky(None))));
+        assert!(matches!(parse("sky sun"), Some(Input::PreviewSky(Some(_)))));
+        assert!(parse("sky sunny").is_none() && parse("sky").is_none());
         assert!(matches!(parse("mic off"), Some(Input::Mic(Some(true)))));
         assert!(parse("mic maybe").is_none());
         assert!(matches!(parse("dnd 1h"), Some(Input::RunLine(l)) if l == "dnd 1h"));

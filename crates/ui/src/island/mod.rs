@@ -146,6 +146,8 @@ pub struct Config {
     pub hide_on_fullscreen: bool,
     /// Slide out of sight while a window is over the island's place; the pointer at the top edge brings it back.
     pub hide_when_covered: bool,
+    /// The weather outside shows inside the small pill.
+    pub weather_in_pill: bool,
     /// Fetch and show the weather.
     pub weather: bool,
     /// Play a sound when a timer ends.
@@ -210,6 +212,7 @@ impl Default for Config {
             art_tint: true,
             hide_on_fullscreen: true,
             hide_when_covered: true,
+            weather_in_pill: true,
             weather: true,
             timer_sound: true,
             auto_audio_output: true,
@@ -783,6 +786,7 @@ pub struct Island {
     undo: Option<undo::Removed>,
     undo_count: u32,
     tuck: tuck::Tuck,
+    outside: sky::Outside,
     /// When a position was last asked for the waiting reminders.
     pub(crate) place_asked_at: i64,
     /// The microphone's mute as last told.
@@ -987,6 +991,7 @@ impl Island {
             undo: None,
             undo_count: 0,
             tuck: Default::default(),
+            outside: Default::default(),
             shelf: Vec::new(),
             shelf_pressed: (0.0, 0.0),
             place_asked_at: 0,
@@ -1101,6 +1106,7 @@ mod session;
 mod tuck;
 mod places;
 mod shelf;
+mod sky;
 mod undo;
 pub(crate) use organizer::{PLAN_ROWS, SPLIT_ROWS};
 mod pointer;

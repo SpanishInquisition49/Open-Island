@@ -581,6 +581,8 @@ pub enum PowerEvent {
 
 /// One-off events from the platform layer.
 pub enum Input {
+    /// Shows a sky in the pill for a while, to see how it looks (None: the weather's own again).
+    PreviewSky(Option<island_core::sky::Sky>),
     /// Mute or unmute the microphone, asked from outside (None: toggle).
     Mic(Option<bool>),
     Notification(Incoming),

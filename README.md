@@ -139,6 +139,8 @@ app, and see your headphones' battery when they connect.
 - **Downloads and long jobs** beside the island, as a drop of liquid: it fills up with a job that says how far it is,
   and sloshes while your browser downloads a file.
 - **A heads-up** when a program is slowing the computer down, or the network stops working.
+- **Live weather:** the weather outside shows inside the pill: sun, clouds, fog, rain, snow, and at night the stars
+  and the moon in its phase. Snow piles up at the bottom, and rain leaves drops on the glass.
 - **Battery:** plug in and it pours like liquid, with the time to full.
 - **A second screen** (niri): choose to extend or use only one, and it comes back by itself if you do not confirm.
 - **Administrator passwords** (Linux, off until you [switch it on](docs/guide.md#administrator-passwords-linux-off-by-default)):

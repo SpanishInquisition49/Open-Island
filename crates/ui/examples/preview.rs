@@ -84,6 +84,14 @@ fn data() -> Data {
     d
 }
 
+/// The weather outside changed, on a machine on power (where the pill moves it most).
+fn falling(d: &mut Data, code: i32) {
+    if let Some(w) = d.weather.as_mut() {
+        w.code = code;
+    }
+    d.battery = Some(Battery { percent: 79.0, charging: true, on_ac: true });
+}
+
 fn media(d: &mut Data, playing: bool) {
     d.media = Some(Media {
         track_id: "t1".into(),
@@ -327,6 +335,31 @@ fn main() {
             i.push(NOW, Input::DismissCard);
             i.push(NOW, Input::RunLine("rm report".into()));
         })),
+        ("sky-sun", Box::new(|_, d| { falling(d, 0); d.weather.as_mut().unwrap().day = true; })),
+        ("sky-sun-rest", Box::new(|i, d| {
+            falling(d, 0);
+            d.weather.as_mut().unwrap().day = true;
+            // it came out a while ago: it has finished shining
+            i.data = d.clone();
+            i.tick(NOW - 12_000, 8.0);
+        })),
+        ("sky-night", Box::new(|_, d| { falling(d, 0); d.weather.as_mut().unwrap().day = false; })),
+        ("sky-night-partly", Box::new(|_, d| { falling(d, 2); d.weather.as_mut().unwrap().day = false; })),
+        ("sky-partly", Box::new(|_, d| { falling(d, 2); d.weather.as_mut().unwrap().day = true; })),
+        ("sky-cloudy", Box::new(|_, d| { falling(d, 3); d.weather.as_mut().unwrap().day = true; })),
+        ("sky-fog", Box::new(|_, d| falling(d, 45))),
+        ("sky-sun-countdown", Box::new(|i, d| {
+            falling(d, 0);
+            d.weather.as_mut().unwrap().day = true;
+            d.privacy.mic = true;
+            i.push(NOW, Input::RunLine("exam 22 dec Computer Architecture".into()));
+        })),
+        ("sky-sun-music", Box::new(|_, d| { falling(d, 0); d.weather.as_mut().unwrap().day = true; media(d, true); })),
+        ("sky-drizzle", Box::new(|_, d| falling(d, 53))),
+        ("sky-rain", Box::new(|_, d| falling(d, 63))),
+        ("sky-heavy", Box::new(|_, d| falling(d, 65))),
+        ("sky-snow", Box::new(|_, d| falling(d, 73))),
+        ("sky-rain-music", Box::new(|_, d| { falling(d, 63); media(d, true); })),
         ("media-mini", Box::new(|_, d| media(d, true))),
         ("media-mini-lyric", Box::new(|i, d| { media(d, true); i.cfg.lyrics_in_pill = true; })),
         ("media-long-title", Box::new(|_, d| { media(d, true); d.media.as_mut().unwrap().title = "Sinfonia n. 9 in re minore, op. 125: IV. Finale (Presto - Allegro assai)".into(); })),

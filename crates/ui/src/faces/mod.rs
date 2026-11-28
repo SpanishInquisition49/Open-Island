@@ -87,6 +87,12 @@ impl Island {
         // the pill
         scene.fill(Fill::NonZero, base, theme::BG, None, &RoundedRect::new(0.0, 0.0, w, h, radius));
 
+        // the weather behind it all, and what it has left
+        if let Some(sky) = self.pill_sky() {
+            self.draw_sky(scene, base, sky, w, h, radius);
+        }
+        self.draw_residue(scene, base, w, h, radius);
+
         // its content, clipped to the pill and crossfaded: the old face leaves, the new one scales in
         let op = self.content_opacity();
         let k = 0.94 + 0.06 * op as f64;
@@ -131,6 +137,187 @@ impl Island {
         self.draw_effect_contents(scene, fonts, base, w, h, radius);
         self.draw_auth_contents(scene, fonts, &mut hits, base, w, h);
         self.hits = hits;
+    }
+
+    /// The snow at the bottom of the pill and the drops on its glass.
+    fn draw_residue(&self, scene: &mut Scene, base: Affine, w: f64, h: f64, radius: f64) {
+        use island_core::residue;
+        use vello::kurbo::{BezPath, Circle, Line, Stroke};
+        let Some((snow, wet, glass_ms)) = self.residue() else { return };
+        let water = |alpha: f64| Color::from_rgba8(170, 208, 255, (alpha.clamp(0.0, 1.0) * 255.0).round() as u8);
+        scene.push_clip_layer(Fill::NonZero, base, &RoundedRect::new(0.0, 0.0, w, h, radius));
+        for bead in residue::beads(wet, glass_ms, w, h) {
+            if let Some(from) = bead.trail {
+                scene.stroke(&Stroke::new(bead.radius * 0.9), base, water(0.16 * bead.alpha), None, &Line::new((bead.x, from), (bead.x, bead.y)));
+            }
+            scene.fill(Fill::NonZero, base, water(0.34 * bead.alpha), None, &Circle::new((bead.x, bead.y), bead.radius));
+            // where the light catches it
+            let glint = (bead.x - bead.radius * 0.35, bead.y - bead.radius * 0.35);
+            scene.fill(Fill::NonZero, base, water(0.85 * bead.alpha), None, &Circle::new(glint, bead.radius * 0.35));
+        }
+        let top = residue::bank(snow, w, h);
+        if !top.is_empty() {
+            let mut shape = BezPath::new();
+            shape.move_to((0.0, h + 1.0));
+            for &point in &top {
+                shape.line_to(point);
+            }
+            shape.line_to((w, h + 1.0));
+            shape.close_path();
+            scene.fill(Fill::NonZero, base, Color::from_rgba8(232, 240, 255, 230), None, &shape);
+        }
+        scene.pop_layer();
+    }
+
+    /// Where the sun or the moon stand, and whether their disc has room there: a clock alone leaves the left free. With
+    /// more in the pill (a cover, an icon, a countdown) only their light is there, from the same side but for a cover,
+    /// which takes it.
+    fn sky_corner(&self, w: f64) -> (bool, f64) {
+        let room = self.shown == Face::Idle && self.icon_count(false) == 0 && self.countdown().is_none();
+        (room, if self.shown == Face::MediaMini { w - 17.0 } else { 17.0 })
+    }
+
+    /// The moon of tonight in a corner of the pill, with its light, and the stars.
+    fn draw_night(&self, scene: &mut Scene, base: Affine, sky: island_core::sky::Sky, w: f64, h: f64) {
+        use island_core::sky::{self, Piece};
+        use vello::kurbo::{BezPath, Circle, Line, Stroke};
+        use vello::peniko::Gradient;
+        let shine = self.sky_shine();
+        let pale = |alpha: f64| Color::from_rgba8(214, 224, 255, (alpha.clamp(0.0, 1.0) * 255.0).round() as u8);
+        let (room, x) = self.sky_corner(w);
+        let y = h / 2.0;
+        // by the hour: it does not change enough to be seen in less, and a moon recomputed at every frame would never let
+        // two of them be the same
+        let phase = sky::moon_phase(self.now - self.now.rem_euclid(3_600_000));
+        let light = sky::moon_light(phase);
+        // the more of it is lit, the more light it gives
+        let stir = shine.map_or(0.0, |p| (p * std::f64::consts::PI).sin());
+        let reach = 20.0 + 8.0 * stir;
+        let glow = Gradient::new_radial((x, y), reach as f32).with_stops([pale((0.06 + 0.2 * light) * (1.0 + 0.4 * stir)), pale(0.0)]);
+        scene.fill(Fill::NonZero, base, &glow, None, &Circle::new((x, y), reach));
+        for star in sky::stars(sky, shine, w, h) {
+            match star {
+                // none over the moon: it is in front of them
+                Piece::Dot { x: sx, y: sy, .. } if room && (sx - x).hypot(sy - y) < 10.0 => {}
+                Piece::Dot { x, y, radius, alpha } => scene.fill(Fill::NonZero, base, pale(alpha), None, &Circle::new((x, y), radius)),
+                Piece::Streak { from, to, alpha } => scene.stroke(&Stroke::new(1.0), base, pale(alpha), None, &Line::new(from, to)),
+            }
+        }
+        if room {
+            const R: f64 = 6.5;
+            // the dark side shows faintly, so that a new moon is still there
+            scene.fill(Fill::NonZero, base, pale(0.14), None, &Circle::new((x, y), R));
+            let mut lit = BezPath::new();
+            for (n, (px, py)) in sky::moon_outline(phase, R, self.south()).into_iter().enumerate() {
+                if n == 0 {
+                    lit.move_to((x + px, y + py));
+                } else {
+                    lit.line_to((x + px, y + py));
+                }
+            }
+            lit.close_path();
+            scene.fill(Fill::NonZero, base, Color::from_rgba8(242, 240, 224, 245), None, &lit);
+        }
+    }
+
+    /// The sun in a corner of the pill, with its glow and rays and, while it shines, a gleam across.
+    fn draw_sun(&self, scene: &mut Scene, base: Affine, strength: u8, w: f64, h: f64) {
+        use island_core::sky::{self, RAYS};
+        use vello::kurbo::{BezPath, Circle, Line, Stroke};
+        use vello::peniko::Gradient;
+        let sun = sky::sun(self.sky_shine());
+        let warm = |alpha: f64| Color::from_rgba8(255, 192, 64, (alpha.clamp(0.0, 1.0) * 255.0).round() as u8);
+        let (room, x) = self.sky_corner(w);
+        let (y, full) = (h / 2.0, f64::from(strength) / 2.0);
+        let reach = 22.0 + 10.0 * sun.glow;
+        let glow = Gradient::new_radial((x, y), reach as f32).with_stops([warm((0.22 + 0.16 * sun.glow) * (0.6 + 0.4 * full)), warm(0.0)]);
+        scene.fill(Fill::NonZero, base, &glow, None, &Circle::new((x, y), reach));
+        if room {
+            scene.fill(Fill::NonZero, base, warm(0.95), None, &Circle::new((x, y), 4.2));
+        }
+        for n in (0..RAYS).filter(|_| room) {
+            let angle = sun.turn + std::f64::consts::TAU * f64::from(n) / f64::from(RAYS);
+            let (dy, dx) = angle.sin_cos();
+            let (from, to) = (6.6, 8.8 + 2.0 * sun.glow);
+            scene.stroke(&Stroke::new(1.3), base, warm(0.5 + 0.4 * sun.glow), None, &Line::new((x + from * dx, y + from * dy), (x + to * dx, y + to * dy)));
+        }
+        if let Some(at) = sun.gleam {
+            let (left, wide, lean) = (-40.0 + at * (w + 60.0), 18.0, h * 0.6);
+            let mut band = BezPath::new();
+            band.move_to((left + lean, 0.0));
+            band.line_to((left + lean + wide, 0.0));
+            band.line_to((left + wide, h));
+            band.line_to((left, h));
+            band.close_path();
+            let alpha = 0.12 * (at * std::f64::consts::PI).sin();
+            scene.fill(Fill::NonZero, base, Color::from_rgba8(255, 226, 160, (alpha * 255.0).round() as u8), None, &band);
+        }
+    }
+
+    /// The clouds of the sky, and the one before the sun or the moon.
+    fn draw_clouds(&self, scene: &mut Scene, base: Affine, sky: island_core::sky::Sky, w: f64, h: f64) {
+        use vello::kurbo::{BezPath, Circle, Shape};
+        let disc = Some(self.sky_corner(w)).filter(|(room, _)| *room).map(|(_, x)| x);
+        for c in island_core::sky::clouds(sky, self.sky_drift(), w, h, disc) {
+            // three rounds over a flat base, filled as one shape so that nothing shows where they meet
+            let mut shape = BezPath::new();
+            for (x, y, r) in [(-6.5, 1.0, 5.0), (0.5, -2.0, 7.0), (7.5, 1.5, 4.5)] {
+                shape.extend(Circle::new((x, y), r).path_elements(0.05));
+            }
+            shape.extend(rect(-6.5, 1.0, 14.0, 5.0).path_elements(0.05));
+            let (r, g, b) = if sky.day { (196, 206, 224) } else { (126, 138, 170) };
+            let at = base * Affine::translate((c.x, c.y)) * Affine::scale(c.size);
+            scene.fill(Fill::NonZero, at, Color::from_rgba8(r, g, b, (c.alpha * 255.0).round() as u8), None, &shape);
+        }
+    }
+
+    fn draw_fog(&self, scene: &mut Scene, base: Affine, w: f64, h: f64) {
+        use vello::kurbo::Circle;
+        use vello::peniko::Gradient;
+        for bank in island_core::sky::fog(self.sky_drift(), w, h) {
+            // a long soft oval that thins out to nothing: no edge shows, only the thickening
+            let mist = |alpha: f64| Color::from_rgba8(188, 196, 208, (alpha * 255.0).round() as u8);
+            let fade = Gradient::new_radial((0.0, 0.0), 1.0).with_stops([mist(bank.alpha * 1.4), mist(bank.alpha * 0.9), mist(0.0)]);
+            let at = base * Affine::translate((bank.x + bank.width / 2.0, bank.y)) * Affine::scale_non_uniform(bank.width / 2.0, bank.height * 1.1);
+            scene.fill(Fill::NonZero, at, &fade, None, &Circle::new((0.0, 0.0), 1.0));
+        }
+    }
+
+    /// The weather inside the pill, soft enough for what is written over it.
+    fn draw_sky(&self, scene: &mut Scene, base: Affine, sky: island_core::sky::Sky, w: f64, h: f64, radius: f64) {
+        use island_core::sky::{self, Kind, Piece};
+        use vello::kurbo::{Circle, Line, Stroke};
+        let colour = |alpha: f64| {
+            let (r, g, b) = if sky.kind == Kind::Snow { (232, 240, 255) } else { (110, 174, 255) };
+            Color::from_rgba8(r, g, b, (alpha * 255.0).round() as u8)
+        };
+        scene.push_clip_layer(Fill::NonZero, base, &RoundedRect::new(0.0, 0.0, w, h, radius));
+        match sky.kind {
+            Kind::Sun => self.draw_sun(scene, base, sky.strength, w, h),
+            Kind::Night => self.draw_night(scene, base, sky, w, h),
+            Kind::Partly => {
+                if sky.day {
+                    self.draw_sun(scene, base, sky.strength, w, h);
+                } else {
+                    self.draw_night(scene, base, sky, w, h);
+                }
+                self.draw_clouds(scene, base, sky, w, h);
+            }
+            Kind::Overcast => self.draw_clouds(scene, base, sky, w, h),
+            Kind::Fog => self.draw_fog(scene, base, w, h),
+            _ => {}
+        }
+        let lit = sky::flash(sky, self.now);
+        if lit > 0.0 {
+            scene.fill(Fill::NonZero, base, Color::from_rgba8(200, 214, 255, (lit * 255.0) as u8), None, &RoundedRect::new(0.0, 0.0, w, h, radius));
+        }
+        for piece in sky::falling(sky, self.now, w, h) {
+            match piece {
+                Piece::Streak { from, to, alpha } => scene.stroke(&Stroke::new(1.2), base, colour(alpha), None, &Line::new(from, to)),
+                Piece::Dot { x, y, radius, alpha } => scene.fill(Fill::NonZero, base, colour(alpha), None, &Circle::new((x, y), radius)),
+            }
+        }
+        scene.pop_layer();
     }
 
     /// The row of page icons at the bottom of a page: a click goes straight to that page.

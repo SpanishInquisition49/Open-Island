@@ -15,6 +15,7 @@ mod phone;
 mod quiet;
 mod recaps;
 mod settings;
+mod sky;
 mod study;
 mod system;
 mod tasks;

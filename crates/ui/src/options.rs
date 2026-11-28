@@ -35,7 +35,7 @@ pub fn toggles(tab: usize) -> &'static [(&'static str, &'static str)] {
         ],
         2 => &[("quiet_in_meetings", "Quiet in meetings"), ("quiet_on_mic", "Quiet on a call"), ("quiet_on_screen_share", "Quiet when sharing"), ("away_recap", "Recap when back")],
         3 => &[("travel_times", "Travel times"), ("evening_weekends", "Cards on weekends"), ("link_cards", "Copied link cards"), ("end_alerts", "Event ending")],
-        4 => &[("weather", "Weather"), ("follow_position", "Follow my position"), ("wifi_position", "Precise position from Wi-Fi"), ("currency_rates", "Currency rates"), ("receive_files", "Receive files")],
+        4 => &[("weather", "Weather"), ("weather_in_pill", "Weather in the pill"), ("follow_position", "Follow my position"), ("wifi_position", "Precise position from Wi-Fi"), ("currency_rates", "Currency rates"), ("receive_files", "Receive files")],
         5 => &[("media_auto_expand", "Open on a new track"), ("lyrics", "Synced lyrics"), ("lyrics_in_pill", "Lyrics in the pill"), ("art_tint", "Tint from the cover"), ("auto_audio_output", "Audio to headphones")],
         _ => &[],
     }
@@ -59,6 +59,7 @@ pub fn describe(key: &str) -> &'static str {
         "wifi_position" => "Send nearby Wi-Fi addresses to beacondb.net for a position within metres",
         "follow_position" => "Weather, trips and the map use where you are; off: the settings coordinates",
         "weather" => "Forecast, rain alerts and the weather page (needs a location)",
+        "weather_in_pill" => "The weather outside, in the small pill; less motion on battery",
         "timer_sound" => "Play a sound when a timer ends",
         "auto_audio_output" => "Switch the sound to headphones when they connect, back when they go",
         "show_notifications" => "Show incoming notifications as cards on the island",
@@ -185,6 +186,7 @@ pub fn get_bool(c: &Config, key: &str) -> bool {
         "clock_in_pill" => c.clock_in_pill,
         "hide_on_fullscreen" => c.hide_on_fullscreen,
         "hide_when_covered" => c.hide_when_covered,
+        "weather_in_pill" => c.weather_in_pill,
         "quiet_in_meetings" => c.quiet_in_meetings,
         "quiet_on_mic" => c.quiet_on_mic,
         "away_recap" => c.away_recap,
@@ -225,6 +227,7 @@ pub fn set_bool(c: &mut Config, key: &str, on: bool) {
         "clock_in_pill" => c.clock_in_pill = on,
         "hide_on_fullscreen" => c.hide_on_fullscreen = on,
         "hide_when_covered" => c.hide_when_covered = on,
+        "weather_in_pill" => c.weather_in_pill = on,
         "quiet_in_meetings" => c.quiet_in_meetings = on,
         "quiet_on_mic" => c.quiet_on_mic = on,
         "away_recap" => c.away_recap = on,
@@ -329,7 +332,7 @@ mod tests {
     fn every_option_here_is_one_the_platform_layer_can_write() {
         // the keys of the page and the keys the configuration accepts are the same list
         let page: std::collections::BTreeSet<&str> = (0..TABS.len()).flat_map(|t| toggles(t).iter().map(|(k, _)| *k)).collect();
-        assert_eq!(page.len(), 34, "no option on two tabs");
+        assert_eq!(page.len(), 35, "no option on two tabs");
         assert_eq!(TABS[RULES_TAB], "Rules");
         let nums: Vec<&str> = (0..TABS.len()).flat_map(|t| steppers(t).iter().map(|s| s.0)).collect();
         assert_eq!(nums, ["mini_pills", "dock_icons", "notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes", "deep_work_minutes", "break_minutes", "distraction_minutes", "morning_recap_time", "evening_recap_time", "commute_minutes", "travel_margin_minutes", "countdown_days"]);
