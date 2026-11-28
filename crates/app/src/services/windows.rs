@@ -71,7 +71,11 @@ fn brightness(rep: Reporter) {
         let (mut last, mut read_at, mut was_open) = (read(), std::time::Instant::now(), false);
         rep.patch(move |d| d.brightness = last);
         loop {
-            std::thread::sleep(Duration::from_millis(300));
+            if !was_open {
+                super::signal::wait_until(&super::QUICK_WANTED);
+            } else {
+                std::thread::sleep(Duration::from_millis(300));
+            }
             let open = super::QUICK_WANTED.load(std::sync::atomic::Ordering::Relaxed);
             if super::parse::brightness_due(open, was_open, read_at.elapsed()) {
                 let v = read();
@@ -383,64 +387,72 @@ fn privacy(rep: Reporter) {
 
 // ---- volume -------------------------------------------------------------------------------------------
 
-fn endpoint() -> windows::core::Result<windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume> {
-    use windows::Win32::Media::Audio::{eMultimedia, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
-    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
+type Endpoint = windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+
+/// The volume and mute of the default speakers and of the default microphone, when there are such devices.
+fn default_devices(enumerator: &windows::Win32::Media::Audio::IMMDeviceEnumerator) -> (Option<Endpoint>, Option<Endpoint>) {
+    use windows::Win32::Media::Audio::{eCapture, eCommunications, eMultimedia, eRender};
+    use windows::Win32::System::Com::CLSCTX_ALL;
+    // SAFETY: calls on a live COM object
     unsafe {
-        let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-        let device = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia)?;
-        device.Activate(CLSCTX_ALL, None)
+        let of = |flow, role| enumerator.GetDefaultAudioEndpoint(flow, role).and_then(|d| d.Activate::<Endpoint>(CLSCTX_ALL, None)).ok();
+        (of(eRender, eMultimedia), of(eCapture, eCommunications))
     }
 }
 
-/// The default microphone's volume and mute.
-fn microphone() -> windows::core::Result<windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume> {
-    use windows::Win32::Media::Audio::{eCapture, eCommunications, IMMDeviceEnumerator, MMDeviceEnumerator};
-    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
-    unsafe {
-        let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-        let device = enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications)?;
-        device.Activate(CLSCTX_ALL, None)
-    }
-}
-
+/// Reads the volume four times a second (and at once after a command). The enumerator is made once and the default
+/// devices are asked for again once a second: making both at every reading was most of what this thread did.
 fn volume(rep: Reporter, rx: Receiver<Command>) {
-    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+    use std::sync::mpsc::RecvTimeoutError;
+    use windows::Win32::Media::Audio::{IMMDeviceEnumerator, MMDeviceEnumerator};
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED};
     std::thread::spawn(move || {
+        // SAFETY: once on this thread, before any other COM call
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
         }
+        // SAFETY: a plain COM object, made on this thread and used only here
+        let Ok(enumerator) = (unsafe { CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) }) else {
+            log::warn!("no audio device enumerator: no volume bar");
+            return;
+        };
+        let (mut ep, mut mic) = default_devices(&enumerator);
+        let mut found_at = std::time::Instant::now();
         let mut last: Option<(f32, bool)> = None;
         let mut last_mic: Option<bool> = None;
         loop {
             // commands first, so a slider drag feels direct; then read the state (the device can change)
-            while let Ok(c) = rx.try_recv() {
-                if let Command::SetMic(muted) = c {
-                    if let Ok(mic) = microphone() {
-                        unsafe {
+            let first = match rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(c) => Some(c),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => return,
+            };
+            if found_at.elapsed() >= Duration::from_secs(1) {
+                (ep, mic) = default_devices(&enumerator);
+                found_at = std::time::Instant::now();
+            }
+            for c in first.into_iter().chain(rx.try_iter()) {
+                // SAFETY: calls on live COM objects
+                unsafe {
+                    match (c, ep.as_ref(), mic.as_ref()) {
+                        (Command::SetMic(muted), _, Some(mic)) => {
                             let to = muted.unwrap_or_else(|| !mic.GetMute().map(|m| m.as_bool()).unwrap_or(false));
                             let _ = mic.SetMute(to, std::ptr::null());
                         }
-                    }
-                    continue;
-                }
-                if let Ok(ep) = endpoint() {
-                    unsafe {
-                        match c {
-                            Command::SetVolume(v) => {
-                                let _ = ep.SetMasterVolumeLevelScalar(v.clamp(0.0, 1.0), std::ptr::null());
-                            }
-                            Command::ToggleMute => {
-                                let muted = ep.GetMute().map(|m| m.as_bool()).unwrap_or(false);
-                                let _ = ep.SetMute(!muted, std::ptr::null());
-                            }
-                            _ => {}
+                        (Command::SetVolume(v), Some(ep), _) => {
+                            let _ = ep.SetMasterVolumeLevelScalar(v.clamp(0.0, 1.0), std::ptr::null());
                         }
+                        (Command::ToggleMute, Some(ep), _) => {
+                            let muted = ep.GetMute().map(|m| m.as_bool()).unwrap_or(false);
+                            let _ = ep.SetMute(!muted, std::ptr::null());
+                        }
+                        _ => {}
                     }
                 }
             }
-            if let Ok(ep) = endpoint() {
-                let now = unsafe { (ep.GetMasterVolumeLevelScalar().unwrap_or(0.0), ep.GetMute().map(|m| m.as_bool()).unwrap_or(false)) };
+            // SAFETY: calls on live COM objects
+            let now = ep.as_ref().and_then(|ep| unsafe { Some((ep.GetMasterVolumeLevelScalar().ok()?, ep.GetMute().map(|m| m.as_bool()).unwrap_or(false))) });
+            if let Some(now) = now {
                 if Some(now) != last {
                     if last.is_some() {
                         rep.input(Input::Osd { kind: OsdKind::Volume, level: now.0, muted: now.1 });
@@ -452,12 +464,16 @@ fn volume(rep: Reporter, rx: Receiver<Command>) {
                     });
                 }
             }
-            let mic = microphone().ok().and_then(|m| unsafe { m.GetMute() }.ok()).map(|m| m.as_bool());
-            if mic != last_mic {
-                last_mic = mic;
-                rep.patch(move |d| d.mic_muted = mic);
+            // SAFETY: a call on a live COM object
+            let muted = mic.as_ref().and_then(|m| unsafe { m.GetMute() }.ok()).map(|m| m.as_bool());
+            if muted != last_mic {
+                last_mic = muted;
+                rep.patch(move |d| d.mic_muted = muted);
             }
-            std::thread::sleep(Duration::from_millis(250));
+            // a device that stopped answering is looked for again at once
+            if ep.is_some() && now.is_none() {
+                (ep, mic) = default_devices(&enumerator);
+            }
         }
     });
 }
@@ -480,18 +496,30 @@ fn media(rep: Reporter, rx: Receiver<Command>) {
         let mut last_track = String::new();
         let mut art_cache: Option<island_ui::model::Image> = None;
         let mut last_sent: Option<Media> = None;
+        // a command that cut the wait short
+        let mut woken: Option<Command> = None;
+        let wait = |most: u64| match rx.recv_timeout(Duration::from_millis(most)) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                if e == std::sync::mpsc::RecvTimeoutError::Disconnected {
+                    std::thread::sleep(Duration::from_millis(most));
+                }
+                None
+            }
+        };
         loop {
             let sessions: Vec<Session> = manager.GetSessions().map(|v| v.into_iter().collect()).unwrap_or_default();
             let id_of = |s: &Session| s.SourceAppUserModelId().map(|h| h.to_string()).unwrap_or_default();
             let chosen = selected.as_ref().and_then(|id| sessions.iter().find(|s| id_of(s) == *id).cloned()).or_else(|| manager.GetCurrentSession().ok());
-            while let Ok(c) = rx.try_recv() {
+            let mut acted = false;
+            while let Some(c) = woken.take().or_else(|| rx.try_recv().ok()) {
                 let Some(s) = chosen.as_ref() else { continue };
+                acted = true;
                 match c {
                     Command::MediaShuffle(on) => {
                         let _ = s.TryChangeShuffleActiveAsync(on).and_then(|o| o.join());
                         // what the player now says goes to the island even if nothing changed: it may have refused
                         last_sent = None;
-                        std::thread::sleep(Duration::from_millis(150));
                     }
                     Command::MediaLoop(mode) => {
                         let to = match mode {
@@ -501,7 +529,6 @@ fn media(rep: Reporter, rx: Receiver<Command>) {
                         };
                         let _ = s.TryChangeAutoRepeatModeAsync(to).and_then(|o| o.join());
                         last_sent = None;
-                        std::thread::sleep(Duration::from_millis(150));
                     }
                     Command::MediaPlayPause => drop(s.TryTogglePlayPauseAsync().and_then(|o| o.join())),
                     Command::MediaNext => drop(s.TrySkipNextAsync().and_then(|o| o.join())),
@@ -519,9 +546,13 @@ fn media(rep: Reporter, rx: Receiver<Command>) {
                 if last_sent.take().is_some() {
                     rep.patch(|d| d.media = None);
                 }
-                std::thread::sleep(Duration::from_millis(1500));
+                woken = wait(1500);
                 continue;
             };
+            if acted {
+                // a player needs a moment to take it in
+                std::thread::sleep(Duration::from_millis(150));
+            }
             if let (Ok(props), Ok(info), Ok(tl)) = (s.TryGetMediaPropertiesAsync().and_then(|o| o.join()), s.GetPlaybackInfo(), s.GetTimelineProperties()) {
                 let (title, artist) = (props.Title().map(|t| t.to_string()).unwrap_or_default(), props.Artist().map(|t| t.to_string()).unwrap_or_default());
                 let track_id = format!("{}|{title}|{artist}", id_of(&s));
@@ -560,7 +591,7 @@ fn media(rep: Reporter, rx: Receiver<Command>) {
                     rep.patch(move |d| d.media = Some(m));
                 }
             }
-            std::thread::sleep(Duration::from_millis(1000));
+            woken = wait(1000);
         }
     });
 }

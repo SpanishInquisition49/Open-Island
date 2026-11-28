@@ -53,9 +53,23 @@ stutters, run with `$env:OPEN_ISLAND_PERF=1` and send the log lines): on Windows
 (log line "transparent surface (PreMultiplied) on ...", which also names the graphics adapter used). Until 2026-11-26 the
 surface was in fact opaque although that line appeared: a black rectangle showed while the island moved and was cut round
 when it stopped. If that, or anything like it, still happens (black rectangle, nothing shown), start it with
-`$env:OPEN_ISLAND_OPAQUE=1` to use the old cut-to-shape way and tell me which of the two worked. With a maximized
-window in front the island hides; moving the pointer to the top edge, around the middle of the screen, brings it
-back, and it goes again a moment after the pointer leaves. A notification, the volume or a timer still show.
+`$env:OPEN_ISLAND_OPAQUE=1` to use the old cut-to-shape way and tell me which of the two worked.
+
+Added on 2026-11-28, never run:
+
+- **Out of the way of windows.** Drag any window (not only a maximized one) over the top centre of the primary screen:
+  within a second the island slides up and its window goes. Move the pointer to the very top there: it comes back and
+  stays while the pointer is on it; take the pointer away: it goes again. Minimize or move the window: it comes back.
+  With it hidden, `open-island msg notify "Test | body"` and the volume keys must bring it out for a moment. Say if it
+  hides with nothing visibly over it (name the programs running: an overlay may be the cause), if it fails to hide under
+  some window, or if it flickers at the top edge. The log says "hiding the island (... out of the way of a window: true)".
+  Options > Island > "Hide under windows" switches it off.
+- **Frames that are not drawn again.** The island must never freeze on an old picture: watch the clock change minute,
+  a countdown, the song title, the cover when the track changes, also after sleep, after a screen is plugged in and after
+  changing the display scale.
+- **Less polling.** The volume card still appears for the keys; switching the default speakers or microphone is followed
+  within a second; play / pause and skip on the island act at once; copied text still reaches the clipboard page.
+- **CPU.** In Task Manager, with the island at rest, with music playing, and with a window over it: send the numbers.
 
 Notifications from other applications (the browser, Telegram...): Windows will not hand them to a plain program, so the island
 reads the database where Windows keeps them (`%LOCALAPPDATA%\Microsoft\Windows\Notifications\wpndatabase.db`) every second

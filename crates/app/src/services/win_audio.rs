@@ -151,6 +151,9 @@ fn set_default(id: &str) {
     }
 }
 
+/// The outputs and the one in use, the inputs and the one in use, and what is playing.
+type Lists = (Vec<Sink>, Option<String>, Vec<Sink>, Option<String>, Vec<AppStream>);
+
 /// The Sound page's lists: read every 2 s while the quick settings are open (10 s otherwise), and right after a command.
 fn mixer(rep: Reporter, rx: Receiver<Command>) {
     std::thread::spawn(move || {
@@ -161,7 +164,7 @@ fn mixer(rep: Reporter, rx: Receiver<Command>) {
             log::warn!("no audio device enumerator: the sound page stays empty");
             return;
         };
-        let mut last: Option<(Vec<Sink>, Option<String>, Vec<Sink>, Option<String>, Vec<AppStream>)> = None;
+        let mut last: Option<Lists> = None;
         let mut first = true;
         loop {
             let got = if first {

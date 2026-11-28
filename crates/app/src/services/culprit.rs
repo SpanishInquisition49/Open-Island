@@ -338,13 +338,24 @@ fn watch_privacy(rep: Reporter) {
     });
 }
 
+#[cfg(target_os = "linux")]
+fn new_cpu() -> sys::Cpu {
+    sys::Cpu::default()
+}
+
+/// Elsewhere the system keeps the counters itself.
+#[cfg(not(target_os = "linux"))]
+fn new_cpu() -> sys::Cpu {
+    sys::Cpu
+}
+
 pub fn start(rep: Reporter) {
     #[cfg(target_os = "linux")]
     watch_privacy(rep.clone());
     restore();
     std::thread::spawn(move || {
         let ncpu = cores();
-        let (mut cpu, mut last_procs, mut hot, mut shown) = (sys::Cpu::default(), Vec::<Proc>::new(), 0u32, false);
+        let (mut cpu, mut last_procs, mut hot, mut shown) = (new_cpu(), Vec::<Proc>::new(), 0u32, false);
         loop {
             std::thread::sleep(PERIOD);
             let cpu_frac = cpu.busy_fraction();

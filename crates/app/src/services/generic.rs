@@ -102,16 +102,35 @@ pub fn start_clipboard(rep: Reporter) {
         let Ok(mut cb) = arboard::Clipboard::new() else { return };
         super::clipboard_history::init(&rep);
         let mut last = String::new();
+        let mut seen = None;
         loop {
-            if let Ok(text) = cb.get_text() {
-                if text != last {
-                    last = text.clone();
-                    super::clipboard_history::record(&rep, &text);
+            // Windows counts the changes of the clipboard: it is only opened (which keeps others out for the moment)
+            // after one
+            let changes = clipboard_changes();
+            if changes.is_none() || changes != seen {
+                if let Ok(text) = cb.get_text() {
+                    seen = changes;
+                    if text != last {
+                        last = text.clone();
+                        super::clipboard_history::record(&rep, &text);
+                    }
                 }
             }
             std::thread::sleep(Duration::from_millis(700));
         }
     });
+}
+
+/// The number of changes the clipboard has seen, where the system says it.
+fn clipboard_changes() -> Option<u32> {
+    #[cfg(windows)]
+    {
+        // SAFETY: reads a counter, nothing else
+        let n = unsafe { windows::Win32::System::DataExchange::GetClipboardSequenceNumber() };
+        (n != 0).then_some(n)
+    }
+    #[cfg(not(windows))]
+    None
 }
 
 /// Copies a one-time code and clears the clipboard after thirty seconds when it still holds it.
