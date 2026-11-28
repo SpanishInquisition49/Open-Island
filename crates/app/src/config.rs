@@ -456,6 +456,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     u.hide_when_covered = b("hide_when_covered", u.hide_when_covered);
     u.weather_in_pill = b("weather_in_pill", u.weather_in_pill);
     u.pill_pulse = b("pill_pulse", u.pill_pulse);
+    u.card_ripples = b("card_ripples", u.card_ripples);
     u.birthday_cards = b("birthday_cards", u.birthday_cards);
     u.weather = b("weather", u.weather);
     u.auto_audio_output = b("auto_audio_output", u.auto_audio_output);
@@ -498,7 +499,7 @@ pub fn parse(text: &str) -> Result<Settings, String> {
 /// The options of the options page: the keys that are on or off.
 pub const BOOL_OPTIONS: &[&str] = &[
     "show_notifications", "show_osd", "media_auto_expand", "timer_sound", "battery_alerts", "weather", "rain_alerts", "meeting_alerts", "end_alerts", "lyrics", "lyrics_in_pill", "art_tint", "status_icons",
-    "clipboard_history", "link_cards", "progress_drop", "clock_in_pill", "hide_on_fullscreen", "hide_when_covered", "weather_in_pill", "pill_pulse", "birthday_cards", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "away_recap", "culprit_alerts", "travel_times", "map_dark", "follow_position", "wifi_position", "quiet_on_screen_share", "evening_weekends", "currency_rates", "watch_downloads", "ocr_screenshots", "receive_files", "keyboard_alerts",
+    "clipboard_history", "link_cards", "progress_drop", "clock_in_pill", "hide_on_fullscreen", "hide_when_covered", "weather_in_pill", "pill_pulse", "card_ripples", "birthday_cards", "auto_audio_output", "quiet_in_meetings", "quiet_on_mic", "away_recap", "culprit_alerts", "travel_times", "map_dark", "follow_position", "wifi_position", "quiet_on_screen_share", "evening_weekends", "currency_rates", "watch_downloads", "ocr_screenshots", "receive_files", "keyboard_alerts",
 ];
 
 /// The numeric options: key, smallest, largest, and whether it is a whole number.

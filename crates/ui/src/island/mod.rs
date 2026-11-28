@@ -150,6 +150,8 @@ pub struct Config {
     pub weather_in_pill: bool,
     /// The edges of the pill move with the music, like the surface of a liquid.
     pub pill_pulse: bool,
+    /// The pill ripples as the drop of a card lets go of it and comes back.
+    pub card_ripples: bool,
     /// A card with confetti on the day of a birthday in the calendars.
     pub birthday_cards: bool,
     /// Fetch and show the weather.
@@ -218,6 +220,7 @@ impl Default for Config {
             hide_when_covered: true,
             weather_in_pill: true,
             pill_pulse: true,
+            card_ripples: true,
             birthday_cards: true,
             weather: true,
             timer_sound: true,
@@ -887,7 +890,7 @@ pub struct Island {
     pub(crate) enter_at: i64,
     pub(crate) spectrum: Vec<f32>,
     pub(crate) spectrum_at: i64,
-    /// The edges of the pill, moved by the music, and when they were last moved on.
+    /// The edges of the pill, moved by the music and by the drops, and when they were last moved on.
     pub(crate) surface: island_core::surface::Surface,
     surface_at: i64,
     /// When the calendars were last asked to refresh (so opening pages does not ask over and over).

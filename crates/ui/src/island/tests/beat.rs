@@ -66,3 +66,47 @@ fn the_edges_stay_put_when_switched_off_or_open() {
     open.tick(open.now + 33, 33.0);
     assert!(open.rippling().is_none());
 }
+
+#[test]
+fn the_pill_ripples_as_a_card_lets_go_of_it_and_comes_back() {
+    let f = fonts();
+    let mut i = Island::new(Config::default());
+    run(&mut i, 2000);
+    let room = |i: &Island, fr: &Frame| assert!(i.rippling().is_none() || fr.surface.1 >= crate::island::TOP_MARGIN + i.spring.h.pos + SWELL, "{:?}", fr.surface);
+    i.push(i.now, Input::Notification(incoming(1)));
+    let mut rippled = false;
+    for _ in 0..75 {
+        let fr = card_frames(&mut i, &f, 8);
+        rippled |= i.rippling().is_some();
+        room(&i, &fr);
+    }
+    assert!(rippled, "as the drop lets go");
+    card_frames(&mut i, &f, 3000);
+    assert!(i.rippling().is_none() && i.has_card(), "at rest while the card stays");
+    i.push(i.now, Input::DismissCard);
+    let mut after = vec![];
+    for _ in 0..500 {
+        let fr = card_frames(&mut i, &f, 8);
+        room(&i, &fr);
+        after.push((i.rippling().is_some(), i.has_card(), fr.next_ms));
+    }
+    let back = after.iter().position(|a| a.0).expect("as the drop comes back");
+    assert!(back > 15, "not before it is there: {back}");
+    assert!(after.iter().any(|a| a.0 && !a.1 && a.2 <= 16), "it goes on, smoothly, after the card is gone");
+    assert!(!after.last().unwrap().0);
+}
+
+#[test]
+fn drops_leave_the_edge_alone_when_switched_off() {
+    let f = fonts();
+    let mut i = Island::new(Config { card_ripples: false, ..Config::default() });
+    run(&mut i, 2000);
+    i.push(i.now, Input::Notification(incoming(1)));
+    for n in 0..600 {
+        card_frames(&mut i, &f, 8);
+        assert!(i.rippling().is_none());
+        if n == 300 {
+            i.push(i.now, Input::DismissCard);
+        }
+    }
+}

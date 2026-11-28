@@ -61,6 +61,8 @@ pub(crate) struct Card {
     pub rect: Option<(f64, f64, f64, f64, f64)>,
     /// It starts somewhere of its own instead of inside what is above it.
     pub arrival: Option<effects::Arrival>,
+    /// The pill has felt it leave, and come back.
+    pub felt: (bool, bool),
     /// Where its one-time code was last drawn: the left end and the middle of the line, in the pill's coordinates.
     pub code_at: Option<(f64, f64)>,
 }
@@ -256,7 +258,7 @@ impl Island {
             // its time starts when it shows
             self.delay_card(n.id, born - now);
             self.cards.keys += 1;
-            self.cards.stack.push(Card { key: self.cards.keys, n: n.clone(), group, born, anim: None, anchor: None, leaving: false, changed_at: i64::MIN / 2, held_ms: 0, rect: None, arrival, code_at: None });
+            self.cards.stack.push(Card { key: self.cards.keys, n: n.clone(), group, born, anim: None, anchor: None, leaving: false, changed_at: i64::MIN / 2, held_ms: 0, rect: None, arrival, felt: (false, false), code_at: None });
         }
         // whatever did not get a card now never will
         self.fx.arrivals.clear();

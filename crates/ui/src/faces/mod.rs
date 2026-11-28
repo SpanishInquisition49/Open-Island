@@ -157,6 +157,16 @@ impl Island {
         path
     }
 
+    /// How far the bottom edge of the pill is below its place at `x` from its middle: what the neck of a drop has to meet.
+    pub(super) fn floor_lift(&self, w: f64, h: f64, radius: f64) -> impl Fn(f64) -> f64 + '_ {
+        move |x| {
+            self.rippling().map_or(0.0, |s| {
+                let (rest, there) = s.edge_at(island_core::surface::Edge::Bottom, x + w / 2.0, w, h, radius);
+                there - rest
+            })
+        }
+    }
+
     /// The snow at the bottom of the pill and the drops on its glass.
     fn draw_residue(&self, scene: &mut Scene, base: Affine, w: f64, h: f64, radius: f64, body: &vello::kurbo::BezPath) {
         use island_core::residue;

@@ -75,7 +75,7 @@ impl Island {
         let s = anim.shape(t);
         let at = base * Affine::translate((w / 2.0, h));
         let pill = Blob { cx: 0.0, cy: -h / 2.0, half_w: w / 2.0, half_h: h / 2.0, radius };
-        match droplet::neck(&pill, &s, 0.7) {
+        match droplet::neck_over(&pill, &s, 0.7, &self.floor_lift(w, h, radius)) {
             Some(loops) => {
                 let mut path = BezPath::new();
                 for l in loops {

@@ -34,11 +34,11 @@ fn path(loops: Vec<Vec<(f64, f64)>>) -> BezPath {
 }
 
 /// A round drop at (`x`, `y`) from the middle of the pill's bottom edge, joined to the pill while they are close.
-fn hanging_drop(scene: &mut Scene, base: Affine, (w, h, radius): (f64, f64, f64), (x, y): (f64, f64), d: f64, blend: f64) {
+fn hanging_drop(scene: &mut Scene, base: Affine, (w, h, radius): (f64, f64, f64), (x, y): (f64, f64), d: f64, blend: f64, lift: &dyn Fn(f64) -> f64) {
     let at = base * Affine::translate((w / 2.0, h));
     let pill = Blob { cx: 0.0, cy: -h / 2.0, half_w: w / 2.0, half_h: h / 2.0, radius };
     let drop = Shape { x, top: y - d / 2.0, w: d, h: d, radius: d / 2.0, opened: 0.0, blend, content_w: d };
-    match droplet::neck(&pill, &drop, 0.7) {
+    match droplet::neck_over(&pill, &drop, 0.7, lift) {
         Some(loops) => scene.fill(Fill::NonZero, at, theme::BG, None, &path(loops)),
         None => scene.fill(Fill::NonZero, at, theme::BG, None, &Circle::new((x, y), d / 2.0)),
     }
@@ -87,7 +87,7 @@ impl Island {
         if let Some(b) = &self.fx.burst {
             for n in 0..b.drops.len() {
                 let p = b.place(n, self.now - b.born, h);
-                hanging_drop(scene, base, pill, (p.x, p.y), p.d, p.blend);
+                hanging_drop(scene, base, pill, (p.x, p.y), p.d, p.blend, &self.floor_lift(w, h, radius));
             }
         }
         if let Some(c) = &self.fx.catch {

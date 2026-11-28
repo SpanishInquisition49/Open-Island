@@ -1,6 +1,6 @@
-//! The edges of the pill as the surface of a liquid, moved by the music. Points along each edge pull on their
-//! neighbours, are drawn back to rest and slowly lose their motion; the sound gives them pushes, low notes towards the
-//! middle and high ones towards the ends. What follows (waves that run, meet, turn back at the ends and die down) is
+//! The edges of the pill as the surface of a liquid. Points along each edge pull on their neighbours, are drawn back to
+//! rest and slowly lose their motion; the sound gives them pushes, low notes towards the middle and high ones towards
+//! the ends, and so does a drop that leaves or comes back. What follows (waves that run, meet, turn back at the ends and die down) is
 //! not drawn up beforehand.
 
 use crate::sky::chance;
@@ -117,6 +117,14 @@ impl Surface {
         self.loudness = sum / levels.len().clamp(1, BANDS.len()) as f64;
     }
 
+    /// Something hits the bottom edge, or lets go of it, around `at` (0 to 1 along it) over `broad` of its length:
+    /// outwards when `speed` is above zero. The top edge feels it too, less and the other way.
+    pub fn strike(&mut self, at: f64, broad: f64, speed: f64) {
+        let broad = (broad * POINTS as f64).clamp(2.5, POINTS as f64 / 4.0);
+        self.bottom.push(at.clamp(0.0, 1.0), broad, speed);
+        self.top.push(at.clamp(0.0, 1.0), broad * 1.3, -0.3 * speed);
+    }
+
     /// Moves on by `ms`.
     pub fn step(&mut self, ms: f64) {
         let mut left = ms.clamp(0.0, 100.0);
@@ -222,6 +230,28 @@ mod tests {
         reach(&mut s, 3_000);
         assert!(s.still());
         assert_eq!((s.out(Edge::Bottom, 0.5), s.out(Edge::Top, 0.5)), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_drop_that_leaves_or_comes_back_ripples_it_from_there() {
+        for speed in [-220.0, 220.0] {
+            let mut s = Surface::default();
+            s.strike(0.5, 0.1, speed);
+            assert!(!s.still());
+            s.step(60.0);
+            let here = s.out(Edge::Bottom, 0.5);
+            assert!(here * speed > 0.0 && here.abs() > 1.2, "{here}");
+            assert!(s.out(Edge::Bottom, 0.05).abs() < here.abs() / 2.0, "from there");
+            for _ in 0..120 {
+                s.step(33.0);
+            }
+            assert!(s.still());
+        }
+        // also from off the end of the edge
+        let mut s = Surface::default();
+        s.strike(7.0, 5.0, 200.0);
+        s.step(100.0);
+        assert!(s.out(Edge::Bottom, 0.9).is_finite() && !s.still());
     }
 
     #[test]

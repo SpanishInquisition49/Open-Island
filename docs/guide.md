@@ -205,6 +205,11 @@ ring becomes snooze; a click on the card opens the sender, a right click anywher
 a card that goes is drawn back into the one above and those below move up, and a small drop under the stack counts the ones waiting for a place. The motion and the look are
 ported from [drip](https://github.com/jrnxf/drip) (see `THIRD-PARTY-NOTICES.md`).
 
+The pill's surface feels it: as the neck breaks, the edge springs back where the drop was, and as the drop returns it is
+pushed out there; the waves run along the pill and die down in a second or two (`card_ripples`, Options > Music >
+"Ripple with cards", on). Only a small pill ripples, not an open page, and only for what drops from the pill itself, not
+from a card above.
+
 ## Cards from scripts
 
 The command line follows [drip](https://drip.jrnxf.co/)'s:
@@ -892,7 +897,7 @@ a script with `open-island msg set <option> <value>`:
 | Places | `receive_files` (Linux: take files other devices send with LocalSend; `receive_dir` in `config.json` says where they go) | **off** |
 | Places | `wifi_position` (Linux: a position within metres from the Wi-Fi networks around you, looked up at beacondb.net; a card says so when you turn it on) | **off** |
 | Places | `map_tile_url` (a preset name or a URL; see the map), `map_dark`, `map_api_key` (Settings page; kept in the keyring), `travel_mode` (`car`, `walk`, `transit`, `train`: on the Today page and the map) | OpenStreetMap, on, none, car |
-| Music (a title or artist too long for its place goes round to the left, followed by itself and pausing each time its start is back, instead of being cut) | `media_auto_expand`, `lyrics`, `lyrics_in_pill` (off; the compact pill widens, up to 640 px, to show the line whole), `art_tint`, `pill_pulse` (see "The player") | on |
+| Music (a title or artist too long for its place goes round to the left, followed by itself and pausing each time its start is back, instead of being cut) | `media_auto_expand`, `lyrics`, `lyrics_in_pill` (off; the compact pill widens, up to 640 px, to show the line whole), `art_tint`, `pill_pulse` (see "The player"), `card_ripples` (see "The notification card") | on |
 
 Not carried over, because they are about running inside Noctalia: `style` (the island is always black), `update_check`.
 

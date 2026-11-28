@@ -182,6 +182,9 @@ pub struct Animator {
     cue: f64,
     left_at: Option<f64>,
     end: f64,
+    /// When its neck breaks as it comes out, and when it touches what it goes back into.
+    pinched: Option<f64>,
+    touched: Option<f64>,
 }
 
 /// The first time from `start`, in 1 ms steps and within 2 s, at which `done` holds.
@@ -212,7 +215,7 @@ impl Animator {
         h.animate(size.h, GROW, loose);
         opened.animate(1.0, GROW, loose);
         let cue = first_time(loose, |t| GROW.progress(t - loose) >= TEXT_OPEN);
-        Self { size, top, rise: None, x: Value::new(0.0), shake_at: None, centre, w, h, opened, blend, content_w: Value::new(size.w), cue, left_at: None, end: loose + 0.8 }
+        Self { size, top, rise: None, x: Value::new(0.0), shake_at: None, centre, w, h, opened, blend, content_w: Value::new(size.w), cue, left_at: None, end: loose + 0.8, pinched: Some(loose), touched: None }
     }
 
     /// A drop born at time 0 inside `from` that falls a long way, round all the way down, and opens to `size` only where it
@@ -234,7 +237,7 @@ impl Animator {
         h.animate(size.h, GROW, landed);
         opened.animate(1.0, GROW, landed);
         let cue = first_time(landed, |t| GROW.progress(t - landed) >= TEXT_OPEN);
-        Self { size, top, rise: None, x: Value::new(0.0), shake_at: None, centre, w, h, opened, blend, content_w: Value::new(size.w), cue, left_at: None, end: landed + 0.8 }
+        Self { size, top, rise: None, x: Value::new(0.0), shake_at: None, centre, w, h, opened, blend, content_w: Value::new(size.w), cue, left_at: None, end: landed + 0.8, pinched: Some(loose), touched: None }
     }
 
     /// A card born at time 0 from a drop that already exists, its middle at (`x`, `y`) from the middle of the pill's
@@ -257,7 +260,7 @@ impl Animator {
         h.animate(size.h, GROW, open);
         opened.animate(1.0, GROW, open);
         let cue = first_time(open, |t| GROW.progress(t - open) >= TEXT_OPEN);
-        Self { size, top, rise: None, x: side, shake_at: None, centre, w, h, opened, blend, content_w: Value::new(size.w), cue, left_at: None, end: open + 0.8 }
+        Self { size, top, rise: None, x: side, shake_at: None, centre, w, h, opened, blend, content_w: Value::new(size.w), cue, left_at: None, end: open + 0.8, pinched: hanging.then_some(loose), touched: None }
     }
 
     /// Makes the card tremble from side to side as its words appear.
@@ -340,6 +343,12 @@ impl Animator {
         self.blend.animate(0.0, Curve::new(0.25, 0.0), rise + 0.2);
         self.rise = Some(rise);
         self.end = rise + SWALLOWED_AFTER;
+        self.touched = Some(self.contact(rise, into));
+    }
+
+    /// When the drop on its way up from `from` on reaches what it goes into.
+    fn contact(&self, from: f64, into: Anchor) -> f64 {
+        first_time(from, |t| self.centre.at(t) - self.h.at(t) / 2.0 <= into.bottom + BLEND / 3.0).min(self.end)
     }
 
     /// Aims a drop on its way out somewhere else: what it was going into moved, or left too.
@@ -348,6 +357,17 @@ impl Animator {
         let at = at.max(rise);
         self.centre.animate(into.inside(DROP + 4.0), RISE, at);
         self.end = self.end.max(at + SWALLOWED_AFTER);
+        self.touched = Some(self.contact(at, into));
+    }
+
+    /// When the neck of a drop coming out breaks; None for one that was loose from the start.
+    pub fn pinched_at(&self) -> Option<f64> {
+        self.pinched
+    }
+
+    /// When a drop on its way out touches what it goes back into.
+    pub fn touched_at(&self) -> Option<f64> {
+        self.touched
     }
 
     pub fn shape(&self, t: f64) -> Shape {
@@ -406,8 +426,16 @@ pub fn smooth_min(a: f64, b: f64, blend: f64) -> f64 {
 /// drop is traced, from a line inside the anchor down; the anchor drawn on its own covers the cut. None when the two
 /// are too far apart to melt (the drop is then a plain rounded rectangle).
 pub fn neck(anchor: &Blob, s: &Shape, cell: f64) -> Option<Vec<Vec<(f64, f64)>>> {
+    neck_over(anchor, s, cell, &|_| 0.0)
+}
+
+/// `neck` over an anchor whose bottom edge is not straight: `lift` says how far below its place the edge is at `x`
+/// (above it when negative, by less than the 4 px the trace starts inside).
+pub fn neck_over(anchor: &Blob, s: &Shape, cell: f64, lift: &dyn Fn(f64) -> f64) -> Option<Vec<Vec<(f64, f64)>>> {
     let floor = anchor.cy + anchor.half_h;
-    if s.blend <= 0.01 || s.top >= floor + s.blend || s.top + s.h <= floor - s.blend || cell <= 0.0 {
+    // where the drop meets it
+    let here = floor + lift(s.x);
+    if s.blend <= 0.01 || s.top >= here + s.blend || s.top + s.h <= here - s.blend || cell <= 0.0 {
         return None;
     }
     let drop = Blob { cx: s.x, cy: s.top + s.h / 2.0, half_w: s.w / 2.0, half_h: s.h / 2.0, radius: s.radius };
@@ -416,17 +444,21 @@ pub fn neck(anchor: &Blob, s: &Shape, cell: f64) -> Option<Vec<Vec<(f64, f64)>>>
     let straight = anchor.half_w - anchor.radius.min(anchor.half_w).min(anchor.half_h);
     let top = if s.x.abs() + s.w / 2.0 + s.blend > straight { (s.top - s.blend - 1.0).min(inside).max(anchor.cy - anchor.half_h) } else { inside };
     let half = s.w / 2.0 + s.blend + 2.0 * cell;
-    let bottom = (s.top + s.h).max(floor) + s.blend + 2.0 * cell;
     let columns = (2.0 * half / cell).ceil() as usize + 1;
-    let rows = ((bottom - top) / cell).ceil() as usize + 1;
     let x0 = s.x - (columns - 1) as f64 * cell / 2.0;
+    let lifts: Vec<f64> = (0..columns).map(|column| lift(x0 + column as f64 * cell)).collect();
+    let lowest = floor + lifts.iter().copied().fold(0.0, f64::max);
+    let bottom = (s.top + s.h).max(lowest) + s.blend + 2.0 * cell;
+    let rows = ((bottom - top) / cell).ceil() as usize + 1;
     // the border is held outside, so every loop closes
     let mut values = vec![1.0; columns * rows];
     for row in 1..rows.saturating_sub(1) {
         let y = top + row as f64 * cell;
         for column in 1..columns - 1 {
             let x = x0 + column as f64 * cell;
-            values[row * columns + column] = smooth_min(anchor.distance(x, y), drop.distance(x, y), s.blend);
+            // the lower half of the anchor goes where its edge has gone
+            let of_anchor = anchor.distance(x, if y > anchor.cy { y - lifts[column] } else { y });
+            values[row * columns + column] = smooth_min(of_anchor, drop.distance(x, y), s.blend);
         }
     }
     Some(loops(&values, columns, rows).into_iter().map(|l| l.into_iter().map(|(x, y)| (x0 + x * cell, top + y * cell)).collect()).collect())
@@ -636,6 +668,36 @@ mod tests {
         let s = Shape { x: 0.0, top: -10.0, w: 140.0, h: 30.0, radius: 15.0, opened: 0.5, blend: BLEND, content_w: 0.0 };
         let l = neck(&PILL, &s, 1.0).unwrap();
         assert!(l.iter().flatten().any(|(_, y)| *y < -20.0), "traced from the pill's top");
+    }
+
+    #[test]
+    fn the_neck_meets_an_edge_that_has_moved() {
+        let drop = Shape { x: 0.0, top: 1.0, w: DROP, h: DROP, radius: DROP / 2.0, opened: 0.0, blend: BLEND, content_w: DROP };
+        let floor = PILL.cy + PILL.half_h;
+        for lift in [-2.5, 5.0] {
+            let loops = neck_over(&PILL, &drop, 0.5, &|_| lift).expect("close enough to melt");
+            // well to the side of the drop the outline runs along the edge where it is now
+            let beside: Vec<f64> = loops.iter().flatten().filter(|p| p.0.abs() > DROP / 2.0 + BLEND && p.1 > floor - 3.5).map(|p| p.1).collect();
+            assert!(!beside.is_empty() && beside.iter().all(|y| *y <= floor + lift + 0.3), "{lift}: {beside:?}");
+            assert!(beside.iter().any(|y| (y - floor - lift).abs() < 0.3), "{lift}: {beside:?}");
+        }
+        assert_eq!(neck_over(&PILL, &drop, 1.0, &|_| 0.0), neck(&PILL, &drop, 1.0));
+        assert!(neck_over(&PILL, &Shape { top: floor + BLEND + 1.0, ..drop }, 1.0, &|_| 5.0).is_some(), "the edge reaches further");
+    }
+
+    #[test]
+    fn it_says_when_its_neck_breaks_and_when_it_is_back() {
+        let size = Size { w: 400.0, h: 80.0, corner: 30.0 };
+        let mut a = Animator::enter(size, Anchor::pill(28.0), 8.0);
+        let pinched = a.pinched_at().unwrap();
+        assert!(pinched > 0.0 && pinched < a.cue() && a.shape(pinched).top >= BLEND / 3.0 - DROP, "{pinched}");
+        assert!(a.touched_at().is_none());
+        a.exit(3.0, Anchor::pill(28.0));
+        let touched = a.touched_at().unwrap();
+        assert!(touched > a.rise_at().unwrap() && touched <= a.end(), "{touched}");
+        let s = a.shape(touched);
+        assert!(s.top <= BLEND / 3.0 + 1.0 && a.shape(touched - 0.05).top > s.top, "{s:?}");
+        assert!(Animator::travel(size, (60.0, 80.0), 8.0).pinched_at().is_none(), "loose from the start");
     }
 
     #[test]

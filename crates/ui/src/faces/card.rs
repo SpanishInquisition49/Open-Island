@@ -341,7 +341,10 @@ impl Island {
                     .and_then(|o| self.card_shape(o))
                     .map(|o| Blob { cx: o.x, cy: o.top + o.h / 2.0, half_w: o.w / 2.0, half_h: o.h / 2.0, radius: o.radius }),
             };
-            if let Some(loops) = anchor.and_then(|a| droplet::neck(&a, &s, 0.7)) {
+            // from the pill, it meets the edge where the ripples have it
+            let lift = self.floor_lift(w, h, radius);
+            let on_pill = c.anchor.is_none();
+            if let Some(loops) = anchor.and_then(|a| droplet::neck_over(&a, &s, 0.7, &|x| if on_pill { lift(x) } else { 0.0 })) {
                 let mut path = BezPath::new();
                 for l in loops {
                     for (i, (x, y)) in l.into_iter().enumerate() {
