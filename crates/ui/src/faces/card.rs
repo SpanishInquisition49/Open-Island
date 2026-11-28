@@ -251,11 +251,10 @@ pub(crate) fn faded_image(p: P, img: &Image, x: f64, y: f64, size: f64, radius: 
     if p.opacity >= 0.999 {
         draw_image(p, img, x, y, size, radius);
     } else if p.opacity > 0.0 {
-        use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
-        let data = ImageData { data: Blob::new(img.rgba.clone() as std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>), format: ImageFormat::Rgba8, alpha_type: ImageAlphaType::Alpha, width: img.width, height: img.height };
+        use vello::peniko::ImageBrush;
         let s = size / img.width.min(img.height).max(1) as f64;
         let (ox, oy) = (x - (img.width as f64 * s - size) / 2.0, y - (img.height as f64 * s - size) / 2.0);
-        let brush = ImageBrush::new(data).with_alpha(p.opacity);
+        let brush = ImageBrush::new(picture::data(img)).with_alpha(p.opacity);
         p.scene.draw_image(&brush, p.transform * Affine::translate((ox, oy)) * Affine::scale(s));
     }
     p.scene.pop_layer();

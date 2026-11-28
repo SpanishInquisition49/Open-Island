@@ -2,12 +2,23 @@
 
 use island_ui::text::Fonts;
 use island_ui::Island;
-use vello::kurbo::Affine;
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
 use vello::wgpu::util::TextureBlitter;
 use vello::wgpu::{self, CompositeAlphaMode, PresentMode, SurfaceTarget};
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
+
+/// A frame equal to the one on screen is not rendered again, but not for longer than this: should a surface be lost
+/// without a word (a graphics processor back from sleep), it is found out when the next frame is shown.
+const REPAINT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether the frame about to be drawn (what it shows, its size) is already the one on screen.
+fn on_screen(shown: Option<(Drawn, std::time::Instant)>, next: Drawn, now: std::time::Instant) -> bool {
+    shown.is_some_and(|(drawn, at)| drawn == next && now.duration_since(at) < REPAINT)
+}
+
+/// What a frame shows (see `fingerprint`), and its width and height.
+type Drawn = (u64, u32, u32);
 
 /// The alpha mode that lets what is behind the window show through, if the surface has one.
 fn transparent_mode(offered: &[CompositeAlphaMode]) -> Option<CompositeAlphaMode> {
@@ -96,13 +107,15 @@ pub struct Gpu {
     pub transparent: bool,
     /// What the last frame cost without waiting for the display (the scene, the render and the submit).
     pub last_work: std::time::Duration,
+    /// The frame on screen, and when it was shown. None when there is none to count on.
+    shown: Option<(Drawn, std::time::Instant)>,
 }
 
 impl Gpu {
     /// Call before the program starts other threads (see `context`).
     pub fn new() -> Self {
         let (ctx, narrowed) = context();
-        Self { ctx, narrowed, renderer: None, surface: None, scene: Scene::new(), transparent: false, last_work: Default::default() }
+        Self { ctx, narrowed, renderer: None, surface: None, scene: Scene::new(), transparent: false, last_work: Default::default(), shown: None }
     }
 
     /// Makes the window's surface; if the narrowed context has no adapter that can show it, again with every driver.
@@ -179,6 +192,7 @@ impl Gpu {
         let surface = RenderSurface { surface, config, dev_id, format, target_texture, target_view, blitter };
         self.ctx.configure_surface(&surface);
         self.surface = Some(surface);
+        self.shown = None;
         Ok(())
     }
 
@@ -186,6 +200,7 @@ impl Gpu {
     #[cfg(target_os = "linux")]
     pub fn detach(&mut self) {
         self.surface = None;
+        self.shown = None;
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -196,13 +211,20 @@ impl Gpu {
         }
     }
 
-    /// Draws the island into the surface at `scale` (physical pixels per logical pixel).
-    pub fn draw(&mut self, island: &mut Island, fonts: &Fonts, logical: (f64, f64), scale: f64) -> Result<(), String> {
+    /// Draws the island into the surface at `scale` (physical pixels per logical pixel). With `may_keep`, a frame that
+    /// is the one on screen is left there: pass false when the window itself needs a new one.
+    pub fn draw(&mut self, island: &mut Island, fonts: &Fonts, logical: (f64, f64), scale: f64, may_keep: bool) -> Result<(), String> {
         let (Some(surface), Some(renderer)) = (self.surface.as_mut(), self.renderer.as_mut()) else { return Ok(()) };
         let started = std::time::Instant::now();
         self.scene.reset();
         island.draw(&mut self.scene, fonts, logical, scale);
         let (w, h) = (surface.config.width, surface.config.height);
+        let next = (crate::fingerprint::of(&self.scene), w, h);
+        if may_keep && on_screen(self.shown, next, started) {
+            self.last_work = started.elapsed();
+            return Ok(());
+        }
+        self.shown = None;
         let handle = &self.ctx.devices[surface.dev_id];
         renderer
             .render_to_texture(
@@ -227,7 +249,7 @@ impl Gpu {
         surface.blitter.copy(&handle.device, &mut enc, &surface.target_view, &view);
         handle.queue.submit([enc.finish()]);
         handle.queue.present(frame);
-        let _ = Affine::IDENTITY;
+        self.shown = Some((next, started));
         Ok(())
     }
 }
@@ -236,6 +258,17 @@ impl Gpu {
 mod tests {
     use super::*;
     use CompositeAlphaMode::*;
+
+    #[test]
+    fn a_frame_is_kept_only_while_it_is_the_same_the_same_size_and_recent() {
+        let at = std::time::Instant::now();
+        let shown = Some(((7, 200, 60), at));
+        assert!(on_screen(shown, (7, 200, 60), at + REPAINT / 2));
+        assert!(!on_screen(shown, (8, 200, 60), at), "it shows something else");
+        assert!(!on_screen(shown, (7, 201, 60), at), "another size");
+        assert!(!on_screen(shown, (7, 200, 60), at + REPAINT), "painted again now and then");
+        assert!(!on_screen(None, (7, 200, 60), at));
+    }
 
     /// What wgpu 30 offers for the two kinds of surface DirectX 12 has.
     #[test]

@@ -843,6 +843,7 @@ mod pages_a;
 mod pages_b;
 mod grid;
 mod phone;
+mod picture;
 mod shelf;
 
 
@@ -909,29 +910,15 @@ fn ago(delta_ms: i64) -> String {
 /// An image drawn into a rounded square (`cover` fit).
 /// A map tile (256 logical pixels square) at a place in the page; the caller clips.
 fn draw_tile(p: P, img: &Image, x: f64, y: f64, size: f64) {
-    use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
-    let data = ImageData {
-        data: Blob::new(img.rgba.clone() as std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: img.width,
-        height: img.height,
-    };
+    use vello::peniko::ImageBrush;
     let s = size / img.width.max(1) as f64;
     let t = p.transform;
-    p.scene.draw_image(&ImageBrush::new(data), t * Affine::translate((x, y)) * Affine::scale(s));
+    p.scene.draw_image(&ImageBrush::new(picture::data(img)), t * Affine::translate((x, y)) * Affine::scale(s));
 }
 
 fn draw_image(p: P, img: &Image, x: f64, y: f64, size: f64, radius: f64) {
-    use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
-    let data = ImageData {
-        data: Blob::new(img.rgba.clone() as std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: img.width,
-        height: img.height,
-    };
-    let brush = ImageBrush::new(data);
+    use vello::peniko::ImageBrush;
+    let brush = ImageBrush::new(picture::data(img));
     let s = size / img.width.min(img.height).max(1) as f64;
     let ox = x - (img.width as f64 * s - size) / 2.0;
     let oy = y - (img.height as f64 * s - size) / 2.0;

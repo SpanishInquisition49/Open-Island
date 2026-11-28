@@ -3,7 +3,7 @@
 //! Works on niri, sway, Hyprland, KDE and every other compositor with wlr-layer-shell; GNOME falls back
 //! to the plain window backend.
 
-use crate::app::{App, Waker};
+use crate::app::{until_frame, App, Waker};
 use crate::gpu::Gpu;
 use calloop::{channel, EventLoop};
 use calloop_wayland_source::WaylandSource;
@@ -101,6 +101,8 @@ struct Wl {
     next_ms: u32,
     exit: bool,
     last_render: Instant,
+    /// The compositor configured the surface since the last frame: the next one must be shown, even if it is the same.
+    reshow: bool,
     input_rects: Vec<(i32, i32, i32, i32)>,
     on_top_layer: bool,
     /// The screen the surface is on, for its height.
@@ -201,17 +203,22 @@ impl Wl {
         }
         // fullscreen windows: drop under them (overlay -> top) so the island hides, and come back after
         let under = self.app.fullscreen_hides();
+        // what changes about the surface takes effect with the next frame shown, so such a change shows one
+        let mut changed = std::mem::take(&mut self.reshow);
         if under != self.on_top_layer {
+            changed = true;
             self.on_top_layer = under;
             self.layer.set_layer(if self.on_top_layer { Layer::Top } else { Layer::Overlay });
         }
         // the keyboard is only taken while an inline reply is being typed
         if self.app.island.wants_keyboard() != self.keyboard_on {
+            changed = true;
             self.keyboard_on = !self.keyboard_on;
             self.layer.set_keyboard_interactivity(if self.keyboard_on { KeyboardInteractivity::Exclusive } else { KeyboardInteractivity::None });
         }
         let (lw, lh) = (f.surface.0.ceil().max(1.0) as u32, f.surface.1.ceil().max(1.0) as u32);
         if (lw, lh) != self.size {
+            changed = true;
             self.size = (lw, lh);
             self.layer.set_size(lw, lh);
             if let Some(v) = &self.viewport {
@@ -223,6 +230,7 @@ impl Wl {
         // only the island itself takes clicks
         let rects: Vec<(i32, i32, i32, i32)> = self.app.island.input_rects().into_iter().map(|(x, y, w, h)| (x.floor() as i32, y.floor() as i32, w.ceil() as i32, h.ceil() as i32)).collect();
         if self.input_rects != rects {
+            changed = true;
             self.input_rects = rects.clone();
             if let Ok(region) = Region::new(&self.compositor) {
                 if !self.no_pointer {
@@ -233,7 +241,9 @@ impl Wl {
                 self.layer.wl_surface().set_input_region(Some(region.wl_region()));
             }
         }
-        if let Err(e) = self.gpu.draw(&mut self.app.island, &self.app.fonts, (lw as f64, lh as f64), self.scale) {
+        // while the shape moves each frame waits for the display, which is what paces the loop: all of them are shown
+        let may_keep = !changed && !f.animating;
+        if let Err(e) = self.gpu.draw(&mut self.app.island, &self.app.fonts, (lw as f64, lh as f64), self.scale, may_keep) {
             log::error!("{e}");
         }
         self.perf.frame(f.animating, self.gpu.last_work);
@@ -278,6 +288,7 @@ impl LayerShellHandler for Wl {
     fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface, _: LayerSurfaceConfigure, _: u32) {
         self.configured = true;
         self.dirty = true;
+        self.reshow = true;
     }
 }
 
@@ -681,6 +692,7 @@ pub fn run() -> Result<(), String> {
         next_ms: 0,
         exit: false,
         last_render: Instant::now(),
+        reshow: true,
         input_rects: Vec::new(),
         on_top_layer: false,
         on_output: None,
@@ -691,7 +703,14 @@ pub fn run() -> Result<(), String> {
     loop {
         // frames only when something needs them: at vsync while the shape moves, otherwise when `next_ms` has passed
         let due = Duration::from_millis(state.next_ms as u64);
-        let timeout = if state.lost { Duration::from_millis(500) } else if state.animating || state.dirty { Duration::ZERO } else { due.saturating_sub(state.last_render.elapsed()) };
+        let timeout = if state.lost {
+            Duration::from_millis(500)
+        } else if !state.configured {
+            // nothing to draw into until the compositor says: its word wakes the loop
+            Duration::from_millis(100)
+        } else {
+            until_frame(state.animating, state.dirty, state.last_render.elapsed(), due)
+        };
         event_loop.dispatch(timeout, &mut state).map_err(|e| e.to_string())?;
         if state.exit {
             return Ok(());
@@ -707,7 +726,7 @@ pub fn run() -> Result<(), String> {
             }
             continue;
         }
-        if state.configured && (state.animating || state.dirty || state.last_render.elapsed() >= due) {
+        if state.configured && until_frame(state.animating, state.dirty, state.last_render.elapsed(), due).is_zero() {
             state.render(&qh);
         }
     }

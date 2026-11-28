@@ -8,7 +8,7 @@ use island_ui::text::Fonts;
 use island_ui::Island;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Wakes the event loop from another thread.
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
@@ -104,6 +104,23 @@ pub struct App {
 pub fn reanchor(epoch_at_start: i64, elapsed_ms: i64, wall_ms: i64) -> i64 {
     let drift = wall_ms - (epoch_at_start + elapsed_ms);
     if drift.abs() > 1500 { epoch_at_start + drift } else { epoch_at_start }
+}
+
+/// The least time between two frames while nothing moves: news that come closer together than this are drawn by one
+/// frame. Just under a frame at 60 Hz, so that a timer of 16 ms is not made to wait.
+pub const GATHER: Duration = Duration::from_millis(15);
+
+/// How long until the next frame, zero for now: at once while the shape moves (the display paces those), soon after
+/// news (`dirty`), else when the island asked to be drawn again (`due`, counted like `since` from the last frame).
+pub fn until_frame(animating: bool, dirty: bool, since: Duration, due: Duration) -> Duration {
+    let asked = due.saturating_sub(since);
+    if animating {
+        Duration::ZERO
+    } else if dirty {
+        GATHER.saturating_sub(since).min(asked)
+    } else {
+        asked
+    }
 }
 
 pub fn frame_dt(gap_ms: f64, was_animating: bool) -> f64 {
@@ -568,5 +585,17 @@ mod tests {
         assert_eq!(frame_dt(40.0, true), 40.0, "so does a dropped frame, or the motion would lag behind the clock");
         assert_eq!(frame_dt(f64::NAN, true), 10.0);
         assert_eq!(frame_dt(-3.0, false), 10.0);
+    }
+
+    #[test]
+    fn news_that_come_close_together_wait_for_one_frame() {
+        use super::until_frame;
+        let ms = std::time::Duration::from_millis;
+        assert_eq!(until_frame(true, false, ms(0), ms(1000)), ms(0), "the shape moves");
+        assert_eq!(until_frame(false, false, ms(10), ms(1000)), ms(990), "nothing to draw before its time");
+        assert_eq!(until_frame(false, true, ms(5), ms(1000)), ms(10), "news just after a frame wait a little");
+        assert_eq!(until_frame(false, true, ms(40), ms(1000)), ms(0), "and are drawn at once otherwise");
+        assert_eq!(until_frame(false, true, ms(12), ms(8)), ms(0), "never later than the island asked");
+        assert_eq!(until_frame(false, false, ms(20), ms(16)), ms(0));
     }
 }

@@ -1,7 +1,7 @@
 //! The generic window backend: a borderless transparent always-on-top window at the top centre of the
 //! primary monitor. Used on Windows, macOS and X11 (and on Wayland compositors without layer-shell).
 
-use crate::app::App;
+use crate::app::{until_frame, App};
 use crate::gpu::Gpu;
 use island_ui::island::{MAX_SURFACE, TOP_MARGIN};
 use std::sync::Arc;
@@ -29,8 +29,17 @@ struct Shell {
     /// What the island asked of the surface last (the exact size at rest, a box around the animation while it moves).
     wanted: (f64, f64),
     last_redraw: Instant,
+    /// News since the last frame, a frame asked for and not yet drawn, and a window that needs a new frame even if it
+    /// shows the same.
+    news: bool,
+    asked: Option<Instant>,
+    reshow: bool,
     perf: crate::perf::Perf,
 }
+
+/// How long a frame asked of the window system is waited for before it is asked again: a request it never delivers (a
+/// window it holds to be out of view) must not leave the island still.
+const REDRAW_PATIENCE: Duration = Duration::from_millis(100);
 
 /// Windows keeps one window of a fixed size: resizing a window (and its swap chain) while the island animates is what
 /// made it stutter and flash a rectangle, so only the part that takes the pointer changes.
@@ -106,17 +115,24 @@ impl Shell {
 
     fn frame(&mut self, el: &ActiveEventLoop) {
         let Some(window) = self.window.clone() else { return };
+        (self.news, self.asked) = (false, None);
         let f = self.app.tick();
         if self.app.quit {
             el.exit();
             return;
         }
         self.wanted = f.surface;
+        let before = self.surface_logical;
         self.resize_to(&window, window_size(f.surface));
+        self.reshow |= before != self.surface_logical;
         self.animating = f.animating;
         self.next_ms = f.next_ms;
         let scale = window.scale_factor();
-        if let Err(e) = self.gpu.draw(&mut self.app.island, &self.app.fonts, self.surface_logical, scale) {
+        // Windows keeps showing the last frame, so one equal to it is not rendered again (an X11 window without a
+        // compositor loses what it shows when it is covered: there every frame is drawn)
+        let may_keep = cfg!(windows) && !f.animating && !self.reshow && !self.hidden;
+        self.reshow = false;
+        if let Err(e) = self.gpu.draw(&mut self.app.island, &self.app.fonts, self.surface_logical, scale, may_keep) {
             log::error!("{e}");
         }
         self.perf.frame(f.animating, self.gpu.last_work);
@@ -131,6 +147,7 @@ impl Shell {
             self.hidden = want_hidden;
             log::info!("{} the island (fullscreen: {}, maximized window: {}, pointer at the edge: {})", if self.hidden { "hiding" } else { "showing" }, self.app.fullscreen, self.app.maximized, self.app.pointer_near);
             window.set_visible(!self.hidden);
+            self.reshow = true;
         } else if !self.hidden && !window.is_visible().unwrap_or(true) {
             log::info!("showing the island");
             window.set_visible(true);
@@ -195,22 +212,35 @@ impl Shell {
         if self.hidden {
             self.frame(el);
         } else {
+            self.asked = Some(Instant::now());
             w.request_redraw();
         }
     }
 
-    fn schedule(&self, el: &ActiveEventLoop) {
-        if let Some(w) = &self.window {
-            if self.hidden {
-                el.set_control_flow(ControlFlow::WaitUntil(self.last_redraw + Duration::from_millis(200)));
-            } else if self.animating {
-                w.request_redraw();
-                el.set_control_flow(ControlFlow::Wait);
-            } else {
-                // at rest: wake once a second for the clock and the countdowns
-                el.set_control_flow(ControlFlow::WaitUntil(self.last_redraw + Duration::from_millis(self.next_ms.max(16) as u64)));
-            }
+    /// A frame was asked for a moment ago and is on its way.
+    fn awaiting(&self) -> bool {
+        self.asked.is_some_and(|at| at.elapsed() < REDRAW_PATIENCE)
+    }
+
+    /// How long until the next frame is due (see `until_frame`). A hidden window needs one only as often as the island
+    /// asks, and no more than five times a second: news (a window moved away, the pointer calling) brings it at once.
+    fn wait(&self) -> Duration {
+        let due = Duration::from_millis(u64::from(self.next_ms.max(if self.hidden { 200 } else { 16 })));
+        until_frame(self.animating && !self.hidden, self.news, self.last_redraw.elapsed(), due)
+    }
+
+    fn schedule(&mut self, el: &ActiveEventLoop) {
+        if self.window.is_none() {
+            return;
         }
+        if self.animating && !self.hidden && !self.awaiting() {
+            self.redraw(el);
+        }
+        let next = match self.asked.filter(|_| self.awaiting()) {
+            Some(at) => at + REDRAW_PATIENCE,
+            None => Instant::now() + self.wait(),
+        };
+        el.set_control_flow(ControlFlow::WaitUntil(next));
     }
 }
 
@@ -247,14 +277,13 @@ impl ApplicationHandler<Wake> for Shell {
         window.request_redraw();
     }
 
-    fn user_event(&mut self, el: &ActiveEventLoop, _e: Wake) {
-        self.redraw(el);
+    fn user_event(&mut self, _el: &ActiveEventLoop, _e: Wake) {
+        // drawn by `about_to_wait`, together with what else comes in the next few milliseconds
+        self.news = true;
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
-        // hidden: a frame five times a second keeps the clock, the timers and the reveal alive
-        let every = if self.hidden { 200 } else { self.next_ms.max(16) as u64 };
-        if (self.hidden || !self.animating) && self.last_redraw.elapsed() >= Duration::from_millis(every) {
+        if (self.hidden || !self.animating) && !self.awaiting() && self.wait().is_zero() {
             self.redraw(el);
         }
         self.schedule(el);
@@ -276,7 +305,9 @@ impl ApplicationHandler<Wake> for Shell {
             WindowEvent::RedrawRequested => self.frame(el),
             WindowEvent::Resized(s) => {
                 self.gpu.resize(s.width, s.height);
+                self.reshow = true;
             }
+            WindowEvent::Occluded(false) => self.reshow = true,
             // another screen, another scale: the window is asked for its size again at the next frame
             WindowEvent::ScaleFactorChanged { .. } => {
                 self.surface_logical = (0.0, 0.0);
@@ -380,7 +411,7 @@ pub fn run() {
     // the graphics context first: it is made while the program has one thread
     let gpu = Gpu::new();
     let app = App::new(waker);
-    let mut shell = Shell { app, gpu, window: None, surface_logical: (0.0, 0.0), animating: true, next_ms: 0, keyboard_on: false, hidden: false, mods: ModifiersState::empty(), shape: vec![], wanted: (0.0, 0.0), last_redraw: Instant::now(), perf: crate::perf::Perf::from_env() };
+    let mut shell = Shell { app, gpu, window: None, surface_logical: (0.0, 0.0), animating: true, next_ms: 0, keyboard_on: false, hidden: false, mods: ModifiersState::empty(), shape: vec![], wanted: (0.0, 0.0), last_redraw: Instant::now(), news: false, asked: None, reshow: true, perf: crate::perf::Perf::from_env() };
     let _ = (TOP_MARGIN, LogicalPosition::new(0.0, 0.0));
     event_loop.set_control_flow(ControlFlow::Wait);
     if let Err(e) = event_loop.run_app(&mut shell) {

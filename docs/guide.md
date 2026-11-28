@@ -801,7 +801,9 @@ Vulkan driver (`vulkan-radeon`, `vulkan-intel`) lets it run there instead of kee
 NVIDIA's driver is then not even loaded (it takes some 80 MB and holds the card open); only Vulkan is asked, unless it has
 no hardware to offer. `WGPU_BACKEND`, `WGPU_ADAPTER_NAME`, `WGPU_POWER_PREF` and the Vulkan loader's driver variables are
 respected. Font files are mapped into memory, not copied, and a line sliding because it is too long is drawn 60 times a
-second at most, and not at all while it pauses.
+second at most, and not at all while it pauses. On Wayland and Windows a frame equal to the one on screen is not rendered
+again (it is repainted every 30 seconds at the latest), and news from the services that arrive within 15 ms of each other
+are drawn together. Covers and map tiles are sent to the graphics card once.
 
 ## Options
 

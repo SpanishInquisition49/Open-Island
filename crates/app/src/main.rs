@@ -6,6 +6,7 @@
 mod app;
 mod cli;
 mod doctor;
+mod fingerprint;
 mod agent;
 mod hook;
 mod perf;

@@ -13,6 +13,8 @@ path = "src/main.rs"
 island-core = { path = "../core" }
 island-ui = { path = "../ui" }
 vello = "0.12"
+# the drawn scene read as bytes, to tell a frame equal to the one on screen
+bytemuck = "1"
 winit = "0.30"
 pollster = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
