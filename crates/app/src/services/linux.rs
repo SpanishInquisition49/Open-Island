@@ -127,7 +127,7 @@ pub fn start(rep: Reporter, cmd_rx: Receiver<Command>, settings: Arc<Settings>, 
 }
 
 fn run(prog: &str, args: &[&str]) -> Option<String> {
-    let out = Proc::new(prog).args(args).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+    let out = super::tool(prog).args(args).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -235,7 +235,7 @@ pub(crate) fn pactl_events(wanted: Wanted) -> Option<std::sync::mpsc::Receiver<S
 
 fn spawn_subscribe() -> Option<std::process::Child> {
     use std::os::unix::process::CommandExt;
-    let mut cmd = Proc::new("pactl");
+    let mut cmd = super::tool("pactl");
     cmd.arg("subscribe").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
     // SAFETY: only prctl is called between fork and exec, which is async-signal-safe. Without this a `pactl subscribe`
     // outlives an island that is killed (it only notices when it next has something to write).

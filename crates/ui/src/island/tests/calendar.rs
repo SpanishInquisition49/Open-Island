@@ -431,3 +431,14 @@ fn a_reminder_card_offers_to_ring_again_later() {
     assert_eq!(i.reminders[0].text, "Call mom");
     assert_eq!(i.reminders[0].due_ms, i.day_start_ms(i.today_day()) + 20 * 3_600_000);
 }
+
+#[test]
+fn the_end_of_an_event_inside_a_longer_one_says_it_is_still_on() {
+    let mut i = Island::new(Config { meeting_alerts: false, ..Config::default() });
+    i.tick(T0, 8.0); // 08:00
+    let h = 3_600_000;
+    let ev = |t: &str, a: i64, b: i64| Event { id: t.into(), title: t.into(), start_ms: a, end_ms: b, ..Default::default() };
+    i.data.events = vec![ev("Lab", T0, T0 + 5 * h), ev("Talk", T0 + h, T0 + 2 * h), ev("Seminar", T0 + 4 * h, T0 + 6 * h)];
+    i.tick(T0 + 2 * h - 60_000, 8.0);
+    assert_eq!(i.notif.take().map(|c| (c.summary, c.body)), Some(("Talk ends in 1 min".into(), "Still on: Lab until 13:00".into())));
+}

@@ -6,11 +6,11 @@ use island_core::netstate::{self as ns, Health};
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 #[cfg(target_os = "linux")]
 fn run(cmd: &str, args: &[&str]) -> Option<String> {
-    let o = Command::new(cmd).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    let o = super::tool(cmd).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 

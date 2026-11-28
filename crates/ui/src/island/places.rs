@@ -31,6 +31,10 @@ impl Island {
             self.say(&format!("Where is {place}?"), &how);
             return;
         };
+        if self.at_places.len() >= MAX {
+            self.say("Too many reminders waiting", "Take one off on the Today page first");
+            return;
+        }
         let mut waiting = Waiting { place, leaving, text: text.chars().take(120).collect(), armed: false };
         // where one is now decides what counts as the next arrival
         let fix = self.fix();
@@ -39,7 +43,6 @@ impl Island {
         }
         let when = waiting.when();
         self.at_places.push(waiting);
-        self.at_places.truncate(MAX);
         self.place_asked_at = 0;
         match fix {
             _ if !self.cfg.follow_position => self.say("Reminder kept, position is off", "Switch on Follow my position in the options"),

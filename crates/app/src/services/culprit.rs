@@ -323,7 +323,7 @@ fn watch_privacy(rep: Reporter) {
                 std::thread::sleep(Duration::from_millis(700));
                 continue;
             }
-            let run = |a: &[&str]| std::process::Command::new("pactl").args(a).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+            let run = |a: &[&str]| super::tool("pactl").args(a).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
             let mic = super::linux::mic_users(&run(&["-f", "json", "list", "source-outputs"]), &run(&["-f", "json", "list", "sources"]));
             let cam = super::linux::camera_users();
             if mic != last_mic || cam != last_cam {

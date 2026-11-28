@@ -247,6 +247,24 @@ pub fn save_announced_if_changed(keys: &[String]) {
     }
 }
 
+/// A system tool whose answers the island reads. `nmcli`, `pactl` and `wpctl` translate their words (and the decimal
+/// point) into the language of the session: they are asked in the C locale, the one the island knows.
+#[cfg(target_os = "linux")]
+pub(crate) fn tool(program: &str) -> std::process::Command {
+    let mut c = std::process::Command::new(program);
+    c.env("LC_ALL", "C.UTF-8");
+    c
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tool_tests {
+    #[test]
+    fn a_tool_is_asked_in_the_c_locale_whatever_the_session_speaks() {
+        let out = super::tool("sh").args(["-c", "echo $LC_ALL"]).env("LANGUAGE", "it").env("LANG", "it_IT.UTF-8").output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "C.UTF-8");
+    }
+}
+
 pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }

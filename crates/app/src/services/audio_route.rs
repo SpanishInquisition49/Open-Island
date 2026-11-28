@@ -8,7 +8,7 @@
 
 use super::Reporter;
 use serde_json::Value;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 /// An output as far as the choice goes.
@@ -67,7 +67,7 @@ pub fn decide(before: &[OutSink], now: &[OutSink], default: &str) -> Option<Stri
 }
 
 fn pactl(args: &[&str]) -> Option<String> {
-    let o = Command::new("pactl").args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    let o = super::tool("pactl").args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 

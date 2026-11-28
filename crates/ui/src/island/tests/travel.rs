@@ -407,3 +407,17 @@ fn a_reminder_waits_for_a_place_and_rings_on_arrival_and_departure() {
     run_bar(&mut i, "unplace uni");
     assert!(i.places_saved().0.is_empty());
 }
+
+#[test]
+fn a_place_reminder_too_many_is_refused_aloud_and_none_is_lost() {
+    let mut i = Island::new(Config::default());
+    i.tick(T0, 8.0);
+    i.data.config.home_pos = Some((43.7, 10.4));
+    for n in 0..20 {
+        run_bar(&mut i, &format!("remind me when i get home thing {n}"));
+    }
+    type_in_bar(&mut i, "remind me when i get home one too many");
+    i.push(i.now, Input::Key(KeyInput::Enter));
+    assert_eq!(i.places_saved().1.len(), 20);
+    assert!(i.notif.iter().chain(i.below.iter().map(|b| &b.n)).any(|n| n.summary == "Too many reminders waiting"));
+}

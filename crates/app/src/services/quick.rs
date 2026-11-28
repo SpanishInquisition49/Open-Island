@@ -13,7 +13,7 @@ const TLP_HELPER: &str = "/usr/local/bin/tlp-profile-set";
 const PROFILES: [&str; 3] = ["performance", "balanced", "powersave"];
 
 fn out(prog: &str, args: &[&str]) -> Option<String> {
-    let o = Proc::new(prog).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    let o = super::tool(prog).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 

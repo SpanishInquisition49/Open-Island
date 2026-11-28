@@ -4,7 +4,7 @@
 use super::Reporter;
 use island_ui::model::{AppStream, Command, Sink};
 use serde_json::Value;
-use std::process::{Command as Proc, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 /// Outputs or inputs from `pactl -f json list sinks|sources`; the monitor of an output is not an input.
@@ -45,7 +45,7 @@ pub fn parse_streams(json: &str) -> Vec<AppStream> {
 }
 
 fn pactl(args: &[&str]) -> Option<String> {
-    let o = Proc::new("pactl").args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    let o = super::tool("pactl").args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 

@@ -72,6 +72,13 @@ impl Island {
         let off = self.data.utc_offset_secs;
         let midnight = self.day_start_ms(self.day_number(end) + 1);
         let next = self.data.events.iter().filter(|e| !e.all_day && e.start_ms >= end && e.start_ms < midnight).min_by_key(|e| e.start_ms);
+        // something that goes on past this end: until it is over one is not free (what lasts half a day is no engagement)
+        if next.is_none_or(|e| e.start_ms - end >= 15 * 60_000) {
+            let over = self.data.events.iter().filter(|e| !e.all_day && e.start_ms < end && e.end_ms > end && e.end_ms - e.start_ms <= 12 * 3_600_000);
+            if let Some(e) = over.max_by_key(|e| e.end_ms) {
+                return format!("Still on: {} until {}", e.title, crate::clock::civil(e.end_ms, off).hhmm());
+            }
+        }
         let Some(e) = next else { return "Nothing else today".into() };
         let place = island_core::timeline::place_of(&e.location);
         let place = if place.is_empty() { place } else { format!(" · {place}") };

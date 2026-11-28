@@ -113,7 +113,7 @@ pub fn parse_geolocate(v: &serde_json::Value) -> Option<(f64, f64, f64)> {
 /// `wifi_position` on. None when fewer than two are seen or the service does not know them.
 #[cfg(target_os = "linux")]
 fn wifi_fix() -> Option<(f64, f64, f64)> {
-    let out = Command::new("nmcli").args(["-t", "-f", "BSSID,SSID,SIGNAL", "dev", "wifi", "list"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    let out = super::tool("nmcli").args(["-t", "-f", "BSSID,SSID,SIGNAL", "dev", "wifi", "list"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     let aps = parse_nmcli_aps(&String::from_utf8_lossy(&out.stdout), 50);
     if aps.len() < 2 {
         return None;

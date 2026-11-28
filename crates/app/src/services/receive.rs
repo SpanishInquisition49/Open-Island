@@ -164,6 +164,8 @@ struct Shared {
     asking: Option<(u32, IpAddr)>,
     session: Option<Session>,
     refused: Option<(IpAddr, Instant)>,
+    /// Receiving was switched off: a connection still open is not listened to.
+    closed: bool,
 }
 
 pub struct Server {
@@ -278,6 +280,9 @@ impl Server {
         let (tx, rx) = channel();
         {
             let mut s = lock(&self.shared);
+            if s.closed {
+                return status(403);
+            }
             if s.asking.is_some() || s.session.is_some() {
                 return status(409);
             }
@@ -477,6 +482,7 @@ impl Server {
     /// Receiving is switched off: what is going on ends.
     fn close(&self) {
         let mut shared = lock(&self.shared);
+        shared.closed = true;
         if let Some((offer, _)) = shared.asking {
             reply(offer, Answer::Withdrawn);
         }
@@ -1052,6 +1058,14 @@ mod tests {
         b.accepted(r#"{"f":{"fileName":"a","size":4}}"#);
         b.server.sweep(Duration::ZERO);
         assert_eq!(b.outcome().1.detail, "the sender stopped");
+    }
+
+    #[test]
+    fn once_switched_off_nothing_more_is_asked() {
+        let b = Bench::new("off", Duration::from_millis(300));
+        b.server.close();
+        assert_eq!(b.post("prepare-upload", br#"{"info":{"alias":"Pixel"},"files":{"f":{"fileName":"a","size":1}}}"#).0, 403);
+        assert!(lock(&b.msgs).try_recv().is_err(), "no card");
     }
 
     #[test]
