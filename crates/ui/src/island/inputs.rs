@@ -85,6 +85,7 @@ impl Island {
                 }
             }
             Input::PreviewSky(sky) => self.preview_sky(sky),
+            Input::PreviewBirthday(name) => self.celebrate(&[name]),
             Input::Mic(muted) => {
                 let tell = self.set_mic(muted);
                 self.pending.push(tell);

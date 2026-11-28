@@ -180,6 +180,9 @@ impl App {
         if let Some(d) = services::load_recap_day("morning-recap") {
             island.restore_morning_day(d);
         }
+        if let Some(d) = services::load_recap_day("birthday-card") {
+            island.restore_birthday_day(d);
+        }
         let (places, waiting) = services::load_places();
         island.restore_places(places, waiting);
         island.restore_shelf(services::load_shelf());
@@ -277,6 +280,7 @@ impl App {
         services::save_bar_history_if_changed(self.island.bar_history());
         services::save_recap_day_if_changed("evening-recap", self.island.evening_day());
         services::save_recap_day_if_changed("morning-recap", self.island.morning_day());
+        services::save_recap_day_if_changed("birthday-card", self.island.birthday_day());
         // today's attention: written at most once a minute
         let now_s = self.now() / 1000;
         if now_s - self.attention_saved_at >= 60 {

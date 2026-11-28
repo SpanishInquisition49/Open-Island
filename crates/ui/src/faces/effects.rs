@@ -2,7 +2,7 @@
 //! pill (which covers where they meet it), what is on it after.
 
 use super::*;
-use crate::island::effects::{Burst, Catch, REACH, SHOT_MS};
+use crate::island::effects::{Burst, Catch, CONFETTI_DEPTH, REACH, SHOT_MS};
 use island_core::droplet::{self, Blob, Shape};
 use vello::kurbo::{BezPath, Circle};
 
@@ -68,6 +68,19 @@ fn tongue(scene: &mut Scene, base: Affine, h: f64, (x, y): (f64, f64), d: f64) {
 }
 
 impl Island {
+    /// The confetti of a birthday, bursting from under the pill over what is there.
+    pub(super) fn draw_confetti(&self, scene: &mut Scene, base: Affine, w: f64, h: f64) {
+        use island_core::birthday::{confetti, COLOURS};
+        let Some(born) = self.fx.confetti.as_ref().and_then(|c| c.born) else { return };
+        let spread = crate::island::card::CARD_MAX_W / 2.0 - 12.0;
+        for bit in confetti(self.now - born, spread, CONFETTI_DEPTH) {
+            let (r, g, b) = COLOURS[bit.colour % COLOURS.len()];
+            let at = base * Affine::translate((w / 2.0 + bit.x, h - 4.0 + bit.y)) * Affine::rotate(bit.turn);
+            let shape = vello::kurbo::Rect::new(-bit.w / 2.0, -bit.h / 2.0, bit.w / 2.0, bit.h / 2.0);
+            scene.fill(Fill::NonZero, at, Color::from_rgba8(r, g, b, (bit.alpha * 255.0).round() as u8), None, &shape);
+        }
+    }
+
     /// The black of the drops of the effects. Drawn before the pill.
     pub(super) fn draw_effect_shapes(&self, scene: &mut Scene, base: Affine, w: f64, h: f64, radius: f64) {
         let pill = (w, h, radius);

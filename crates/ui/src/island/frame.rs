@@ -901,6 +901,7 @@ impl Island {
         self.expire_deadlines(now);
         self.check_evening(now);
         self.check_morning(now);
+        self.check_birthdays(now);
         self.check_departure(now);
         self.check_event_end(now);
         self.check_train(now);
@@ -1112,6 +1113,10 @@ impl Island {
         }
         if self.fx.shot.is_some() {
             sw = sw.max(group_w + 2.0 * effects::SHOT_ROOM);
+        }
+        if self.fx.confetti.as_ref().is_some_and(|c| c.born.is_some()) {
+            sw = sw.max(card::CARD_MAX_W);
+            sh = sh.max(self.spring.h.pos.ceil() + effects::CONFETTI_ROOM);
         }
         if self.fx.catch.is_some() {
             // the drop that reaches for the file, and the area that takes it

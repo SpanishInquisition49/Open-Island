@@ -34,7 +34,7 @@ pub fn toggles(tab: usize) -> &'static [(&'static str, &'static str)] {
             ("keyboard_alerts", "Keyboard changes"),
         ],
         2 => &[("quiet_in_meetings", "Quiet in meetings"), ("quiet_on_mic", "Quiet on a call"), ("quiet_on_screen_share", "Quiet when sharing"), ("away_recap", "Recap when back")],
-        3 => &[("travel_times", "Travel times"), ("evening_weekends", "Cards on weekends"), ("link_cards", "Copied link cards"), ("end_alerts", "Event ending")],
+        3 => &[("travel_times", "Travel times"), ("evening_weekends", "Cards on weekends"), ("link_cards", "Copied link cards"), ("end_alerts", "Event ending"), ("birthday_cards", "Birthdays")],
         4 => &[("weather", "Weather"), ("weather_in_pill", "Weather in the pill"), ("follow_position", "Follow my position"), ("wifi_position", "Precise position from Wi-Fi"), ("currency_rates", "Currency rates"), ("receive_files", "Receive files")],
         5 => &[("media_auto_expand", "Open on a new track"), ("lyrics", "Synced lyrics"), ("lyrics_in_pill", "Lyrics in the pill"), ("art_tint", "Tint from the cover"), ("pill_pulse", "Move with the beat"), ("auto_audio_output", "Audio to headphones")],
         _ => &[],
@@ -81,6 +81,7 @@ pub fn describe(key: &str) -> &'static str {
         "lyrics_in_pill" => "Show the current lyric line in the small pill",
         "art_tint" => "Tint the island with the colours of the album cover",
         "pill_pulse" => "The edges of the pill move with the music, like a liquid (on mains power)",
+        "birthday_cards" => "A card with confetti on a birthday in your calendars (all-day events)",
         "notification_seconds" => "How long a notification card stays on screen",
         "osd_seconds" => "How long the volume and brightness bar stays",
         "low_battery_percent" => "The battery level that gives the low battery warning",
@@ -181,6 +182,7 @@ pub fn get_bool(c: &Config, key: &str) -> bool {
         "lyrics_in_pill" => c.lyrics_in_pill,
         "art_tint" => c.art_tint,
         "pill_pulse" => c.pill_pulse,
+        "birthday_cards" => c.birthday_cards,
         "status_icons" => c.status_icons,
         "clipboard_history" => c.clipboard_history,
         "progress_drop" => c.progress_drop,
@@ -223,6 +225,7 @@ pub fn set_bool(c: &mut Config, key: &str, on: bool) {
         "lyrics_in_pill" => c.lyrics_in_pill = on,
         "art_tint" => c.art_tint = on,
         "pill_pulse" => c.pill_pulse = on,
+        "birthday_cards" => c.birthday_cards = on,
         "status_icons" => c.status_icons = on,
         "clipboard_history" => c.clipboard_history = on,
         "progress_drop" => c.progress_drop = on,
@@ -335,7 +338,7 @@ mod tests {
     fn every_option_here_is_one_the_platform_layer_can_write() {
         // the keys of the page and the keys the configuration accepts are the same list
         let page: std::collections::BTreeSet<&str> = (0..TABS.len()).flat_map(|t| toggles(t).iter().map(|(k, _)| *k)).collect();
-        assert_eq!(page.len(), 36, "no option on two tabs");
+        assert_eq!(page.len(), 37, "no option on two tabs");
         assert_eq!(TABS[RULES_TAB], "Rules");
         let nums: Vec<&str> = (0..TABS.len()).flat_map(|t| steppers(t).iter().map(|s| s.0)).collect();
         assert_eq!(nums, ["mini_pills", "dock_icons", "notification_seconds", "osd_seconds", "low_battery_percent", "meeting_lead_minutes", "meeting_pill_minutes", "deep_work_minutes", "break_minutes", "distraction_minutes", "morning_recap_time", "evening_recap_time", "commute_minutes", "travel_margin_minutes", "countdown_days"]);

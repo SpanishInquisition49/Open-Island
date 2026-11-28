@@ -150,6 +150,8 @@ pub struct Config {
     pub weather_in_pill: bool,
     /// The edges of the pill move with the music, like the surface of a liquid.
     pub pill_pulse: bool,
+    /// A card with confetti on the day of a birthday in the calendars.
+    pub birthday_cards: bool,
     /// Fetch and show the weather.
     pub weather: bool,
     /// Play a sound when a timer ends.
@@ -216,6 +218,7 @@ impl Default for Config {
             hide_when_covered: true,
             weather_in_pill: true,
             pill_pulse: true,
+            birthday_cards: true,
             weather: true,
             timer_sound: true,
             auto_audio_output: true,
@@ -804,6 +807,9 @@ pub struct Island {
     left_for: Option<(String, i64)>,
     first_tick_ms: Option<i64>,
     morning_day: i64,
+    /// The last day the birthday card came, and when today was last looked through.
+    birthday_day: i64,
+    birthday_looked: i64,
     pub(crate) ledger: island_core::activity::Ledger,
     log: std::collections::VecDeque<LogEntry>,
     log_track: String,
@@ -1005,6 +1011,8 @@ impl Island {
             left_for: None,
             first_tick_ms: None,
             morning_day: i64::MIN,
+            birthday_day: i64::MIN,
+            birthday_looked: 0,
             ledger: Default::default(),
             log: Default::default(),
             log_track: String::new(),
@@ -1103,6 +1111,7 @@ impl Island {
 pub(crate) mod card;
 pub(crate) mod effects;
 mod events;
+mod birthday;
 pub(crate) mod liquid;
 use card::{Shown, STACK_MAX};
 mod frame;

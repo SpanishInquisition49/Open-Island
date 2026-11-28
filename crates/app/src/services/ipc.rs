@@ -119,6 +119,8 @@ pub(crate) fn parse(line: &str) -> Option<Input> {
         // `sky sun|night|partly|cloudy|fog|drizzle|rain|heavy|snow|storm|off`: how the weather looks in the pill, whatever it is outside
         "sky" if payload == "off" => Input::PreviewSky(None),
         "sky" => Input::PreviewSky(Some(island_core::sky::named(payload)?)),
+        // `birthday <name>`: the card with confetti, to see how it looks
+        "birthday" if !payload.is_empty() => Input::PreviewBirthday(payload.to_string()),
         // a key bound to this mutes the microphone
         "mic" => Input::Mic(match payload {
             "" | "toggle" => None,
@@ -429,6 +431,8 @@ mod tests {
         assert!(matches!(parse("sky snow"), Some(Input::PreviewSky(Some(s))) if s.kind == island_core::sky::Kind::Snow));
         assert!(matches!(parse("sky off"), Some(Input::PreviewSky(None))));
         assert!(matches!(parse("sky sun"), Some(Input::PreviewSky(Some(_)))));
+        assert!(matches!(parse("birthday Ada Lovelace"), Some(Input::PreviewBirthday(n)) if n == "Ada Lovelace"));
+        assert!(parse("birthday").is_none());
         assert!(parse("sky sunny").is_none() && parse("sky").is_none());
         assert!(matches!(parse("mic off"), Some(Input::Mic(Some(true)))));
         assert!(parse("mic maybe").is_none());

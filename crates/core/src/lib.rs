@@ -4,6 +4,7 @@
 pub mod bluetooth;
 pub mod activity;
 pub mod bar;
+pub mod birthday;
 pub mod calendar;
 pub mod clipact;
 pub mod codes;

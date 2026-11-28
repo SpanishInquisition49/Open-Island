@@ -137,6 +137,7 @@ impl Island {
         self.draw_fill(scene, &mut hits, base, w);
         self.draw_effect_contents(scene, fonts, base, w, h, radius);
         self.draw_auth_contents(scene, fonts, &mut hits, base, w, h);
+        self.draw_confetti(scene, base, w, h);
         self.hits = hits;
     }
 

@@ -131,6 +131,19 @@ const SHOT_AFTER_MS: i64 = 150;
 /// The room it needs past the pill's right end.
 pub(crate) const SHOT_ROOM: f64 = 96.0;
 
+/// The room below the pill the confetti of a birthday flies in, and how far down it goes.
+pub(crate) const CONFETTI_ROOM: f64 = 200.0;
+pub(crate) const CONFETTI_DEPTH: f64 = 140.0;
+/// A card that has not come out after this long gets no confetti.
+const CONFETTI_PATIENCE_MS: i64 = 20_000;
+
+/// The confetti of a birthday: it waits for its card, and bursts as it comes out.
+pub(crate) struct Confetti {
+    pub card: u32,
+    pub born: Option<i64>,
+    pub asked: i64,
+}
+
 /// How long the pill takes to swallow a file, and to give up on one that went away.
 pub(crate) const GULP_MS: i64 = 560;
 const RETRACT_MS: i64 = 250;
@@ -182,6 +195,7 @@ pub(crate) struct Effects {
     /// When the drop that says files have gone sets off.
     pub shot: Option<i64>,
     pub catch: Option<Catch>,
+    pub confetti: Option<Confetti>,
     /// A device that connected without saying its battery, and until when it is worth waiting for it.
     pub awaiting_battery: Option<(String, i64)>,
     /// A battery card waiting for its estimate: from when it is taken, and until when the card is up.
@@ -196,7 +210,7 @@ impl Effects {
 
     /// Something here needs a frame at every refresh.
     pub fn moving(&self) -> bool {
-        !self.arrivals.is_empty() || self.burst.is_some() || self.flight.is_some() || self.shot.is_some() || self.catch.is_some()
+        !self.arrivals.is_empty() || self.burst.is_some() || self.flight.is_some() || self.shot.is_some() || self.catch.is_some() || self.confetti.as_ref().is_some_and(|c| c.born.is_some())
     }
 }
 
@@ -234,6 +248,15 @@ impl Island {
         }
         if self.fx.shot.is_some_and(|at| now - at >= SHOT_MS) {
             self.fx.shot = None;
+        }
+        if let Some(c) = self.fx.confetti.as_mut() {
+            if c.born.is_none() && self.cards.live().any(|card| card.n.id == c.card) {
+                c.born = Some(now + birthday::BURST_AFTER_MS);
+            }
+            let over = c.born.map_or(now - c.asked >= CONFETTI_PATIENCE_MS, |born| now - born >= island_core::birthday::CONFETTI_MS);
+            if over {
+                self.fx.confetti = None;
+            }
         }
         let (w, h, origin) = (self.spring.w.pos, self.spring.h.pos, self.pill_origin);
         let over = self.fx.catch.as_ref().is_some_and(|c| {

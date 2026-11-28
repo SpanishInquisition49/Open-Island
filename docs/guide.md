@@ -880,6 +880,7 @@ a script with `open-island msg set <option> <value>`:
 | Alerts | `notification_seconds` (2-30, 5), `osd_seconds` (0.5-5, 1.6), `low_battery_percent` (5-50, 15), `meeting_lead_minutes` (1-60, 10: the card), `meeting_pill_minutes` (1-120, 10: the pill on the side) | |
 | Quiet | `quiet_in_meetings`, `quiet_on_mic`, `quiet_on_screen_share`, `away_recap` | on |
 | Day | `link_cards` (a copied link offers to open it) | on |
+| Day | `birthday_cards` (a card with confetti on a birthday in your calendars) | on |
 | Quiet | `deep_work_minutes` (0-120, 20: auto focus), `break_minutes` (0-240, 0: off), `deep_work_apps` (a list in `config.json`) | |
 | Quiet | `distraction_minutes` (0-120, 20; 0: off), `distraction_apps` (the apps marked on the Activity page) | 20, none |
 | Day | `travel_times`, `end_alerts` (five minutes before an event of half an hour to five hours ends: what comes next, and where) | on |
@@ -986,6 +987,15 @@ While the option is on the island listens on port 53317 (TCP and UDP), with its 
 answers only addresses of the local network and of your tailnet. Anyone on the same network can see the computer's name and
 ask to send; a PIN is not supported. **The LocalSend app on the same computer uses the same port**: only one of the two can
 receive (the island says when the port is taken). With a firewall, let TCP and UDP 53317 in.
+
+## Birthdays
+
+On the day of a birthday that is in one of your calendars, a card names who it is, with a burst of confetti. It comes
+once a day, from eight in the morning (or the first moment after, until half past eleven at night), and waits while the
+island is being quiet. A birthday is an **all-day** entry whose title says so: "Compleanno di Ada", "Ada's birthday",
+"Birthday: Ada", "Ada - compleanno", or any title with 🎂; a dinner "for a birthday" at some hour, or "buy a birthday
+present", is not one. `birthday_cards` (Options > Day > "Birthdays", on) switches it off;
+`open-island msg birthday <name>` shows the card and the confetti to see how they look.
 
 ## One-time codes
 
