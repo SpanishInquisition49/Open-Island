@@ -352,6 +352,8 @@ claiming notifications (undo with `... true`). Any other owner is left alone and
 
 ## Controlling it
 
+The socket takes messages from your own user (and root) only; on Linux and macOS each side checks who the other is.
+
 `open-island msg <event> [payload]`: `peek`, `open [page]` (keyboard navigation: arrows move a focus ring, Enter
 activates, Tab / Shift+Tab change page, Escape closes), `page next|prev`, `page <home|today|map|cal|qs|sys|activity|audio|send|shelf|notifs|media|timer|clip|focus|settings>`,
 `dnd on|off|1h|until 18:00|until class ends`, `mic [toggle|off|on]`, `shelf <file>...`, `timer 25m`,

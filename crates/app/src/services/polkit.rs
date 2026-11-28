@@ -16,11 +16,12 @@
 //!   binary or registers an agent of its own: no agent can.
 
 use super::polkit_talk::{Act, Talk, Tell};
-use super::{avatar, polkit_face, Reporter};
+use super::{avatar, peer, polkit_face, Reporter};
 use island_core::secret::{Secret, MAX_SECRET};
 use island_ui::model::{AuthFaceUse, AuthRequest, AuthUpdate, Command, Input};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -129,20 +130,10 @@ fn listen(stream: UnixStream, mut hear: impl FnMut(Result<String, String>)) {
     }
 }
 
-/// The user id at the other end of a socket, as the kernel knows it.
-fn peer_uid(stream: &UnixStream) -> Option<u32> {
-    use std::os::fd::AsRawFd;
-    let mut cred = libc::ucred { pid: 0, uid: u32::MAX, gid: u32::MAX };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    // SAFETY: the descriptor is open for the call; `cred` and `len` describe a buffer of the right size
-    let r = unsafe { libc::getsockopt(stream.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, std::ptr::addr_of_mut!(cred).cast(), &mut len) };
-    (r == 0 && len as usize == std::mem::size_of::<libc::ucred>()).then_some(cred.uid)
-}
-
 /// The helper, only if what answers is root.
 fn connect_helper(path: &str) -> Result<UnixStream, String> {
     let stream = UnixStream::connect(path).map_err(|e| format!("polkit's helper cannot be reached: {e}"))?;
-    if peer_uid(&stream) != Some(0) {
+    if peer::uid(stream.as_fd()) != Some(0) {
         return Err("what answers on polkit's socket is not the system: nothing was sent".into());
     }
     stream.set_read_timeout(Some(HELPER_PATIENCE)).and_then(|()| stream.set_write_timeout(Some(HELPER_PATIENCE))).map_err(|e| e.to_string())?;

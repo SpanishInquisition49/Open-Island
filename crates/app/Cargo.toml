@@ -38,14 +38,16 @@ zbus = { version = "5", default-features = false, features = ["blocking-api", "a
 # receiving files over LocalSend: the certificate of this machine, hashes and random tokens
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 ring = "0.17"
-# helper processes die with the island (PR_SET_PDEATHSIG)
-libc = "0.2"
 smithay-client-toolkit = "0.20"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 calloop = "0.14"
 calloop-wayland-source = "0.4"
 raw-window-handle = "0.6"
+
+# who is at the other end of a socket; helper processes that die with the island (PR_SET_PDEATHSIG)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 ureq = { version = "3", default-features = false, features = ["native-tls", "json", "gzip"] }

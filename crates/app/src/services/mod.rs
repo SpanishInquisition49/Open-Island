@@ -16,6 +16,8 @@ pub mod cards;
 pub mod clock;
 pub mod icons;
 pub mod parse;
+#[cfg(unix)]
+pub mod peer;
 #[cfg(target_os = "linux")]
 pub mod devices;
 #[cfg(target_os = "linux")]

@@ -2,7 +2,7 @@
 //! One text line per message; works the same on Linux, macOS (unix socket) and Windows (named pipe).
 
 use super::Reporter;
-use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions};
+use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions, Stream};
 use island_ui::model::Input;
 use std::io::{BufRead, BufReader, Write};
 
@@ -246,6 +246,39 @@ fn watch_shells(rep: Reporter) {
     });
 }
 
+/// Who may talk over the socket: the person the island runs as, and root.
+#[cfg(unix)]
+fn allowed(peer: Option<u32>, own: u32) -> bool {
+    peer.is_some_and(|p| p == own || p == 0)
+}
+
+/// Whether the other end of a connection is one to talk with. On Linux the socket's name is in the abstract namespace,
+/// which has no permissions: any user of the machine can connect to it, or take the name before the island does and
+/// read what scripts send. So each side asks the kernel who the other is.
+#[cfg(unix)]
+fn trusted(conn: &Stream) -> bool {
+    use std::os::fd::AsFd;
+    let Stream::UdSocket(socket) = conn;
+    allowed(super::peer::uid(socket.as_fd()), super::peer::own())
+}
+
+/// Windows' own permissions on a pipe let other users read it, not write to it.
+#[cfg(not(unix))]
+fn trusted(_: &Stream) -> bool {
+    true
+}
+
+/// A connection to the running island; None when there is none, or when what holds its name is another user's.
+fn connect() -> Option<Stream> {
+    let name = socket_name().to_ns_name::<GenericNamespaced>().ok()?;
+    let conn = Stream::connect(name).ok()?;
+    if !trusted(&conn) {
+        log::warn!("the control socket belongs to another user: nothing was sent");
+        return None;
+    }
+    Some(conn)
+}
+
 pub fn start(rep: Reporter) {
     #[cfg(target_os = "linux")]
     watch_shells(rep.clone());
@@ -259,6 +292,10 @@ pub fn start(rep: Reporter) {
     };
     std::thread::spawn(move || {
         for conn in listener.incoming().flatten() {
+            if !trusted(&conn) {
+                log::warn!("control socket: a connection from another user was refused");
+                continue;
+            }
             let rep = rep.clone();
             std::thread::spawn(move || {
                 let mut reader = BufReader::new(conn);
@@ -307,8 +344,7 @@ pub fn start(rep: Reporter) {
 
 /// Sends a message that is answered with one line, and waits for it. None when no island is running.
 pub fn ask(line: &str) -> Option<String> {
-    let name = socket_name().to_ns_name::<GenericNamespaced>().ok()?;
-    let mut conn = interprocess::local_socket::Stream::connect(name).ok()?;
+    let mut conn = connect()?;
     conn.write_all(format!("{line}\n").as_bytes()).ok()?;
     let mut answer = String::new();
     BufReader::new(conn).read_line(&mut answer).ok()?;
@@ -317,8 +353,7 @@ pub fn ask(line: &str) -> Option<String> {
 
 /// Sends one message to a running island (the `msg` subcommand). Returns false when none is running.
 pub fn send(line: &str) -> bool {
-    let Ok(name) = socket_name().to_ns_name::<GenericNamespaced>() else { return false };
-    let Ok(mut conn) = interprocess::local_socket::Stream::connect(name) else { return false };
+    let Some(mut conn) = connect() else { return false };
     conn.write_all(format!("{line}\n").as_bytes()).is_ok()
 }
 
@@ -358,6 +393,14 @@ mod tests {
         assert!(matches!(next(), Input::NotificationClosed(id) if id == card.id));
         assert!(send("dismiss nothing") && send("dismiss"));
         assert!(matches!(next(), Input::DismissCard), "the unknown name said nothing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_the_person_and_root_may_talk_over_the_socket() {
+        assert!(allowed(Some(1000), 1000) && allowed(Some(0), 1000));
+        assert!(!allowed(Some(1001), 1000) && !allowed(Some(65534), 1000) && !allowed(None, 1000));
+        assert!(!allowed(Some(1000), 0), "an island run by root takes nothing from others");
     }
 
     #[test]
